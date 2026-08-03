@@ -56,8 +56,9 @@ Bad fits — use something else:
   sharing the event loop.
 
 Actors are not microservices. A microservice is a unit of *deployment*; an
-actor is a unit of *concurrency*. You will have millions of actors inside one
-service. `tapio` structures the inside of that service — it competes with
+actor is a unit of *concurrency*. You will have tens of thousands of actors
+inside one service — each is an `asyncio.Task`, so the ceiling is memory, not
+a cluster. `tapio` structures the inside of that service — it competes with
 `asyncio.Queue` + `TaskGroup` + a `dict` + hand-rolled retries, not with your
 API framework.
 
@@ -69,14 +70,22 @@ property of the mailbox rather than the send call: bounded mailboxes take an
 overflow strategy (`fail`, `drop_new`, `drop_oldest`, `dead_letter`), and
 `await ref.offer(msg)` waits for capacity when you want to be throttled.
 
-**Every message is a validated Pydantic model.** That costs roughly 3–10× the
-per-message overhead and caps local throughput around 10⁴–10⁵ msg/s. In an
-actor that spends 50 ms on an HTTP call, validation is ~0.02% of the message's
-life — invisible. In a tight per-record loop it dominates, which is why that
-workload is out of scope above. The check sits behind a single
-`validate_on_tell` setting, and real benchmarks ship with 0.1.0.
+**Every message is a validated Pydantic model.** Messages subclass
+`tapio.Message` — frozen, and re-validated on delivery rather than only at
+construction. That costs roughly 3–10× the per-message overhead and caps local
+throughput around 10⁴–10⁵ msg/s. In an actor that spends 50 ms on an HTTP call,
+validation is ~0.02% of the message's life — invisible. In a tight per-record
+loop it dominates, which is why that workload is out of scope above. The check
+sits behind a single `validate_on_tell` setting, and real benchmarks ship with
+0.1.0.
 
-Requires Python 3.11+ (for `asyncio.TaskGroup`).
+**Undeliverable messages go to dead letters.** An `ActorRef` stays valid after
+its actor dies, so `tell` never raises for a dead target — the message is
+published as a `DeadLetter` you can subscribe to and assert on. To *know* when
+something died, watch it (`ctx.watch`) rather than asking whether it is alive;
+a point-in-time liveness answer is stale the moment you have it.
+
+Requires Python 3.11+ (for `asyncio.timeout()` and `typing.Self`).
 
 ## Development
 
