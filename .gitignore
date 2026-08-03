@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Packaging / build
+dist/
+build/
+*.egg-info/
+
+# Environments — uv.lock IS committed; .venv is not
+.venv/
+.python-version
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.benchmarks/
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Docs build output
+site/
+
+# Local working docs (not versioned by choice)
+PLAN.md
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
