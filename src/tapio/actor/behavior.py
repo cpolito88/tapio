@@ -11,6 +11,7 @@ survive to runtime, so the delivery-time type check has to be re-derived from
 something that does.
 """
 
+import enum
 import inspect
 import typing
 from abc import ABC, abstractmethod
@@ -26,8 +27,10 @@ __all__ = [
     "AbstractBehavior",
     "Behavior",
     "Behaviors",
+    "Directive",
     "ReceivingBehavior",
     "SetupBehavior",
+    "directive_of",
     "resolve_handler_msg_type",
 ]
 
@@ -50,23 +53,55 @@ class Behavior(ABC, Generic[T]):
     """
 
 
+class Directive(enum.Enum):
+    """What a behavior that carries no handler asks the runtime to do.
+
+    These are returned as behaviors, `Behaviors.same()` and friends, so a
+    handler has one return type. The runtime reads the directive back off the
+    sentinel with [directive_of][tapio.actor.behavior.directive_of] rather than
+    comparing against private module constants.
+    """
+
+    SAME = "same"
+    """Keep the current behavior and its state."""
+
+    STOPPED = "stopped"
+    """Stop this actor."""
+
+    EMPTY = "empty"
+    """Handle no user message; signals still arrive."""
+
+    IGNORE = "ignore"
+    """Consume every message and do nothing."""
+
+    UNHANDLED = "unhandled"
+    """Report the message as unhandled, keeping the current behavior."""
+
+
 class _Sentinel(Behavior[Any]):
     """A behavior with no handler, interpreted by the runtime by identity."""
 
-    def __init__(self, name: str) -> None:
-        """Name the sentinel, for its repr."""
-        self._name = name
+    def __init__(self, directive: Directive) -> None:
+        """Bind the sentinel to the directive it carries."""
+        self.directive = directive
 
     def __repr__(self) -> str:
         """Render as the factory call that produces it."""
-        return f"Behaviors.{self._name}()"
+        return f"Behaviors.{self.directive.value}()"
 
 
-_SAME = _Sentinel("same")
-_STOPPED = _Sentinel("stopped")
-_EMPTY = _Sentinel("empty")
-_IGNORE = _Sentinel("ignore")
-_UNHANDLED = _Sentinel("unhandled")
+_SAME = _Sentinel(Directive.SAME)
+_STOPPED = _Sentinel(Directive.STOPPED)
+_EMPTY = _Sentinel(Directive.EMPTY)
+_IGNORE = _Sentinel(Directive.IGNORE)
+_UNHANDLED = _Sentinel(Directive.UNHANDLED)
+
+
+def directive_of(behavior: Behavior[Any]) -> Directive | None:
+    """Return the directive a behavior carries, or `None` if it handles messages."""
+    if isinstance(behavior, _Sentinel):
+        return behavior.directive
+    return None
 
 
 class ReceivingBehavior(Behavior[T], ABC):

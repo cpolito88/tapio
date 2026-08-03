@@ -12,6 +12,7 @@ would bury the message; raising something else lets it propagate intact.
 """
 
 __all__ = [
+    "ActorNameError",
     "ActorRefDeserializationError",
     "ActorSystemTerminating",
     "AskTargetTerminated",
@@ -44,6 +45,14 @@ class BehaviorTypeError(TapioError, TypeError):
     available. A behavior with no resolvable message type is never spawned:
     silently skipping the type check is the failure mode the check exists to
     prevent.
+    """
+
+
+class ActorNameError(TapioError):
+    """A child could not be given the name it asked for.
+
+    Names are unique among an actor's live children, since the path they form
+    is the actor's identity in logs and in every error message.
     """
 
 

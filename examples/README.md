@@ -54,4 +54,5 @@ Tiers 1-3, teaching exactly one concept.
 | `fastapi_app` | `ActorSystem` in a FastAPI lifespan; the deployment story |
 | `blocking_offload` | `ctx.run_blocking`, counted against the same code without it |
 
-*No examples have landed yet: the tables above are what they will fill in.*
+Tier 1 has landed and runs in CI. The rest of the tables above are what the
+later tiers will fill in.
