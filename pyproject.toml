@@ -67,6 +67,9 @@ default-groups = ["dev"]
 line-length = 88
 target-version = "py311"
 src = ["src", "tests", "examples"]
+# Code blocks in docs/ are snippet includes, not source: the formatter would
+# try to reformat the include directive as Python.
+extend-exclude = ["docs"]
 
 [tool.ruff.lint]
 select = [

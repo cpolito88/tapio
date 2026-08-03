@@ -1,7 +1,7 @@
 [project]
 name = "tapio-examples"
 version = "0.0.0"
-description = "Runnable, asserted examples for tapio — dev-only, never shipped in the wheel."
+description = "Runnable, asserted examples for tapio: dev-only, never shipped in the wheel."
 requires-python = ">=3.11"
 dependencies = ["tapio"]
 

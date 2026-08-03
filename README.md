@@ -1,24 +1,26 @@
 # tapio
 
 A Pekko-inspired actor toolkit for Python. Typed, asyncio-native actors with
-supervision — Pydantic models throughout.
+supervision, and Pydantic models throughout.
 
-> **Status: pre-alpha.** Nothing is implemented yet.
+> **Status: pre-alpha.** The runtime core runs: actor systems, spawning,
+> typed `tell`, and a deadline-based shutdown. Supervision, dead letters,
+> bounded mailboxes, `ask`, timers and routers are still to come.
 
 Named for the Finnish god of the forest, because supervision hierarchies are
 trees. It keeps the mythological lineage of Akka (Sámi) and Apache Pekko
-(Finnish) without borrowing anyone's trademark — see the note at the bottom.
+(Finnish) without borrowing anyone's trademark. See the note at the bottom.
 
 ## What it is
 
 `tapio` gives you the concurrency structure of [Apache Pekko](https://pekko.apache.org/)
 (itself the ASF fork of Akka) inside a single Python process:
 
-- **Actors** — isolated state, one mailbox, no locks
-- **Supervision** — restart with backoff, escalate, stop; failure policy as a
+- **Actors**: isolated state, one mailbox, no locks
+- **Supervision**: restart with backoff, escalate, stop; failure policy as a
   first-class thing rather than scattered `try`/`except`
-- **Death watch** — learn when a child dies, without polling
-- **Ask, timers, stash, routers** — the patterns you would otherwise hand-roll
+- **Death watch**: learn when a child dies, without polling
+- **Ask, timers, stash, routers**: the patterns you would otherwise hand-roll
 
 It is a **library, not infrastructure**. Pip-install it into the service you
 already have; there is no cluster to operate.
@@ -44,11 +46,11 @@ on its own.
 Good fits:
 
 - A session actor per user, holding conversation state and calling an LLM API
-- Saga orchestration — payment → inventory → shipping, compensating on failure
+- Saga orchestration: payment, then inventory, then shipping, compensating on failure
 - One actor per websocket, with behavior-switching as the protocol state machine
 - Rate limiting and circuit breaking, where the mailbox *is* the mutex
 
-Bad fits — use something else:
+Bad fits, use something else:
 
 - High-volume per-record stream processing → [Bytewax](https://bytewax.io/),
   [Quix Streams](https://quix.io/)
@@ -57,10 +59,56 @@ Bad fits — use something else:
 
 Actors are not microservices. A microservice is a unit of *deployment*; an
 actor is a unit of *concurrency*. You will have tens of thousands of actors
-inside one service — each is an `asyncio.Task`, so the ceiling is memory, not
-a cluster. `tapio` structures the inside of that service — it competes with
+inside one service, each an `asyncio.Task`, so the ceiling is memory rather
+than a cluster. `tapio` structures the inside of that service: it competes with
 `asyncio.Queue` + `TaskGroup` + a `dict` + hand-rolled retries, not with your
 API framework.
+
+## A first actor
+
+```python
+import asyncio
+
+from tapio import ActorSystem, Behavior, Behaviors, Message
+from tapio.actor import ActorContext, ActorRef
+
+
+class Greeted(Message):
+    whom: str
+
+
+class Greet(Message):
+    whom: str
+    reply_to: ActorRef[Greeted]
+
+
+async def on_greet(ctx: ActorContext[Greet], message: Greet) -> Behavior[Greet]:
+    ctx.log.info("hello, %s!", message.whom)
+    message.reply_to.tell(Greeted(whom=message.whom))
+    return Behaviors.same()
+
+
+async def on_greeted(message: Greeted) -> Behavior[Greeted]:
+    print(f"{message.whom} has been greeted")
+    return Behaviors.same()
+
+
+async def main() -> None:
+    async with ActorSystem("hello") as system:
+        listener = system.spawn(Behaviors.receive_message(on_greeted), name="listener")
+        greeter = system.spawn(Behaviors.receive(on_greet), name="greeter")
+        greeter.tell(Greet(whom="world", reply_to=listener))
+        await asyncio.sleep(0.1)
+
+
+asyncio.run(main())
+```
+
+Runnable versions of this and every other example live in `examples/`:
+
+```bash
+uv run python -m tapio_examples.hello_world
+```
 
 ## Design notes
 
@@ -71,16 +119,16 @@ overflow strategy (`fail`, `drop_new`, `drop_oldest`, `dead_letter`), and
 `await ref.offer(msg)` waits for capacity when you want to be throttled.
 
 **Every message is a validated Pydantic model.** Messages subclass
-`tapio.Message` — frozen, and re-validated on delivery rather than only at
+`tapio.Message`, which is frozen and re-validated on delivery rather than only at
 construction. That costs roughly 3–10× the per-message overhead and caps local
 throughput around 10⁴–10⁵ msg/s. In an actor that spends 50 ms on an HTTP call,
-validation is ~0.02% of the message's life — invisible. In a tight per-record
+validation is ~0.02% of the message's life, which is invisible. In a tight per-record
 loop it dominates, which is why that workload is out of scope above. The check
 sits behind a single `validate_on_tell` setting, and real benchmarks ship with
 0.1.0.
 
 **Undeliverable messages go to dead letters.** An `ActorRef` stays valid after
-its actor dies, so `tell` never raises for a dead target — the message is
+its actor dies, so `tell` never raises for a dead target: the message is
 published as a `DeadLetter` you can subscribe to and assert on. To *know* when
 something died, watch it (`ctx.watch`) rather than asking whether it is alive;
 a point-in-time liveness answer is stale the moment you have it.
@@ -103,7 +151,7 @@ make ci         # exactly what GitHub Actions runs
 
 Apache Pekko and Apache Kafka are trademarks of the Apache Software Foundation.
 This project is not affiliated with, endorsed by, or derived from the Apache
-Pekko codebase — it is an independent implementation inspired by its design,
+Pekko codebase. It is an independent implementation inspired by its design,
 and references to Pekko above are descriptive only.
 
 ## License
