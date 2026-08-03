@@ -1,4 +1,4 @@
-"""M0 exit criterion: the package imports and the toolchain is wired up."""
+"""The package imports and the toolchain is wired up."""
 
 import asyncio
 import sys
@@ -17,7 +17,7 @@ def test_examples_package_importable():
 
 
 def test_minimum_python_is_311():
-    # 3.11 is a hard floor: asyncio.timeout(), typing.Self, add_note (PLAN §2).
+    # 3.11 is a hard floor: asyncio.timeout(), typing.Self, add_note.
     assert sys.version_info >= (3, 11)
     assert hasattr(asyncio, "timeout")
 

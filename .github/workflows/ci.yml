@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   # The pipeline never re-spells the commands: it calls `make ci`, which is the
-  # same gate developers run locally (PLAN §4.1).
+  # same gate developers run locally.
   ci:
     runs-on: ubuntu-latest
     strategy:

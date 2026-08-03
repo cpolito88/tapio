@@ -1,6 +1,6 @@
 """Asserts every example's observable output.
 
-Empty of examples until M2 lands Tier 1. The module exists now so `make
+Empty until the first examples land. The module exists now so `make
 examples` is a real (passing) target rather than a pytest "no tests collected"
 error, and so the first example has a home to land in.
 """

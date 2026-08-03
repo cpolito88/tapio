@@ -17,7 +17,7 @@ Tiers 1–3 — teaching exactly one concept.
 
 ## Suggested reading order
 
-### Tier 1 — Fundamentals *(lands with M2)*
+### Tier 1 — Fundamentals
 
 | Example | Teaches |
 |---|---|
@@ -25,7 +25,7 @@ Tiers 1–3 — teaching exactly one concept.
 | `ping_pong` | bidirectional messaging, `Behaviors.same()` |
 | `counter` | mutable state in a class-based behavior; replying via a `reply_to` field |
 
-### Tier 2 — Lifecycle and failure *(M3–M4)*
+### Tier 2 — Lifecycle and failure
 
 | Example | Teaches |
 |---|---|
@@ -35,7 +35,7 @@ Tiers 1–3 — teaching exactly one concept.
 | `escalation` | `ChildFailed`, subtree restart, and escalation reaching the guardian |
 | `graceful_shutdown` | SIGINT, bottom-up drain, `PostStop` ordering |
 
-### Tier 3 — Patterns *(M5)*
+### Tier 3 — Patterns
 
 | Example | Teaches |
 |---|---|
@@ -45,7 +45,7 @@ Tiers 1–3 — teaching exactly one concept.
 | `rate_limiter` | token bucket in one actor — the mailbox as mutex |
 | `stash_on_startup` | stashing traffic during startup, then unstashing |
 
-### Tier 4 — Realistic composition *(M6)*
+### Tier 4 — Realistic composition
 
 | Example | Teaches |
 |---|---|
@@ -54,4 +54,4 @@ Tiers 1–3 — teaching exactly one concept.
 | `fastapi_app` | `ActorSystem` in a FastAPI lifespan; the deployment story |
 | `blocking_offload` | `ctx.run_blocking`, counted against the same code without it |
 
-*No examples have landed yet — the table above is the plan they fill in.*
+*No examples have landed yet — the tables above are what they will fill in.*

@@ -1,7 +1,7 @@
 """tapio — a Pekko-inspired actor toolkit for Python.
 
 Local, typed, asyncio-native actors with supervision; Pydantic models
-throughout. See PLAN.md for the design and milestone breakdown.
+throughout.
 """
 
 __all__ = ["__version__"]

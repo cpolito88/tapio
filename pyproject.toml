@@ -32,7 +32,7 @@ Repository = "https://github.com/cpolito88/tapio"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-# The wheel ships src/tapio only; examples/ is a dev-only package (§6 rule 1).
+# The wheel ships src/tapio only; examples/ is a dev-only package.
 [tool.hatch.build.targets.wheel]
 packages = ["src/tapio"]
 
@@ -51,7 +51,7 @@ dev = [
     "tapio-examples",
 ]
 
-# examples/ is importable and type-checked, never shipped (§6 rule 1).
+# examples/ is importable and type-checked, never shipped.
 [tool.uv.sources]
 tapio-examples = { workspace = true }
 
