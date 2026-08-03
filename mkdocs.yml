@@ -1,5 +1,6 @@
 site_name: tapio
 site_description: A Pekko-inspired actor toolkit for Python.
+site_url: https://cpolito88.github.io/tapio/
 repo_url: https://github.com/cpolito88/tapio
 repo_name: cpolito88/tapio
 

@@ -19,6 +19,11 @@ make ci         # exactly what GitHub Actions runs
 Never invoke `python` or `pytest` directly: everything goes through `uv run`,
 so there is no ambiguity about which interpreter ran.
 
+CI calls `make ci` and nothing else, then publishes the built site to GitHub
+Pages from `main`. That publish step waits on the repository variable
+`PUBLISH_DOCS` being `"true"`, since Pages has to be enabled on the repository
+first.
+
 ## Layout
 
 | Path | What lives there |

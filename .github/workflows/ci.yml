@@ -31,3 +31,44 @@ jobs:
 
       - name: make ci
         run: make ci
+
+  # Publishing is a step of the same pipeline, not a workflow of its own: the
+  # site only goes out if the gate above passed, on main, and it is built by
+  # the same `make docs-build` that runs locally.
+  #
+  # Dormant until the repository variable PUBLISH_DOCS is set to "true", which
+  # is the switch to flip once Pages is enabled for this repository. Pages on a
+  # private repository needs a paid plan, so a job that always ran would fail
+  # every push to main until then.
+  docs:
+    needs: ci
+    if: >-
+      github.ref == 'refs/heads/main'
+      && github.event_name == 'push'
+      && vars.PUBLISH_DOCS == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: make docs-build
+        run: make docs-build
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
