@@ -1,0 +1,123 @@
+[project]
+name = "tapio"
+version = "0.0.0"
+description = "A Pekko-inspired actor toolkit for Python: typed, asyncio-native actors with supervision."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [{ name = "Carmelo Polito", email = "polito.carmelo.88@gmail.com" }]
+keywords = ["actor", "actors", "asyncio", "supervision", "concurrency", "pydantic"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Typing :: Typed",
+]
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-settings>=2.2",
+    "typing-extensions>=4.10",
+]
+
+[project.urls]
+Homepage = "https://github.com/cpolito88/tapio"
+Repository = "https://github.com/cpolito88/tapio"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# The wheel ships src/tapio only; examples/ is a dev-only package (§6 rule 1).
+[tool.hatch.build.targets.wheel]
+packages = ["src/tapio"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "pytest-benchmark>=4.0",
+    "hypothesis>=6.100",
+    "mypy>=1.10",
+    "ruff>=0.5",
+    "pre-commit>=3.7",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.25",
+    "tapio-examples",
+]
+
+# examples/ is importable and type-checked, never shipped (§6 rule 1).
+[tool.uv.sources]
+tapio-examples = { workspace = true }
+
+[tool.uv.workspace]
+members = ["examples"]
+
+[tool.uv]
+default-groups = ["dev"]
+
+# --- ruff ---------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+src = ["src", "tests", "examples"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # isort
+    "N",         # pep8-naming
+    "UP",        # pyupgrade
+    "B",         # bugbear
+    "A",         # builtins shadowing
+    "C4",        # comprehensions
+    "SIM",       # simplify
+    "TID",       # tidy imports
+    "RUF",       # ruff-specific
+    "ASYNC",     # asyncio pitfalls
+    "PT",        # pytest style
+    "D",         # pydocstyle
+    "ANN",       # annotations
+]
+ignore = [
+    "D203",   # conflicts with D211
+    "D213",   # conflicts with D212
+    "ANN401", # Any is occasionally the honest annotation
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D100", "D101", "D102", "D103", "D104", "ANN001", "ANN201"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+# --- mypy ---------------------------------------------------------------------
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+enable_error_code = ["redundant-expr", "truthy-bool", "ignore-without-code"]
+
+# --- pytest -------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config --benchmark-skip"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = ["error"]
+
+# --- coverage -----------------------------------------------------------------
+
+[tool.coverage.run]
+source = ["src/tapio"]
+branch = true

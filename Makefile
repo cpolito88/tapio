@@ -9,9 +9,10 @@
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
-UV  := uv
-SRC := src/tapio
-PKG := tapio
+UV   := uv
+SRC  := src/tapio
+PKG  := tapio
+EXPL := examples/tapio_examples
 
 .PHONY: help
 help: ## Show this help
@@ -46,7 +47,7 @@ lint: ## Check formatting and lint rules (no writes)
 
 .PHONY: type
 type: ## Type-check under mypy strict
-	$(UV) run mypy --strict $(SRC) examples
+	$(UV) run mypy --strict $(SRC) $(EXPL)
 
 .PHONY: check
 check: lint type test ## Pre-push gate: lint + types + tests
