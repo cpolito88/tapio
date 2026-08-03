@@ -12,12 +12,12 @@ uv run python -m tapio_examples.<name>
 
 Every example obeys the same rules: runnable standalone, deterministic (no
 network, no wall-clock sleeps in assertions), under 2 seconds, self-describing
-in its module docstring, asserted by a test in `tests/examples/`, and — for
-Tiers 1–3 — teaching exactly one concept.
+in its module docstring, asserted by a test in `tests/examples/`, and, for
+Tiers 1-3, teaching exactly one concept.
 
 ## Suggested reading order
 
-### Tier 1 — Fundamentals
+### Tier 1: Fundamentals
 
 | Example | Teaches |
 |---|---|
@@ -25,7 +25,7 @@ Tiers 1–3 — teaching exactly one concept.
 | `ping_pong` | bidirectional messaging, `Behaviors.same()` |
 | `counter` | mutable state in a class-based behavior; replying via a `reply_to` field |
 
-### Tier 2 — Lifecycle and failure
+### Tier 2: Lifecycle and failure
 
 | Example | Teaches |
 |---|---|
@@ -35,17 +35,17 @@ Tiers 1–3 — teaching exactly one concept.
 | `escalation` | `ChildFailed`, subtree restart, and escalation reaching the guardian |
 | `graceful_shutdown` | SIGINT, bottom-up drain, `PostStop` ordering |
 
-### Tier 3 — Patterns
+### Tier 3: Patterns
 
 | Example | Teaches |
 |---|---|
 | `ask_timeout` | `ask` as sugar over `reply_to`; `AskTimeoutError`, no leaks |
 | `worker_pool` | round-robin router, bounded mailboxes, backpressure |
 | `state_machine` | behavior-switching as a protocol FSM |
-| `rate_limiter` | token bucket in one actor — the mailbox as mutex |
+| `rate_limiter` | token bucket in one actor, the mailbox as mutex |
 | `stash_on_startup` | stashing traffic during startup, then unstashing |
 
-### Tier 4 — Realistic composition
+### Tier 4: Realistic composition
 
 | Example | Teaches |
 |---|---|
@@ -54,4 +54,4 @@ Tiers 1–3 — teaching exactly one concept.
 | `fastapi_app` | `ActorSystem` in a FastAPI lifespan; the deployment story |
 | `blocking_offload` | `ctx.run_blocking`, counted against the same code without it |
 
-*No examples have landed yet — the tables above are what they will fill in.*
+*No examples have landed yet: the tables above are what they will fill in.*

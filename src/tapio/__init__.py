@@ -1,9 +1,36 @@
-"""tapio — a Pekko-inspired actor toolkit for Python.
+"""tapio: a Pekko-inspired actor toolkit for Python.
 
-Local, typed, asyncio-native actors with supervision; Pydantic models
+Local, typed, asyncio-native actors with supervision, and Pydantic models
 throughout.
 """
 
-__all__ = ["__version__"]
+from tapio.errors import (
+    ActorRefDeserializationError,
+    ActorSystemTerminating,
+    AskTargetTerminated,
+    AskTimeoutError,
+    AskTypeError,
+    BehaviorTypeError,
+    MailboxFullError,
+    MessageTypeError,
+    TapioError,
+)
+from tapio.message import Message
+from tapio.settings import TapioSettings
+
+__all__ = [
+    "ActorRefDeserializationError",
+    "ActorSystemTerminating",
+    "AskTargetTerminated",
+    "AskTimeoutError",
+    "AskTypeError",
+    "BehaviorTypeError",
+    "MailboxFullError",
+    "Message",
+    "MessageTypeError",
+    "TapioError",
+    "TapioSettings",
+    "__version__",
+]
 
 __version__ = "0.0.0"
