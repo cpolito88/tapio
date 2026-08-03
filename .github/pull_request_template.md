@@ -13,7 +13,7 @@ reviewer should look at hardest. Delete any section that does not apply.
 Anything a reviewer would otherwise have to reverse-engineer: a tradeoff you
 made, an alternative you rejected and the reason, a semantic that is
 observable and therefore load-bearing. If a decision here contradicts the
-design doc, say so explicitly — that is a decision, not an oversight.
+design doc, say so explicitly. That is a decision, not an oversight.
 -->
 
 ## Verification
@@ -31,7 +31,7 @@ if this regressed.
 
 <!--
 Breaking changes, new failure modes, anything that only shows up under
-concurrency or shutdown. "None" is a fine answer — say it rather than
+concurrency or shutdown. "None" is a fine answer, so say it rather than
 leaving this blank.
 -->
 
