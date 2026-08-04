@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Generic, TypeVar, cast
 
+from tapio.actor.adapter import AdaptedMessage, AdapterRef
 from tapio.actor.ask import ask as run_ask
 from tapio.actor.behavior import (
     Behavior,
@@ -33,6 +34,7 @@ from tapio.actor.behavior import (
     WithStashBehavior,
     WithTimersBehavior,
     directive_of,
+    resolve_handler_msg_type,
 )
 from tapio.actor.context import ActorContext
 from tapio.actor.dead_letters import DeadLetterOffice, DeadLetterReason
@@ -55,7 +57,7 @@ from tapio.errors import (
 from tapio.logging import ActorLogAdapter, actor_logger, runtime_logger
 from tapio.message import Message
 from tapio.settings import TapioSettings
-from tapio.validation import MessageValidator, resolve_validator
+from tapio.validation import MessageType, MessageValidator, resolve_validator
 
 __all__ = ["ActorCell", "ActorRuntime", "LocalActorRef"]
 
@@ -312,6 +314,7 @@ class ActorCell(Generic[T]):
         )
         self._children: dict[str, ActorCell[Any]] = {}
         self._anonymous = itertools.count(1)
+        self._adapters = itertools.count(1)
         # Both sides of every watch, so that neither a watcher nor a watched
         # actor leaves an entry behind in the other when it stops. The watchers
         # are not all cells: an ask's promise watches its target too.
@@ -330,9 +333,10 @@ class ActorCell(Generic[T]):
         self._alive = True
         self._terminating = False
         self._current: Message | None = None
-        # Replaced in `start` once the behavior has declared its message type.
-        # A cell that stops during setup never gets one, and there is no honest
-        # type check to make without it.
+        # Both are replaced in `start` once the behavior has declared its
+        # message type. A cell that stops during setup never gets one, and
+        # there is no honest type check to make without it.
+        self._msg_type: MessageType | None = None
         self._validate: MessageValidator = _accept_anything
 
     @property
@@ -375,6 +379,17 @@ class ActorCell(Generic[T]):
         return self._timers
 
     @property
+    def msg_type(self) -> MessageType | None:
+        """What this actor accepts, fixed when it started.
+
+        `None` only for a cell that stopped during deferred construction and so
+        never declared one. Read by anything that has to accept exactly what
+        another actor does: a router's pool takes its own message type from the
+        routees it just spawned rather than being told it twice.
+        """
+        return self._msg_type
+
+    @property
     def is_alive(self) -> bool:
         """Whether this actor is still accepting messages.
 
@@ -409,6 +424,7 @@ class ActorCell(Generic[T]):
             )
             raise BehaviorTypeError(msg)
 
+        self._msg_type = msg_type
         self._validate = resolve_validator(
             msg_type=msg_type,
             settings=self._runtime.settings,
@@ -502,6 +518,31 @@ class ActorCell(Generic[T]):
             )
             raise ActorSystemTerminating(msg)
         return self._spawn_child(behavior, f"${next(self._anonymous)}", mailbox)
+
+    def message_adapter(
+        self, adapt: Callable[[U], T], msg_type: MessageType | None = None
+    ) -> ActorRef[U]:
+        """Hand out a ref that translates another protocol into this one.
+
+        Each call makes a new adapter with its own address, and refs already
+        handed out keep working: an adapter is bound to the actor rather than
+        to the incarnation that created it, so a restart does not turn replies
+        somebody is still holding a ref for into dead letters.
+        """
+        resolved = resolve_handler_msg_type(
+            adapt, explicit=msg_type, message_param_index=0
+        )
+        path = self._path.child(
+            f"$adapter-{next(self._adapters)}", uid=self._runtime.next_uid()
+        )
+        return AdapterRef(
+            cell=self,
+            path=path,
+            adapt=cast("Callable[[Any], Message]", adapt),
+            validate=resolve_validator(
+                msg_type=resolved, settings=self._runtime.settings, target=path
+            ),
+        )
 
     def watch(self, ref: ActorRef[Any]) -> None:
         """Ask to be told when another actor stops.
@@ -681,6 +722,16 @@ class ActorCell(Generic[T]):
 
     async def _on_message(self, message: Message) -> None:
         """Run one user message through the current behavior."""
+        if isinstance(message, AdaptedMessage):
+            try:
+                message = self._translate(message)
+            except Exception as error:
+                # The translation is this actor's own code, which is the whole
+                # reason it runs here rather than at the send site: a mistake
+                # in it is this actor's failure, not the sender's.
+                await self._on_failure(error)
+                return
+
         behavior = self._behavior
         if directive_of(behavior) is Directive.IGNORE:
             return
@@ -699,6 +750,23 @@ class ActorCell(Generic[T]):
         finally:
             self._current = None
         await self._become(nxt, message)
+
+    def _translate(self, envelope: AdaptedMessage) -> Message:
+        """Turn a message that arrived through an adapter into one of this actor's.
+
+        The result is validated like anything else delivered here. It has to
+        be: an adapter is the one path onto this lane that did not go through
+        the declared type on the way in, and a translation that produces the
+        wrong message is a bug worth hearing about rather than a message the
+        handler has to be defensive about.
+        """
+        self._current = envelope.payload
+        try:
+            translated = envelope.translate()
+            self._validate(translated)
+        finally:
+            self._current = None
+        return translated
 
     async def _deliver_signal(self, signal: Signal) -> Behavior[T] | None:
         """Hand a signal to the behavior, or `None` if it has no handler."""
@@ -1070,7 +1138,14 @@ class ActorCell(Generic[T]):
             self._dead_letter(message, DeadLetterReason.STASH_DISCARDED)
 
     def _dead_letter(self, message: Message, reason: str) -> None:
-        """Account for a message that had nowhere to go."""
+        """Account for a message that had nowhere to go.
+
+        A message that came through an adapter is reported as what its sender
+        sent. The wrapper is a detail of how it travelled, and a subscriber
+        matching on message types should not have to know about one.
+        """
+        if isinstance(message, AdaptedMessage):
+            message = message.payload
         self._runtime.dead_letters.publish(message, self._path, reason)
 
     def _still_alive(self) -> bool:
@@ -1092,7 +1167,7 @@ class ActorCell(Generic[T]):
         """Send everything left on the user lane to dead letters."""
         reason = self._unreachable_reason()
         while (pending := self._mailbox.take_pending()) is not None:
-            self._runtime.dead_letters.publish(pending, self._path, reason)
+            self._dead_letter(pending, reason)
 
     def __repr__(self) -> str:
         """Render the path and the current behavior."""
@@ -1152,6 +1227,12 @@ class _CellContext(ActorContext[T]):
     ) -> ActorRef[U]:
         """Start a child under a generated name."""
         return self._cell.spawn_anonymous(behavior, mailbox)
+
+    def message_adapter(
+        self, adapt: Callable[[U], T], msg_type: MessageType | None = None
+    ) -> ActorRef[U]:
+        """Hand out a ref that translates another protocol into this actor's."""
+        return self._cell.message_adapter(adapt, msg_type)
 
     def watch(self, ref: ActorRef[Any]) -> None:
         """Ask to be sent `Terminated` when another actor stops."""

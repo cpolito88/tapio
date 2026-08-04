@@ -10,6 +10,7 @@ from tapio.actor.dead_letters import DeadLetter, DeadLetterReason
 from tapio.actor.mailbox import MailboxConfig, OverflowStrategy
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
+from tapio.actor.router import RoundRobin, Routers, RoutingStrategy
 from tapio.actor.signals import ChildFailed, PostStop, PreRestart, Signal, Terminated
 from tapio.actor.stash import StashBuffer
 from tapio.actor.supervision import Backoff, Decision, SupervisorStrategy
@@ -59,6 +60,9 @@ __all__ = [
     "OverflowStrategy",
     "PostStop",
     "PreRestart",
+    "RoundRobin",
+    "Routers",
+    "RoutingStrategy",
     "Signal",
     "StashBuffer",
     "StashOverflowError",

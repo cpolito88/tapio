@@ -1,6 +1,7 @@
 """`ActorContext`: what an actor is handed to act on its surroundings."""
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from tapio.actor.mailbox import MailboxConfig
@@ -8,6 +9,7 @@ from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
 from tapio.logging import ActorLogAdapter
 from tapio.message import Message
+from tapio.validation import MessageType
 
 if TYPE_CHECKING:  # behavior.py imports this module, so importing it back at
     from tapio.actor.behavior import Behavior  # runtime would be a cycle
@@ -95,6 +97,54 @@ class ActorContext(ABC, Generic[T]):
 
         Returns:
             A ref to the new child.
+        """
+
+    @abstractmethod
+    def message_adapter(
+        self, adapt: Callable[[U], T], msg_type: MessageType | None = None
+    ) -> ActorRef[U]:
+        """Hand out a ref that translates another protocol into this actor's.
+
+        For talking to an actor whose reply type is not yours and should not
+        become yours. Widening a declared message type to admit a foreign reply
+        lets anyone send it and puts someone else's vocabulary inside your
+        handlers; an adapter keeps both out:
+
+        ```python
+        replies = ctx.message_adapter(
+            lambda price: PriceQuoted(cents=price.cents), msg_type=Price
+        )
+        pricing.tell(Quote(reply_to=replies))
+        ```
+
+        A translated message arrives on this actor's own user lane, so it is
+        ordinary traffic: it queues where it arrived, it never re-enters a
+        running handler, and it is validated against the declared type like
+        anything else.
+
+        The translation runs in this actor rather than in the sender, so a
+        failure in it is this actor's supervision decision. That is the whole
+        point of the design: a sender that has never heard of the adapter must
+        not have the owner's bug raised into it.
+
+        Each call makes a new adapter, and one already handed out keeps working
+        across a restart: the ref addresses the actor, not the incarnation that
+        created it.
+
+        Args:
+            adapt: Turns an accepted message into one of this actor's own. Its
+                parameter annotation says what it accepts.
+            msg_type: What the adapter accepts, when the annotation cannot say.
+                Required for a lambda, which carries none.
+
+        Returns:
+            A ref to hand out in place of this actor's own.
+
+        Raises:
+            BehaviorTypeError: If neither `msg_type` nor an annotation resolves
+                what the adapter accepts.
+            MessageTypeError: If what it resolves to is not a `Message`
+                subclass or a union of them.
         """
 
     @abstractmethod

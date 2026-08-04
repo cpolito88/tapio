@@ -5,7 +5,7 @@ Anything that needs a live tree uses the `system` fixture instead, which
 terminates whatever the test left running.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 import pytest
@@ -21,6 +21,7 @@ from tapio.actor import (
 )
 from tapio.logging import ActorLogAdapter, actor_logger
 from tapio.settings import TapioSettings
+from tapio.validation import MessageType
 from tests.messages import Greeted
 
 
@@ -53,6 +54,13 @@ class FakeContext(ActorContext[Message]):
 
     def spawn_anonymous(
         self, behavior: Behavior[Message], mailbox: MailboxConfig | None = None
+    ) -> ActorRef[Message]:
+        raise NotImplementedError
+
+    def message_adapter(
+        self,
+        adapt: Callable[[Message], Message],
+        msg_type: MessageType | None = None,
     ) -> ActorRef[Message]:
         raise NotImplementedError
 

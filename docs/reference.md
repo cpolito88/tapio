@@ -38,6 +38,18 @@ Generated from the source, so it cannot drift from what is installed.
 
 ::: tapio.actor.stash.StashBuffer
 
+## Message adapters
+
+::: tapio.actor.adapter.AdapterRef
+
+## Routers
+
+::: tapio.actor.router.Routers
+
+::: tapio.actor.router.RoutingStrategy
+
+::: tapio.actor.router.RoundRobin
+
 ## Messages and validation
 
 ::: tapio.message.Message

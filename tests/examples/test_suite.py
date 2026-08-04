@@ -20,7 +20,9 @@ from tapio_examples import (
     ping_pong,
     rate_limiter,
     stash_on_startup,
+    state_machine,
     supervision_backoff,
+    worker_pool,
 )
 
 ASSERTED = {
@@ -34,7 +36,9 @@ ASSERTED = {
     "ping_pong",
     "rate_limiter",
     "stash_on_startup",
+    "state_machine",
     "supervision_backoff",
+    "worker_pool",
 }
 
 
@@ -206,6 +210,47 @@ async def test_rate_limiter():
         "req-4: throttled",
         "req-5: throttled",
         "req-6: allowed",
+    ]
+
+
+async def test_worker_pool():
+    with assert_no_leaked_tasks():
+        lines = await worker_pool.main()
+
+    # Six jobs over three workers in strict rotation, never twice in a row on
+    # the same one. Then the first worker goes, and the rotation carries on
+    # across the two that are left rather than starting again.
+    assert lines == [
+        "routee-1: job 1",
+        "routee-2: job 2",
+        "routee-3: job 3",
+        "routee-1: job 4",
+        "routee-2: job 5",
+        "routee-3: job 6",
+        "routee-1: stopped, and left the pool",
+        "routee-3: job 7",
+        "routee-2: job 8",
+        "routee-3: job 9",
+        "routee-2: job 10",
+    ]
+
+
+async def test_state_machine():
+    with assert_no_leaked_tasks():
+        lines = await state_machine.main()
+
+    # The same Send is refused twice and then goes through: the state is the
+    # behavior, so what is legal is whatever the current one mentions. The
+    # token reaches the connection translated, in its own vocabulary.
+    assert lines == [
+        "conn: refused Send, not open",
+        "conn: connecting, asking for a token",
+        "conn: refused Send, still connecting",
+        "conn: authenticated with t-42",
+        "conn: sent 'hello' with t-42",
+        "conn: closing, draining what is queued",
+        "conn: dropped Send, closing",
+        "conn: closed",
     ]
 
 
