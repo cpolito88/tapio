@@ -22,6 +22,7 @@ __all__ = [
     "MailboxFullError",
     "MessageTypeError",
     "TapioError",
+    "WatchError",
 ]
 
 
@@ -62,6 +63,15 @@ class ActorRefDeserializationError(TapioError):
     A path cannot be resolved back to a live local ref without a registry, so
     a model containing an `ActorRef` does not round-trip: `model_dump()`
     succeeds and feeding its output back to `model_validate()` raises this.
+    """
+
+
+class WatchError(TapioError):
+    """A ref could not be watched.
+
+    Raised for a ref with no live cell behind it, and for an actor watching
+    itself, which would promise a signal that cannot be delivered: by the time
+    the actor has stopped there is nobody left to read its own mailbox.
     """
 
 

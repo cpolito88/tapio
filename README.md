@@ -4,8 +4,9 @@ A Pekko-inspired actor toolkit for Python. Typed, asyncio-native actors with
 supervision, and Pydantic models throughout.
 
 > **Status: pre-alpha.** The runtime core runs: actor systems, spawning,
-> typed `tell`, and a deadline-based shutdown. Supervision, dead letters,
-> bounded mailboxes, `ask`, timers and routers are still to come.
+> typed `tell`, bounded mailboxes, dead letters, a deadline-based shutdown,
+> supervision with backoff, and death watch. `ask`, timers, stash and routers
+> are still to come.
 
 Named for the Finnish god of the forest, because supervision hierarchies are
 trees. It keeps the mythological lineage of Akka (Sámi) and Apache Pekko
@@ -115,7 +116,8 @@ uv run python -m tapio_examples.hello_world
 **Sending never blocks.** `ref.tell(msg)` is synchronous and fire-and-forget,
 so it works from sync callbacks and signal handlers too. Backpressure is a
 property of the mailbox rather than the send call: bounded mailboxes take an
-overflow strategy (`fail`, `drop_new`, `drop_oldest`, `dead_letter`), and
+overflow strategy (`fail`, `drop_new`, `drop_oldest`, all three of which
+publish what they shed as a dead letter), and
 `await ref.offer(msg)` waits for capacity when you want to be throttled.
 
 **Every message is a validated Pydantic model.** Messages subclass

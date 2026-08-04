@@ -9,6 +9,11 @@ Every behavior that handles messages carries its message type as *data*, in
 compiled actor library gets for free: `Behavior[T]`'s parameter does not
 survive to runtime, so the delivery-time type check has to be re-derived from
 something that does.
+
+Lifecycle signals arrive through a second, optional handler. Most behaviors
+never declare one, which is why it is a keyword argument rather than a second
+required function: an actor that does not care when a watched peer stops
+should not have to say so.
 """
 
 import enum
@@ -19,6 +24,8 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Generic, TypeVar
 
 from tapio.actor.context import ActorContext
+from tapio.actor.signals import Signal
+from tapio.actor.supervision import SupervisorStrategy
 from tapio.errors import BehaviorTypeError
 from tapio.message import Message
 from tapio.validation import MessageType, normalize_msg_type
@@ -30,11 +37,19 @@ __all__ = [
     "Directive",
     "ReceivingBehavior",
     "SetupBehavior",
+    "SignalHandler",
+    "Supervise",
+    "SuperviseBehavior",
     "directive_of",
     "resolve_handler_msg_type",
 ]
 
 T = TypeVar("T", bound=Message)
+
+SignalHandler: typing.TypeAlias = Callable[
+    [ActorContext[T], Signal], Awaitable["Behavior[T]"]
+]
+"""What a behavior runs when a lifecycle signal arrives."""
 
 
 class Behavior(ABC, Generic[T]):
@@ -105,11 +120,28 @@ def directive_of(behavior: Behavior[Any]) -> Directive | None:
 
 
 class ReceivingBehavior(Behavior[T], ABC):
-    """A behavior that handles messages."""
+    """A behavior that handles messages, and possibly signals."""
 
     @abstractmethod
     async def receive(self, ctx: ActorContext[T], message: T) -> Behavior[T]:
         """Handle one message and return what the actor does next."""
+
+    async def receive_signal(self, ctx: ActorContext[T], signal: Signal) -> Behavior[T]:
+        """Handle one lifecycle signal and return what the actor does next.
+
+        The default reports the signal as unhandled, which is not a failure: a
+        behavior that never watches anything has nothing to say about a
+        `Terminated`, and `PostStop` matters only to an actor holding a
+        resource.
+
+        Args:
+            ctx: This actor's context.
+            signal: The signal that arrived.
+
+        Returns:
+            What the actor does next.
+        """
+        return typing.cast(Behavior[T], _UNHANDLED)
 
 
 class _ReceiveBehavior(ReceivingBehavior[T]):
@@ -119,14 +151,22 @@ class _ReceiveBehavior(ReceivingBehavior[T]):
         self,
         on_message: Callable[[ActorContext[T], T], Awaitable[Behavior[T]]],
         msg_type: MessageType,
+        on_signal: SignalHandler[T] | None = None,
     ) -> None:
-        """Bind the handler and the message type it declares."""
+        """Bind the handlers and the message type they declare."""
         self._on_message = on_message
+        self._on_signal = on_signal
         self.msg_type = msg_type
 
     async def receive(self, ctx: ActorContext[T], message: T) -> Behavior[T]:
         """Delegate to the wrapped handler."""
         return await self._on_message(ctx, message)
+
+    async def receive_signal(self, ctx: ActorContext[T], signal: Signal) -> Behavior[T]:
+        """Delegate to the signal handler, if this behavior declared one."""
+        if self._on_signal is None:
+            return typing.cast(Behavior[T], _UNHANDLED)
+        return await self._on_signal(ctx, signal)
 
     def __repr__(self) -> str:
         """Name the wrapped handler, which is what identifies this behavior."""
@@ -140,18 +180,103 @@ class _ReceiveMessageBehavior(ReceivingBehavior[T]):
         self,
         on_message: Callable[[T], Awaitable[Behavior[T]]],
         msg_type: MessageType,
+        on_signal: SignalHandler[T] | None = None,
     ) -> None:
-        """Bind the handler and the message type it declares."""
+        """Bind the handlers and the message type they declare."""
         self._on_message = on_message
+        self._on_signal = on_signal
         self.msg_type = msg_type
 
     async def receive(self, ctx: ActorContext[T], message: T) -> Behavior[T]:
         """Delegate to the wrapped handler, dropping the context."""
         return await self._on_message(message)
 
+    async def receive_signal(self, ctx: ActorContext[T], signal: Signal) -> Behavior[T]:
+        """Delegate to the signal handler, if this behavior declared one.
+
+        The signal handler takes the context even here, where the message
+        handler does not: an actor reacting to a `Terminated` almost always
+        wants to spawn a replacement or log against its own path.
+        """
+        if self._on_signal is None:
+            return typing.cast(Behavior[T], _UNHANDLED)
+        return await self._on_signal(ctx, signal)
+
     def __repr__(self) -> str:
         """Name the wrapped handler, which is what identifies this behavior."""
         return f"Behaviors.receive_message({_name_of(self._on_message)})"
+
+
+class SuperviseBehavior(Behavior[T]):
+    """A behavior wrapped in one supervision strategy.
+
+    Produced by [Behaviors.supervise][tapio.actor.behavior.Behaviors.supervise]
+    and unwrapped by the cell when the actor starts, so it never reaches a
+    message handler. Wrappers nest, and the outermost is consulted first.
+    """
+
+    def __init__(
+        self,
+        behavior: Behavior[T],
+        strategy: SupervisorStrategy,
+        on: type[Exception] | tuple[type[Exception], ...],
+    ) -> None:
+        """Bind a behavior to the strategy that governs its failures."""
+        self._behavior = behavior
+        self.strategy = strategy
+        self.on = on
+        # Whatever the wrapped behavior declares, including None when it is a
+        # `setup` whose type is only known once it has run.
+        self.msg_type = behavior.msg_type
+
+    @property
+    def behavior(self) -> Behavior[T]:
+        """The behavior this strategy governs."""
+        return self._behavior
+
+    def __repr__(self) -> str:
+        """Render as the pair of calls that produces it."""
+        return (
+            f"Behaviors.supervise({self._behavior!r})"
+            f".on_failure({self.strategy!r}, on={_name_of_type(self.on)})"
+        )
+
+
+class Supervise(Generic[T]):
+    """The half-built result of `Behaviors.supervise`, awaiting a strategy.
+
+    Two calls rather than one because the failures being governed and the
+    decision taken about them are separate choices, and reading them apart is
+    what makes a nested supervision stack legible.
+    """
+
+    __slots__ = ("_behavior",)
+
+    def __init__(self, behavior: Behavior[T]) -> None:
+        """Bind the behavior whose failures are about to be governed."""
+        self._behavior = behavior
+
+    def on_failure(
+        self,
+        strategy: SupervisorStrategy,
+        *,
+        on: type[Exception] | tuple[type[Exception], ...] = Exception,
+    ) -> Behavior[T]:
+        """Apply a strategy to the failures this actor raises.
+
+        Args:
+            strategy: What to do when a matching failure happens.
+            on: Which exceptions it governs. Anything else falls through to the
+                next wrapper out, and to `stop` if none matches.
+
+        Returns:
+            The supervised behavior, to spawn or to wrap again.
+        """
+        return SuperviseBehavior(self._behavior, strategy, on)
+
+    def __repr__(self) -> str:
+        """Render the behavior still waiting for its strategy."""
+        return f"Behaviors.supervise({self._behavior!r})"
 
 
 class SetupBehavior(Behavior[T]):
@@ -210,9 +335,28 @@ class AbstractBehavior(ReceivingBehavior[T], ABC):
     async def on_message(self, message: T) -> Behavior[T]:
         """Handle one message and return what the actor does next."""
 
+    async def on_signal(self, signal: Signal) -> Behavior[T]:
+        """Handle one lifecycle signal, if this actor cares about any.
+
+        Override to react to `PostStop`, `PreRestart` or a `Terminated` from a
+        watched actor. The default reports the signal as unhandled, which is
+        not a failure.
+
+        Args:
+            signal: The signal that arrived.
+
+        Returns:
+            What the actor does next.
+        """
+        return typing.cast(Behavior[T], _UNHANDLED)
+
     async def receive(self, ctx: ActorContext[T], message: T) -> Behavior[T]:
         """Delegate to `on_message`, since the context is already held."""
         return await self.on_message(message)
+
+    async def receive_signal(self, ctx: ActorContext[T], signal: Signal) -> Behavior[T]:
+        """Delegate to `on_signal`, since the context is already held."""
+        return await self.on_signal(signal)
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Resolve and freeze the subclass's message type."""
@@ -336,6 +480,13 @@ def _name_of(obj: object) -> str:
     return getattr(obj, "__qualname__", None) or repr(obj)
 
 
+def _name_of_type(on: type[Exception] | tuple[type[Exception], ...]) -> str:
+    """Render one exception type, or a tuple of them, as it was written."""
+    if isinstance(on, tuple):
+        return f"({', '.join(exc.__name__ for exc in on)})"
+    return on.__name__
+
+
 class Behaviors:
     """Factories for the functional style.
 
@@ -348,6 +499,8 @@ class Behaviors:
     def receive(
         on_message: Callable[[ActorContext[T], T], Awaitable[Behavior[T]]],
         msg_type: MessageType | None = None,
+        *,
+        on_signal: SignalHandler[T] | None = None,
     ) -> Behavior[T]:
         """Handle messages with a `(ctx, message)` function.
 
@@ -355,6 +508,8 @@ class Behaviors:
             on_message: The handler.
             msg_type: What this behavior receives. Read from the handler's
                 annotation when omitted.
+            on_signal: Called with `(ctx, signal)` for lifecycle signals.
+                Without one, signals are reported as unhandled.
 
         Returns:
             The behavior.
@@ -362,12 +517,14 @@ class Behaviors:
         resolved = resolve_handler_msg_type(
             on_message, explicit=msg_type, message_param_index=1
         )
-        return _ReceiveBehavior(on_message, resolved)
+        return _ReceiveBehavior(on_message, resolved, on_signal)
 
     @staticmethod
     def receive_message(
         on_message: Callable[[T], Awaitable[Behavior[T]]],
         msg_type: MessageType | None = None,
+        *,
+        on_signal: SignalHandler[T] | None = None,
     ) -> Behavior[T]:
         """Handle messages with a `(message)` function, ignoring the context.
 
@@ -375,6 +532,8 @@ class Behaviors:
             on_message: The handler.
             msg_type: What this behavior receives. Read from the handler's
                 annotation when omitted.
+            on_signal: Called with `(ctx, signal)` for lifecycle signals.
+                Without one, signals are reported as unhandled.
 
         Returns:
             The behavior.
@@ -382,7 +541,35 @@ class Behaviors:
         resolved = resolve_handler_msg_type(
             on_message, explicit=msg_type, message_param_index=0
         )
-        return _ReceiveMessageBehavior(on_message, resolved)
+        return _ReceiveMessageBehavior(on_message, resolved, on_signal)
+
+    @staticmethod
+    def supervise(behavior: Behavior[T]) -> Supervise[T]:
+        """Govern a behavior's failures with a strategy.
+
+        ```python
+        Behaviors.supervise(worker()).on_failure(
+            SupervisorStrategy.restart(max_restarts=3, window=timedelta(seconds=1)),
+            on=ConnectionError,
+        )
+        ```
+
+        Wrappers nest, and the outermost is consulted first, so a specific
+        exception governed by an inner wrapper must be wrapped again outside it
+        to win. A failure matching nothing stops the actor, which is what an
+        unsupervised actor already does.
+
+        Supervision belongs to the actor rather than to the behavior it
+        currently holds: switching behavior keeps the strategies, and a restart
+        reinstates the ones the actor was spawned with.
+
+        Args:
+            behavior: What the actor does.
+
+        Returns:
+            A builder whose `on_failure` produces the supervised behavior.
+        """
+        return Supervise(behavior)
 
     @staticmethod
     def setup(factory: Callable[[ActorContext[T]], Behavior[T]]) -> Behavior[T]:

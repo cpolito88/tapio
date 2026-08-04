@@ -89,10 +89,12 @@ class ActorSystem:
             settings=self._settings,
             dispatcher=dispatcher,
             dead_letters=self._dead_letters,
+            guardian_failure=self._on_guardian_failure,
         )
         self._log: ActorLogAdapter = actor_logger(self._root)
         self._terminating = False
         self._terminated: asyncio.Event = asyncio.Event()
+        self._failure: BaseException | None = None
 
         self._user: ActorCell[_GuardianMessage] = self._guardian_cell("user")
         self._system: ActorCell[_GuardianMessage] = self._guardian_cell("system")
@@ -190,6 +192,26 @@ class ActorSystem:
             )
             raise ActorSystemTerminating(msg)
 
+    def _on_guardian_failure(self, path: ActorPath, error: BaseException) -> None:
+        """Bring the system down, because a failure escalated past a guardian.
+
+        Keeping the cause and terminating are two halves of one answer: a
+        system with a silently missing subtree is worse than one that stopped,
+        and a service embedding tapio awaits `when_terminated` to decide
+        whether to exit or rebuild.
+
+        Termination runs as its own task rather than inline, because the caller
+        is the guardian's own receive loop and shutdown waits for that loop to
+        finish.
+        """
+        if self._failure is None:
+            self._failure = error
+        if self._terminating:
+            return
+        self._runtime.dispatcher.spawn_task(
+            self.terminate(), name=f"tapio-terminate:{path}"
+        )
+
     async def terminate(self) -> None:
         """Stop every actor, bottom-up, and wait for the tree to drain.
 
@@ -221,8 +243,21 @@ class ActorSystem:
         self._log.debug("terminated")
 
     async def when_terminated(self) -> None:
-        """Wait until the system has finished shutting down."""
+        """Wait until the system has finished shutting down.
+
+        This is where an escalation that reached a guardian surfaces. Nothing
+        else in the runtime can raise it: the failing actor's exception never
+        leaves its own receive loop, and its supervisors all declined to take
+        responsibility, so the last place to report it is the one the embedding
+        service is already waiting on.
+
+        Raises:
+            BaseException: The original failure, if the system terminated
+                because one escalated to a guardian.
+        """
         await self._terminated.wait()
+        if self._failure is not None:
+            raise self._failure
 
     async def __aenter__(self) -> Self:
         """Return the running system."""

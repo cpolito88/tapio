@@ -6,6 +6,7 @@ terminates whatever the test left running.
 """
 
 from collections.abc import AsyncIterator
+from typing import Any
 
 import pytest
 
@@ -53,6 +54,12 @@ class FakeContext(ActorContext[Message]):
     def spawn_anonymous(
         self, behavior: Behavior[Message], mailbox: MailboxConfig | None = None
     ) -> ActorRef[Message]:
+        raise NotImplementedError
+
+    def watch(self, ref: ActorRef[Any]) -> None:
+        raise NotImplementedError
+
+    def unwatch(self, ref: ActorRef[Any]) -> None:
         raise NotImplementedError
 
 

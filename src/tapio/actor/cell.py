@@ -1,7 +1,8 @@
 """`ActorCell`: one actor, one task, one mailbox.
 
 The cell is the runtime object behind every ref. It owns the receive loop, the
-current behavior, the children, and the termination sequence.
+current behavior, the children, the watchers, the supervision decisions, and
+the termination sequence.
 
 There is deliberately no `TaskGroup` here. A group's defining behaviour is that
 one task raising cancels its siblings, which is the exact inverse of
@@ -15,6 +16,9 @@ the runtime holds and the test suite asserts.
 import asyncio
 import contextlib
 import itertools
+import random
+from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar, cast
 
@@ -23,20 +27,23 @@ from tapio.actor.behavior import (
     Directive,
     ReceivingBehavior,
     SetupBehavior,
+    SuperviseBehavior,
     directive_of,
 )
 from tapio.actor.context import ActorContext
 from tapio.actor.dead_letters import DeadLetterOffice, DeadLetterReason
-from tapio.actor.mailbox import Mailbox, MailboxConfig
+from tapio.actor.mailbox import Envelope, Mailbox, MailboxConfig
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
-from tapio.actor.signals import PostStop, Signal
+from tapio.actor.signals import ChildFailed, PostStop, PreRestart, Signal, Terminated
+from tapio.actor.supervision import Decision, SupervisorStrategy
 from tapio.dispatch.dispatcher import Dispatcher
 from tapio.errors import (
     ActorNameError,
     ActorSystemTerminating,
     BehaviorTypeError,
     MailboxFullError,
+    WatchError,
 )
 from tapio.logging import ActorLogAdapter, actor_logger, runtime_logger
 from tapio.message import Message
@@ -53,9 +60,28 @@ _log = runtime_logger("runtime")
 _MAX_SETUP_DEPTH = 100
 """How many rounds of deferred construction to allow before calling it a loop."""
 
+_STOP = SupervisorStrategy.stop()
+"""What a failure nobody wrote a strategy for gets.
+
+Stop rather than restart: an actor that failed for a reason nobody anticipated
+is in a state nobody described, and restarting it on a loop turns one bug into
+a busy one.
+"""
+
 
 def _accept_anything(message: Message) -> None:
     """Stand in for validation on a cell that never resolved a message type."""
+
+
+@dataclass(frozen=True, slots=True)
+class _Supervisor:
+    """One `supervise(...).on_failure(...)` layer, as the cell holds it."""
+
+    on: type[Exception] | tuple[type[Exception], ...]
+    """Which failures this layer governs."""
+
+    strategy: SupervisorStrategy
+    """What it decides about them."""
 
 
 @dataclass(eq=False)
@@ -86,6 +112,15 @@ class ActorRuntime:
     diagnoses, and the sender usually cares which.
     """
 
+    guardian_failure: Callable[[ActorPath, BaseException], None] | None = None
+    """Called when a failure escalates all the way to a guardian.
+
+    A guardian has no application behavior and no parent, so a failure that
+    reaches one has run out of actors willing to take responsibility. The
+    system installs a callback that terminates the tree and keeps the cause for
+    `when_terminated`.
+    """
+
     # Quoted: itertools.count is only subscriptable to a type checker.
     _uids: "itertools.count[int]" = field(default_factory=lambda: itertools.count(1))
 
@@ -113,6 +148,15 @@ class LocalActorRef(ActorRef[T]):
         """Bind the ref to its cell."""
         super().__init__(cell.path)
         self._cell = cell
+
+    @property
+    def cell(self) -> "ActorCell[T]":
+        """The cell this ref delivers into.
+
+        For the runtime, which needs the object behind the handle to register a
+        death watch. Application code has a ref and needs nothing more.
+        """
+        return self._cell
 
     def tell(self, message: T) -> None:
         """Deliver a message, without waiting and without blocking.
@@ -188,7 +232,7 @@ class LocalActorRef(ActorRef[T]):
 
 
 class ActorCell(Generic[T]):
-    """One actor: a mailbox, a behavior, a task, and its children."""
+    """One actor: a mailbox, a behavior, a task, its children and its watchers."""
 
     def __init__(
         self,
@@ -208,11 +252,21 @@ class ActorCell(Generic[T]):
         # comes back as what it originally was.
         self._initial = behavior
         self._behavior: Behavior[T] = behavior
+        self._supervisors: tuple[_Supervisor, ...] = ()
+        # Timestamps of recent restarts, for the window; the count is kept
+        # separately because the backoff exponent is about how many times this
+        # actor has failed, not about how many are still inside the window.
+        self._restarts: deque[float] = deque()
+        self._restart_count = 0
         self._mailbox = Mailbox(
             mailbox if mailbox is not None else runtime.settings.default_mailbox
         )
         self._children: dict[str, ActorCell[Any]] = {}
         self._anonymous = itertools.count(1)
+        # Both sides of every watch, so that neither a watcher nor a watched
+        # actor leaves an entry behind in the other when it stops.
+        self._watchers: dict[ActorPath, ActorCell[Any]] = {}
+        self._watching: dict[ActorPath, ActorCell[Any]] = {}
         self._log = actor_logger(path)
         self._ctx: ActorContext[T] = _CellContext(self)
         self._ref: LocalActorRef[T] = LocalActorRef(self)
@@ -245,6 +299,16 @@ class ActorCell(Generic[T]):
     def runtime(self) -> ActorRuntime:
         """The system slice this cell runs in."""
         return self._runtime
+
+    @property
+    def watchers(self) -> tuple[ActorPath, ...]:
+        """Who has asked to be told when this actor stops.
+
+        Exposed so that "the watch was released" is a thing a test can assert
+        rather than infer: a registry that outlives what it names is exactly
+        the leak death watch exists to prevent.
+        """
+        return tuple(self._watchers)
 
     @property
     def is_alive(self) -> bool:
@@ -375,6 +439,73 @@ class ActorCell(Generic[T]):
             raise ActorSystemTerminating(msg)
         return self._spawn_child(behavior, f"${next(self._anonymous)}", mailbox)
 
+    def watch(self, ref: ActorRef[Any]) -> None:
+        """Ask to be told when another actor stops.
+
+        Args:
+            ref: The actor to watch.
+
+        Raises:
+            WatchError: If the ref has no live cell behind it, or if an actor
+                tries to watch itself.
+        """
+        target = _cell_behind(ref)
+        if target is self:
+            msg = (
+                f"{self._path} cannot watch itself: the signal would be "
+                "delivered to a mailbox nobody is left to read"
+            )
+            raise WatchError(msg)
+        if not target.is_alive:
+            # Already gone. Delivering at once rather than refusing keeps the
+            # caller's code the same either way: watching is how you ask, and
+            # the answer does not depend on how the race came out.
+            self._mailbox.put_system(Terminated(ref))
+            return
+        target.add_watcher(self)
+        self._watching[target.path] = target
+
+    def unwatch(self, ref: ActorRef[Any]) -> None:
+        """Stop being told when another actor stops.
+
+        Harmless if this actor was not watching it, and it does not retract a
+        `Terminated` already queued: by then the fact is true.
+
+        Args:
+            ref: The actor to stop watching.
+        """
+        target = self._watching.pop(ref.path, None)
+        if target is not None:
+            target.remove_watcher(self)
+
+    def add_watcher(self, watcher: "ActorCell[Any]") -> None:
+        """Register a cell to be told when this actor stops.
+
+        Keyed by path, so watching twice still delivers exactly one signal.
+        """
+        self._watchers[watcher.path] = watcher
+
+    def remove_watcher(self, watcher: "ActorCell[Any]") -> None:
+        """Deregister a watcher."""
+        self._watchers.pop(watcher.path, None)
+
+    def child_failed(self, child: ActorRef[Any], error: Exception) -> None:
+        """Take a child's escalated failure as this actor's own.
+
+        On the system lane, so it outranks whatever user traffic is queued, and
+        as an ordinary signal rather than an exception injected across a task
+        boundary: there is no clean way to do the latter, and its ordering
+        against this actor's in-flight message would be undefined.
+        """
+        if not self._alive or self._terminating:
+            self._log.warning(
+                "child %s failed while this actor was already stopping",
+                child.path,
+                exc_info=error,
+            )
+            return
+        self._mailbox.put_system(ChildFailed(child, error))
+
     def _spawn_child(
         self,
         behavior: Behavior[U],
@@ -456,7 +587,7 @@ class ActorCell(Generic[T]):
             while self._alive:
                 envelope = await self._mailbox.get()
                 if isinstance(envelope, Signal):
-                    self._on_signal(envelope)
+                    await self._on_signal(envelope)
                 else:
                     await self._on_message(envelope)
         finally:
@@ -465,12 +596,24 @@ class ActorCell(Generic[T]):
             # cancelled actor stops, it does not restart.
             self._finish()
 
-    def _on_signal(self, signal: Signal) -> None:
+    async def _on_signal(self, signal: Signal) -> None:
         """Handle a system-lane signal."""
         if isinstance(signal, PostStop):
-            # Just the wakeup. The hook itself runs in `_finish`, so that an
-            # actor which stops on its own gets it on the same path.
+            await self._run_lifecycle_hook(signal)
             self._alive = False
+            return
+        if isinstance(signal, ChildFailed):
+            # A child that escalated is this actor's failure now, with the
+            # child's error rather than one of its own.
+            await self._on_failure(signal.error)
+            return
+        try:
+            nxt = await self._deliver_signal(signal)
+        except Exception as error:
+            await self._on_failure(error)
+            return
+        if nxt is not None:
+            await self._become(nxt, signal)
 
     async def _on_message(self, message: Message) -> None:
         """Run one user message through the current behavior."""
@@ -484,23 +627,210 @@ class ActorCell(Generic[T]):
         self._current = message
         try:
             nxt = await behavior.receive(self._ctx, cast("T", message))
-        except Exception:
-            # Until supervision lands, the one decision available is to stop.
-            # The exception never leaves this loop either way.
-            self._log.exception(
-                "failed while handling %s; stopping", type(message).__name__
-            )
-            await self._stop_self()
+        except Exception as error:
+            # The exception never leaves this loop: it becomes a decision, and
+            # the sender hears nothing about it.
+            await self._on_failure(error)
             return
         finally:
             self._current = None
         await self._become(nxt, message)
 
-    def _unhandled(self, message: Message) -> None:
-        """Report a message the current behavior does not handle."""
-        self._log.debug("unhandled %s", type(message).__name__)
+    async def _deliver_signal(self, signal: Signal) -> Behavior[T] | None:
+        """Hand a signal to the behavior, or `None` if it has no handler."""
+        behavior = self._behavior
+        if not isinstance(behavior, ReceivingBehavior):
+            return None
+        return await behavior.receive_signal(self._ctx, signal)
 
-    async def _become(self, nxt: Behavior[T], message: Message) -> None:
+    async def _run_lifecycle_hook(self, signal: Signal) -> None:
+        """Deliver `PostStop` or `PreRestart`, whose result cannot change anything.
+
+        A failure here is logged rather than supervised. The actor is already
+        stopping or already restarting, and running a second decision over the
+        first would leave the sequence in a state with no name.
+        """
+        try:
+            await self._deliver_signal(signal)
+        except Exception:
+            self._log.exception("failed while handling %s", type(signal).__name__)
+
+    async def _on_failure(self, error: Exception) -> None:
+        """Turn a failure into a supervision decision and apply it."""
+        if self._parent is None:
+            # A guardian. Nobody above it takes responsibility, by
+            # construction, so the whole system comes down with the cause.
+            await self._fail_the_system(error)
+            return
+        if self._terminating:
+            self._log.warning(
+                "failed while already stopping; the decision is moot",
+                exc_info=error,
+            )
+            return
+
+        strategy = self._strategy_for(error)
+        match strategy.decision:
+            case Decision.RESUME:
+                self._log.warning(
+                    "resumed after a failure in %s",
+                    self._describe_current(),
+                    exc_info=error,
+                )
+            case Decision.RESTART:
+                await self._restart(error, strategy)
+            case Decision.STOP:
+                self._log.error(
+                    "stopping after a failure in %s",
+                    self._describe_current(),
+                    exc_info=error,
+                )
+                await self._stop_self()
+            case Decision.ESCALATE:
+                await self._escalate(error)
+
+    def _strategy_for(self, error: Exception) -> SupervisorStrategy:
+        """Find the strategy governing a failure, outermost wrapper first."""
+        for supervisor in self._supervisors:
+            if isinstance(error, supervisor.on):
+                return supervisor.strategy
+        return _STOP
+
+    async def _restart(self, error: Exception, strategy: SupervisorStrategy) -> None:
+        """Rebuild this actor from the behavior it was spawned with.
+
+        Everything here is observable, and every line of it is a decision:
+        children are stopped and respawned by the re-run setup, the mailbox
+        survives with both lanes intact, the failed message does not, and
+        watchers are told nothing, because the ref, the path and the uid are
+        unchanged and only the incarnation behind them is new.
+        """
+        if not self._within_restart_limit(strategy):
+            self._log.error(
+                "restart limit of %d in %s is exhausted; stopping",
+                strategy.max_restarts,
+                strategy.window,
+                exc_info=error,
+            )
+            await self._stop_self()
+            return
+
+        self._log.warning(
+            "restarting after a failure in %s", self._describe_current(), exc_info=error
+        )
+        await self._run_lifecycle_hook(PreRestart())
+        await self._stop_children(self._own_deadline())
+
+        if strategy.backoff is not None:
+            delay = strategy.backoff.delay(self._restart_count, jitter=random.random())
+            self._log.debug("backing off for %.3fs before restarting", delay)
+            if not await self._backoff(delay):
+                return
+
+        try:
+            self._behavior = self._evaluate(self._initial)
+        except Exception:
+            # The behavior itself cannot be rebuilt, so there is nothing to
+            # restart into. Failing the restart the same way twice is a loop,
+            # and stopping is the honest end of it.
+            self._log.exception("failed while restarting; stopping")
+            await self._stop_self()
+            return
+        if directive_of(self._behavior) is Directive.STOPPED:
+            await self._stop_self()
+
+    def _within_restart_limit(self, strategy: SupervisorStrategy) -> bool:
+        """Record this restart and say whether it is still inside the limit.
+
+        Timestamps are only kept when there is a limit to count them against,
+        so an actor restarting on an unlimited strategy for a month does not
+        accumulate a month of them.
+        """
+        self._restart_count += 1
+        if strategy.max_restarts is None:
+            return True
+        now = self._runtime.dispatcher.now()
+        if strategy.window is not None:
+            horizon = now - strategy.window.total_seconds()
+            while self._restarts and self._restarts[0] < horizon:
+                self._restarts.popleft()
+        self._restarts.append(now)
+        return len(self._restarts) <= strategy.max_restarts
+
+    async def _backoff(self, seconds: float) -> bool:
+        """Wait out a backoff window, staying responsive to a stop.
+
+        The cell stops dequeuing user messages and its mailbox keeps filling:
+        the actor is absent, not dead, and `tell` stays total. On an unbounded
+        mailbox a long window is therefore a memory risk proportional to
+        inbound rate times window, which is why the docs recommend a bounded
+        mailbox for actors that back off.
+
+        Args:
+            seconds: How long to wait.
+
+        Returns:
+            `True` when the window elapsed, `False` when a stop arrived instead
+            and this actor is already on its way out.
+        """
+        held: list[Signal] = []
+        try:
+            async with asyncio.timeout(seconds):
+                while True:
+                    signal = await self._mailbox.get_system()
+                    if isinstance(signal, PostStop):
+                        await self._run_lifecycle_hook(signal)
+                        self._alive = False
+                        return False
+                    # Anything else waits its turn: the actor that would react
+                    # to it does not exist for the length of this window.
+                    held.append(signal)
+        except TimeoutError:
+            return True
+        finally:
+            for signal in held:
+                self._mailbox.put_system(signal)
+
+    async def _escalate(self, error: Exception) -> None:
+        """Stop, and make this failure the parent's own."""
+        # A note rather than a wrapper exception: the chain reads in the
+        # traceback of the original error, which is the thing anyone debugging
+        # this actually wants, and nothing has to unwrap anything.
+        error.add_note(f"escalated from {self._path}")
+        parent = self._parent
+        if parent is not None:
+            parent.child_failed(self._ref, error)
+        await self._stop_self()
+
+    async def _fail_the_system(self, error: Exception) -> None:
+        """End the system, because a failure reached a guardian.
+
+        A guardian is the top of the tree, so an escalation that arrives here
+        has run out of actors willing to take responsibility for it. Carrying
+        on with a silently missing subtree is worse than stopping: the service
+        embedding tapio awaits `when_terminated`, sees the cause, and decides
+        whether to exit or rebuild, which is where that decision belongs.
+        """
+        error.add_note(f"escalated to {self._path}")
+        self._log.error(
+            "a failure escalated to the guardian and nobody took responsibility; "
+            "terminating the system",
+            exc_info=error,
+        )
+        report = self._runtime.guardian_failure
+        if report is not None:
+            report(self._path, error)
+        await self._stop_self()
+
+    def _describe_current(self) -> str:
+        """Name the message being handled, for a log line about a failure."""
+        return type(self._current).__name__ if self._current is not None else "a signal"
+
+    def _unhandled(self, envelope: Envelope) -> None:
+        """Report an envelope the current behavior does not handle."""
+        self._log.debug("unhandled %s", type(envelope).__name__)
+
+    async def _become(self, nxt: Behavior[T], envelope: Envelope) -> None:
         """Apply what a handler returned.
 
         The cell's declared message type is fixed at spawn: it is the contract
@@ -511,25 +841,57 @@ class ActorCell(Generic[T]):
         if directive is Directive.SAME:
             return
         if directive is Directive.UNHANDLED:
-            self._unhandled(message)
+            self._unhandled(envelope)
             return
         if directive is Directive.STOPPED:
             await self._stop_self()
             return
-        self._behavior = self._evaluate(nxt)
+        self._behavior = self._evaluate(nxt, keep_supervisors=True)
 
     async def _stop_self(self) -> None:
         """Stop because this actor asked to, rather than because a parent did."""
+        if self._terminating and not self._alive:
+            return
         self._terminating = True
-        seconds = self._runtime.settings.shutdown_timeout.total_seconds()
-        await self._stop_children(self._runtime.dispatcher.now() + seconds)
+        await self._stop_children(self._own_deadline())
+        await self._run_lifecycle_hook(PostStop())
         self._alive = False
 
-    def _evaluate(self, behavior: Behavior[T]) -> Behavior[T]:
-        """Run deferred construction until a real behavior comes out."""
+    def _own_deadline(self) -> float:
+        """A deadline for a stop this actor started, rather than the tree's."""
+        seconds = self._runtime.settings.shutdown_timeout.total_seconds()
+        return self._runtime.dispatcher.now() + seconds
+
+    def _evaluate(
+        self, behavior: Behavior[T], *, keep_supervisors: bool = False
+    ) -> Behavior[T]:
+        """Unwrap supervision and run deferred construction until a real behavior.
+
+        Both wrappers are peeled in one loop because either can enclose the
+        other: `supervise(setup(...))` and `setup` returning a supervised
+        behavior are both things people write.
+
+        Args:
+            behavior: What to evaluate.
+            keep_supervisors: Keep the strategies already in force when the new
+                behavior declares none. Set when a handler returned a behavior,
+                since supervision belongs to the actor rather than to whichever
+                behavior it currently holds; left off at start and at restart,
+                where the strategies are being established.
+
+        Returns:
+            The behavior the actor will run.
+        """
+        supervisors: list[_Supervisor] = []
         seen = 0
-        while isinstance(behavior, SetupBehavior):
-            behavior = behavior.setup(self._ctx)
+        while True:
+            if isinstance(behavior, SuperviseBehavior):
+                supervisors.append(_Supervisor(behavior.on, behavior.strategy))
+                behavior = behavior.behavior
+            elif isinstance(behavior, SetupBehavior):
+                behavior = behavior.setup(self._ctx)
+            else:
+                break
             seen += 1
             if seen > _MAX_SETUP_DEPTH:
                 msg = (
@@ -537,6 +899,9 @@ class ActorCell(Generic[T]):
                     f"another Behaviors.setup after {_MAX_SETUP_DEPTH} rounds"
                 )
                 raise BehaviorTypeError(msg)
+
+        if supervisors or not keep_supervisors:
+            self._supervisors = tuple(supervisors)
         return behavior
 
     def _finish(self) -> None:
@@ -557,10 +922,31 @@ class ActorCell(Generic[T]):
         # message that was queued and never read is not silently lost.
         self._mailbox.close()
         self._drain_to_dead_letters()
+        self._release_watches()
         if self._parent is not None:
             self._parent._remove_child(self)
         self._log.debug("stopped")
         self._terminated.set_result(None)
+
+    def _release_watches(self) -> None:
+        """Tell the watchers, and leave nothing behind in the watched.
+
+        Both directions matter for the same reason: a registry that outlives
+        the actor it names is the leak this feature exists to save users from
+        writing themselves.
+        """
+        for watcher in list(self._watchers.values()):
+            watcher.notify_terminated(self._ref)
+        self._watchers.clear()
+        for target in list(self._watching.values()):
+            target.remove_watcher(self)
+        self._watching.clear()
+
+    def notify_terminated(self, ref: ActorRef[Any]) -> None:
+        """Take delivery of a watched actor's death, on the system lane."""
+        self._watching.pop(ref.path, None)
+        if self._alive:
+            self._mailbox.put_system(Terminated(ref))
 
     def _remove_child(self, child: "ActorCell[Any]") -> None:
         """Deregister a stopped child, freeing its name for reuse."""
@@ -595,6 +981,21 @@ class ActorCell(Generic[T]):
     def __repr__(self) -> str:
         """Render the path and the current behavior."""
         return f"ActorCell({str(self._path)!r}, {self._behavior!r})"
+
+
+def _cell_behind(ref: ActorRef[Any]) -> ActorCell[Any]:
+    """Find the cell a ref delivers into.
+
+    Raises:
+        WatchError: If the ref is not one a running system handed out.
+    """
+    if isinstance(ref, LocalActorRef):
+        return ref.cell
+    msg = (
+        f"cannot watch {ref!r}: it is not a ref to a live actor in this "
+        "system. Watch a ref obtained from spawn or carried in a message."
+    )
+    raise WatchError(msg)
 
 
 class _CellContext(ActorContext[T]):
@@ -635,6 +1036,14 @@ class _CellContext(ActorContext[T]):
     ) -> ActorRef[U]:
         """Start a child under a generated name."""
         return self._cell.spawn_anonymous(behavior, mailbox)
+
+    def watch(self, ref: ActorRef[Any]) -> None:
+        """Ask to be sent `Terminated` when another actor stops."""
+        self._cell.watch(ref)
+
+    def unwatch(self, ref: ActorRef[Any]) -> None:
+        """Stop watching an actor."""
+        self._cell.unwatch(ref)
 
     def __repr__(self) -> str:
         """Render the actor this context belongs to."""

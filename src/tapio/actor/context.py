@@ -1,7 +1,7 @@
 """`ActorContext`: what an actor is handed to act on its surroundings."""
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from tapio.actor.mailbox import MailboxConfig
 from tapio.actor.path import ActorPath
@@ -21,11 +21,10 @@ U = TypeVar("U", bound=Message)
 class ActorContext(ABC, Generic[T]):
     """The runtime handed to a behavior for the duration of a message.
 
-    Only the members the runtime can honour today are declared. Watching,
-    timers, stashing and `run_blocking` arrive with the milestones that
-    implement them. An abstract class rather than a Protocol, because the
-    runtime hands out one concrete implementation and users are never expected
-    to write their own.
+    Only the members the runtime can honour today are declared. Timers,
+    stashing and `run_blocking` arrive with the milestones that implement them.
+    An abstract class rather than a Protocol, because the runtime hands out one
+    concrete implementation and users are never expected to write their own.
     """
 
     __slots__ = ()
@@ -92,4 +91,38 @@ class ActorContext(ABC, Generic[T]):
 
         Returns:
             A ref to the new child.
+        """
+
+    @abstractmethod
+    def watch(self, ref: ActorRef[Any]) -> None:
+        """Ask to be sent `Terminated` when another actor stops.
+
+        The signal arrives on the system lane, so it is not queued behind
+        whatever user traffic is waiting, and it arrives exactly once however
+        many times the ref was watched. A restart produces none: the actor's
+        identity is unchanged and only its incarnation is new.
+
+        Watching a ref that has already stopped delivers `Terminated` at once
+        rather than refusing, so the caller's code is the same however the race
+        came out. This is why there is no "is it alive?" predicate: any answer
+        one could give is stale before the caller reads it.
+
+        Args:
+            ref: The actor to watch. Watching an actor twice is harmless.
+
+        Raises:
+            WatchError: If the ref has no live actor behind it, or if an actor
+                tries to watch itself.
+        """
+
+    @abstractmethod
+    def unwatch(self, ref: ActorRef[Any]) -> None:
+        """Stop being told when another actor stops.
+
+        Harmless if this actor was not watching it. It does not retract a
+        `Terminated` already on the system lane: by the time one is queued the
+        thing it reports has happened.
+
+        Args:
+            ref: The actor to stop watching.
         """

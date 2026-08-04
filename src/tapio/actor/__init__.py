@@ -7,6 +7,9 @@ from tapio.actor.behavior import (
     Directive,
     ReceivingBehavior,
     SetupBehavior,
+    SignalHandler,
+    Supervise,
+    SuperviseBehavior,
 )
 from tapio.actor.cell import ActorCell, LocalActorRef
 from tapio.actor.context import ActorContext
@@ -19,7 +22,14 @@ from tapio.actor.dead_letters import (
 from tapio.actor.mailbox import Envelope, Mailbox, MailboxConfig, OverflowStrategy
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
-from tapio.actor.signals import PostStop, Signal
+from tapio.actor.signals import (
+    ChildFailed,
+    PostStop,
+    PreRestart,
+    Signal,
+    Terminated,
+)
+from tapio.actor.supervision import Backoff, Decision, SupervisorStrategy
 from tapio.actor.system import ActorSystem
 
 __all__ = [
@@ -29,11 +39,14 @@ __all__ = [
     "ActorPath",
     "ActorRef",
     "ActorSystem",
+    "Backoff",
     "Behavior",
     "Behaviors",
+    "ChildFailed",
     "DeadLetter",
     "DeadLetterOffice",
     "DeadLetterReason",
+    "Decision",
     "Directive",
     "Envelope",
     "LocalActorRef",
@@ -41,8 +54,14 @@ __all__ = [
     "MailboxConfig",
     "OverflowStrategy",
     "PostStop",
+    "PreRestart",
     "ReceivingBehavior",
     "SetupBehavior",
     "Signal",
+    "SignalHandler",
     "Subscription",
+    "Supervise",
+    "SuperviseBehavior",
+    "SupervisorStrategy",
+    "Terminated",
 ]
