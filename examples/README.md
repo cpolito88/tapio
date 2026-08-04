@@ -31,7 +31,7 @@ Tiers 1-3, teaching exactly one concept.
 |---|---|
 | `dead_letters` | where a message goes when nobody is there to receive it |
 | `supervision_backoff` | `Restart` with exponential backoff and window exhaustion |
-| `death_watch` | `ctx.watch`, `Terminated`, evicting a child with no leak |
+| `death_watch` | `ctx.watch`, `Terminated`, evicting a stopped actor from a registry with no leak |
 | `escalation` | `ChildFailed`, subtree restart, and escalation reaching the guardian |
 | `graceful_shutdown` | SIGINT, bottom-up drain, `PostStop` ordering |
 
@@ -54,5 +54,5 @@ Tiers 1-3, teaching exactly one concept.
 | `fastapi_app` | `ActorSystem` in a FastAPI lifespan; the deployment story |
 | `blocking_offload` | `ctx.run_blocking`, counted against the same code without it |
 
-Tier 1 and `dead_letters` have landed and run in CI. The rest of the tables
-above are what the later tiers will fill in.
+Tiers 1 and 2 have landed and run in CI. Tiers 3 and 4 are what the later
+milestones will fill in.

@@ -245,6 +245,40 @@ class Mailbox:
         finally:
             self._consuming = False
 
+    async def get_system(self) -> Signal:
+        """Take the next signal, ignoring the user lane entirely.
+
+        For the one state where an actor is absent rather than idle: a cell
+        backing off before a restart stops dequeuing user messages, so its
+        mailbox keeps filling, but a stop must still reach it inside the
+        shutdown deadline.
+
+        Returns:
+            The next signal.
+
+        Raises:
+            RuntimeError: If a second reader is already waiting, as for `get`.
+        """
+        if self._consuming:
+            msg = (
+                "a mailbox has one consumer at a time, its own actor cell; "
+                f"a second reader tried to take from {self!r}"
+            )
+            raise RuntimeError(msg)
+        self._consuming = True
+        try:
+            while True:
+                if self._system:
+                    return self._system.popleft()
+                await self._nonempty.wait()
+                # A user message wakes this loop and is deliberately left
+                # where it is. Clearing the event costs nothing, since `get`
+                # examines both deques before it waits again, so no arrival is
+                # lost by being slept through here.
+                self._nonempty.clear()
+        finally:
+            self._consuming = False
+
     def take_pending(self) -> Message | None:
         """Pop one queued user message, or `None` when the lane is empty.
 

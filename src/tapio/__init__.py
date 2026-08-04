@@ -10,6 +10,8 @@ from tapio.actor.dead_letters import DeadLetter, DeadLetterReason
 from tapio.actor.mailbox import MailboxConfig, OverflowStrategy
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
+from tapio.actor.signals import ChildFailed, PostStop, PreRestart, Signal, Terminated
+from tapio.actor.supervision import Backoff, Decision, SupervisorStrategy
 from tapio.actor.system import ActorSystem
 from tapio.errors import (
     ActorNameError,
@@ -22,6 +24,7 @@ from tapio.errors import (
     MailboxFullError,
     MessageTypeError,
     TapioError,
+    WatchError,
 )
 from tapio.message import Message
 from tapio.settings import TapioSettings
@@ -38,18 +41,27 @@ __all__ = [
     "AskTargetTerminated",
     "AskTimeoutError",
     "AskTypeError",
+    "Backoff",
     "Behavior",
     "BehaviorTypeError",
     "Behaviors",
+    "ChildFailed",
     "DeadLetter",
     "DeadLetterReason",
+    "Decision",
     "MailboxConfig",
     "MailboxFullError",
     "Message",
     "MessageTypeError",
     "OverflowStrategy",
+    "PostStop",
+    "PreRestart",
+    "Signal",
+    "SupervisorStrategy",
     "TapioError",
     "TapioSettings",
+    "Terminated",
+    "WatchError",
     "__version__",
 ]
 

@@ -32,11 +32,27 @@ Generated from the source, so it cannot drift from what is installed.
 
 ::: tapio.settings.TapioSettings
 
+## Supervision
+
+::: tapio.actor.supervision.SupervisorStrategy
+
+::: tapio.actor.supervision.Decision
+
+::: tapio.actor.supervision.Backoff
+
+::: tapio.actor.behavior.Supervise
+
 ## Mailbox and signals
 
 ::: tapio.actor.mailbox.Mailbox
 
 ::: tapio.actor.signals.PostStop
+
+::: tapio.actor.signals.PreRestart
+
+::: tapio.actor.signals.Terminated
+
+::: tapio.actor.signals.ChildFailed
 
 ## Test support
 
