@@ -10,6 +10,16 @@ supervision, and Pydantic models throughout.
 > typed `tell`, and a deadline-based shutdown. Supervision, dead letters,
 > bounded mailboxes, `ask`, timers and routers are still to come.
 
+> **Why this exists.** `tapio` is a testbed for AI agentic development. The
+> point of the project is to find out what coding agents can carry on their
+> own over a real codebase: a non-trivial design, invariants that span
+> modules, and a gate that has to stay green. Nearly all of the code, tests
+> and documentation here is written by agents under human review.
+>
+> The library itself is meant to work, and the design decisions are argued
+> rather than generated. Treat it as an experiment that happens to be
+> functional software, not as something to depend on in production yet.
+
 Named for the Finnish god of the forest, because supervision hierarchies are
 trees. It keeps the mythological lineage of Akka (Sámi) and Apache Pekko
 (Finnish) without borrowing anyone's trademark. See the note at the bottom.
