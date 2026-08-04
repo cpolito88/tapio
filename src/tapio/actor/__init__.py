@@ -1,5 +1,6 @@
 """Actors: refs, paths, behaviors, and the runtime they run in."""
 
+from tapio.actor.adapter import AdapterRef
 from tapio.actor.ask import PromiseRef, ask
 from tapio.actor.behavior import (
     AbstractBehavior,
@@ -25,6 +26,7 @@ from tapio.actor.dead_letters import (
 from tapio.actor.mailbox import Envelope, Mailbox, MailboxConfig, OverflowStrategy
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
+from tapio.actor.router import RoundRobin, Routers, RoutingStrategy
 from tapio.actor.signals import (
     ChildFailed,
     PostStop,
@@ -45,6 +47,7 @@ __all__ = [
     "ActorPath",
     "ActorRef",
     "ActorSystem",
+    "AdapterRef",
     "Backoff",
     "Behavior",
     "Behaviors",
@@ -63,6 +66,9 @@ __all__ = [
     "PreRestart",
     "PromiseRef",
     "ReceivingBehavior",
+    "RoundRobin",
+    "Routers",
+    "RoutingStrategy",
     "SetupBehavior",
     "Signal",
     "SignalHandler",

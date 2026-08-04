@@ -8,8 +8,8 @@ supervision, and Pydantic models throughout.
 
 > **Status: pre-alpha.** The runtime core runs: actor systems, spawning,
 > typed `tell`, bounded mailboxes, dead letters, a deadline-based shutdown,
-> supervision with backoff, death watch, `ask`, timers and stash. Message
-> adapters and routers are still to come.
+> supervision with backoff, death watch, `ask`, timers, stash, message
+> adapters and a round-robin pool router. Remoting is still to come.
 
 > **Why this exists.** `tapio` is a testbed for AI agentic development. The
 > point of the project is to find out what coding agents can carry on their

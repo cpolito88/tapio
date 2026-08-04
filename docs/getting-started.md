@@ -140,7 +140,8 @@ choice when the promise really is a rate:
 
 An actor that cannot answer yet has one good option: accept what arrives, put
 it aside, and replay it once it can. `Behaviors.with_stash` gives it a bounded
-buffer to do that with, and `stash.unstash_all(next_behavior)` switches state
+buffer to do that with, and `stash.
+(next_behavior)` switches state
 and replays the backlog in one call.
 
 The replay goes to the *front* of the mailbox, ahead of anything that queued
@@ -159,6 +160,58 @@ Overflow raises `StashOverflowError` in the actor that stashed, where the
 decision about what to shed belongs, and a restart empties the buffer:
 messages held by the state that just failed are not the new state's to answer,
 and what is discarded is published as a dead letter rather than dropped.
+
+## Talking to someone else's protocol
+
+An actor's declared message type is a contract, which raises a question the
+first time two actors written by different people have to talk: the service you
+called replies with *its* reply type, and that type has no business in your
+protocol. Widening yours to admit it is wrong twice over, since it lets anyone
+send you that message and it puts a foreign vocabulary inside your handlers.
+
+`ctx.message_adapter` gives you a ref to hand out instead. It accepts the other
+protocol's message, translates it into one of yours, and delivers the result
+onto your own user lane, where it is ordinary traffic: it queues where it
+arrived, it cannot re-enter a running handler, and it is validated against your
+declared type like anything else.
+
+The translation runs in *your* actor rather than in the sender. That is the
+reason to prefer this over translating at the call site: the function is your
+code, so a mistake in it is your supervision decision, and a sender that has
+never heard of the adapter does not have your bug raised into it. An adapter is
+not an actor, so it cannot be watched or asked; watch the actor that owns it.
+
+## One address, several actors
+
+When the work is uniform and the answer to "too slow" is "more of the same
+actor", a pool router puts one address in front of several of them:
+
+```python
+--8<-- "examples/tapio_examples/worker_pool.py"
+```
+
+The router is an ordinary actor whose routees are its children, which decides
+most of its behaviour. Their failures are supervised where they were declared,
+so wrapping the routee behavior in `Behaviors.supervise(...)` restarts a failed
+routee in place. A routee that stops leaves the pool, and when the last one
+goes the router stops with it, because a pool with nothing in it is an address
+that silently swallows work.
+
+A router creates no backpressure of its own: sending to one never blocks, as
+sending anywhere never blocks. What it does with a routee that cannot take a
+message is dead-letter it, since the router did not write that message and
+failing would take a whole pool down over one busy member. Backpressure worth
+having therefore belongs on the router's own mailbox, where a producer can
+`offer` into it and wait.
+
+## Behaviors as the states of a protocol
+
+The state *is* the behavior, which is what makes the illegal transitions
+unwritable rather than merely checked for:
+
+```python
+--8<-- "examples/tapio_examples/state_machine.py"
+```
 
 ## What the runtime gives you today
 
@@ -179,8 +232,12 @@ and what is discarded is published as a dead letter rather than dropped.
   cancelled by the cell on restart and on stop.
 - `Behaviors.with_stash(...)`: a bounded buffer and `unstash_all`, which
   replays in arrival order ahead of newer traffic.
+- `ctx.message_adapter(...)`: a ref that translates another protocol into
+  yours, in your actor, where a failed translation is your decision.
+- `Routers.pool(...)`: round-robin fan-out over routees that are the router's
+  own children, shrinking as they stop.
 - `ctx.log`, which tags every record with the actor's path.
 - `await system.terminate()`, which drains the tree bottom-up against a single
   deadline and cancels anything still wedged when it passes.
 
-Message adapters and routers are next.
+Remoting is next: addressing, a wire format, and refs that survive a crossing.
