@@ -92,6 +92,32 @@ tree:
 --8<-- "examples/tapio_examples/graceful_shutdown.py"
 ```
 
+## Asking for an answer
+
+`ask` sends one message and awaits one reply. The request still carries a ref
+for the answer to come back to, exactly as it does above; what `ask` adds is
+that the ref is a promise rather than an actor, so the reply can be awaited
+instead of arranged for.
+
+`expect` is required, and it is not ceremony. A promise has no cell and so no
+declared message type of its own, and without one the request/response path
+would be the only delivery in the library with no type check on it. A reply of
+the wrong type raises `AskTypeError` in the caller rather than handing back a
+value whose static type is a lie.
+
+The failures are the reason to read the example. A timeout is the expensive
+answer, so it is the last resort: an ask watches its target, and a target that
+stops fails the ask at once instead of spending the deadline on an answer that
+provably is not coming.
+
+```python
+--8<-- "examples/tapio_examples/ask_timeout.py"
+```
+
+Awaiting an ask inside a handler stops that actor reading its mailbox until the
+reply lands. That is occasionally what you want and usually not: an actor that
+asks and waits is an actor that cannot answer.
+
 ## What the runtime gives you today
 
 - `ActorSystem`, with a `/user` guardian above everything you spawn.
@@ -105,8 +131,10 @@ tree:
 - `Behaviors.supervise(...).on_failure(...)`: resume, restart with backoff and
   a restart window, stop, escalate.
 - `ctx.watch` and `Terminated`, plus `PreRestart` and `PostStop`.
+- `await ref.ask(...)`, with a required reply type, a deadline, and a fast
+  failure when the target stops rather than a wait for the deadline.
 - `ctx.log`, which tags every record with the actor's path.
 - `await system.terminate()`, which drains the tree bottom-up against a single
   deadline and cancels anything still wedged when it passes.
 
-`ask`, timers, stash and routers are next.
+Timers, stash, message adapters and routers are next.

@@ -70,6 +70,11 @@ class DeadLetterReason:
     SYSTEM_TERMINATED = "system-terminated"
     """The whole system had shut down before the message was enqueued."""
 
+    ASK_SETTLED = "ask-settled"
+    """A reply arrived for an ask that was already over. The ask had timed out,
+    been answered, or lost its target, so there was no longer a future for the
+    reply to resolve and nobody left awaiting one."""
+
     MAILBOX_FULL = "mailbox-full"
     """A bounded mailbox was at capacity and its overflow strategy discarded
     this message. Which message that is depends on the strategy: the arriving

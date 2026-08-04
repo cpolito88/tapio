@@ -20,8 +20,10 @@ import random
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any, Generic, TypeVar, cast
 
+from tapio.actor.ask import ask as run_ask
 from tapio.actor.behavior import (
     Behavior,
     Directive,
@@ -37,6 +39,7 @@ from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
 from tapio.actor.signals import ChildFailed, PostStop, PreRestart, Signal, Terminated
 from tapio.actor.supervision import Decision, SupervisorStrategy
+from tapio.actor.watch import Watcher
 from tapio.dispatch.dispatcher import Dispatcher
 from tapio.errors import (
     ActorNameError,
@@ -54,6 +57,7 @@ __all__ = ["ActorCell", "ActorRuntime", "LocalActorRef"]
 
 T = TypeVar("T", bound=Message)
 U = TypeVar("U", bound=Message)
+R = TypeVar("R", bound=Message)
 
 _log = runtime_logger("runtime")
 
@@ -230,6 +234,47 @@ class LocalActorRef(ActorRef[T]):
             raise RuntimeError(msg)
         await cell.offer(message)
 
+    async def ask(
+        self,
+        make: Callable[[ActorRef[R]], T],
+        *,
+        expect: type[R],
+        timeout: timedelta | None = None,  # noqa: ASYNC109 - the ask deadline
+    ) -> R:
+        """Send one message and await one reply.
+
+        ```python
+        reply = await ref.ask(
+            lambda reply_to: Query(reply_to=reply_to),
+            expect=QueryResult,
+            timeout=timedelta(seconds=2),
+        )
+        ```
+
+        Awaiting from inside a handler stops that actor reading its mailbox
+        until the reply lands, which is occasionally what you want and usually
+        not: an actor that asks and waits is one that cannot answer.
+
+        Args:
+            make: Builds the request from the ref the reply should go to.
+            expect: The reply type, which is required rather than inferred.
+            timeout: How long to wait. The system's `ask_timeout` when omitted.
+
+        Returns:
+            The reply, which is the object the responder passed.
+
+        Raises:
+            AskTimeoutError: If no reply arrived in time.
+            AskTargetTerminated: If the target stopped without replying.
+            AskTypeError: If the reply was not an `expect`.
+            MessageTypeError: If the request does not match the target's
+                declared message type.
+            RuntimeError: If called off the system's loop.
+            pydantic.ValidationError: If content validation is on and either
+                the request or the reply does not satisfy its own model.
+        """
+        return await run_ask(self, make, expect=expect, timeout=timeout)
+
 
 class ActorCell(Generic[T]):
     """One actor: a mailbox, a behavior, a task, its children and its watchers."""
@@ -264,8 +309,9 @@ class ActorCell(Generic[T]):
         self._children: dict[str, ActorCell[Any]] = {}
         self._anonymous = itertools.count(1)
         # Both sides of every watch, so that neither a watcher nor a watched
-        # actor leaves an entry behind in the other when it stops.
-        self._watchers: dict[ActorPath, ActorCell[Any]] = {}
+        # actor leaves an entry behind in the other when it stops. The watchers
+        # are not all cells: an ask's promise watches its target too.
+        self._watchers: dict[ActorPath, Watcher] = {}
         self._watching: dict[ActorPath, ActorCell[Any]] = {}
         self._log = actor_logger(path)
         self._ctx: ActorContext[T] = _CellContext(self)
@@ -478,14 +524,14 @@ class ActorCell(Generic[T]):
         if target is not None:
             target.remove_watcher(self)
 
-    def add_watcher(self, watcher: "ActorCell[Any]") -> None:
-        """Register a cell to be told when this actor stops.
+    def add_watcher(self, watcher: Watcher) -> None:
+        """Register something to be told when this actor stops.
 
         Keyed by path, so watching twice still delivers exactly one signal.
         """
         self._watchers[watcher.path] = watcher
 
-    def remove_watcher(self, watcher: "ActorCell[Any]") -> None:
+    def remove_watcher(self, watcher: Watcher) -> None:
         """Deregister a watcher."""
         self._watchers.pop(watcher.path, None)
 

@@ -26,6 +26,12 @@ Generated from the source, so it cannot drift from what is installed.
 
 ::: tapio.actor.path.ActorPath
 
+## Ask
+
+::: tapio.actor.ask.ask
+
+::: tapio.actor.ask.PromiseRef
+
 ## Messages and validation
 
 ::: tapio.message.Message
