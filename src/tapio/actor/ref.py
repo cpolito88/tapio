@@ -8,8 +8,9 @@ from pydantic import GetCoreSchemaHandler
 from pydantic_core import core_schema
 
 from tapio.actor.path import ActorPath
-from tapio.errors import ActorRefDeserializationError
 from tapio.message import Message
+from tapio.remote.address import Address, format_ref
+from tapio.remote.context import resolve_ref
 
 __all__ = ["ActorRef"]
 
@@ -19,9 +20,6 @@ R = TypeVar("R", bound=Message)
 
 class ActorRef(Generic[T]):
     """A handle for sending messages to one actor.
-
-    Every `ActorRef` is local today, and a ref cannot be resolved from a
-    string: see the round-trip note below.
 
     A ref stays a valid handle after its actor dies, so sending to it never
     raises on account of the target being gone; the message goes to dead
@@ -37,17 +35,18 @@ class ActorRef(Generic[T]):
 
     Using one as a Pydantic field:
 
-    * Validation is an is-instance check and nothing else. It deliberately does
-      not check that the target is still alive: that is a race, since the
-      target can die between the check and the send, and a dead target is not a
-      schema error.
-    * Serialization is the actor path string, which is a debugging and logging
-      affordance today and the basis of the wire format once remoting lands.
-    * Deserialization is not supported. A model containing an `ActorRef`
-      therefore does *not* round-trip: `model_dump()` succeeds, and feeding its
-      output back to `model_validate()` raises
-      [ActorRefDeserializationError][tapio.errors.ActorRefDeserializationError].
-      This reads as a bug if you meet it unwarned, so it is stated plainly here.
+    * Validation of a live ref is an is-instance check and nothing else. It
+      deliberately does not check that the target is still alive: that is a
+      race, since the target can die between the check and the send, and a dead
+      target is not a schema error.
+    * Serialization is the ref's full string form, address and incarnation uid
+      included, which is what a peer needs to send back to it.
+    * Validation of that string resolves it against the system that is reading
+      it, so `model_dump()` succeeds anywhere and `model_validate()` on the
+      result succeeds only inside a system's decode path or an explicit
+      `with system.as_deserialization_context():` block. The asymmetry is
+      deliberate: a ref is a handle into a live runtime, and there is no
+      meaningful ref outside of one.
     """
 
     __slots__ = ("_path",)
@@ -60,6 +59,18 @@ class ActorRef(Generic[T]):
     def path(self) -> ActorPath:
         """Where this ref points."""
         return self._path
+
+    @property
+    def address(self) -> Address:
+        """The address this ref writes itself down with.
+
+        The system name and nothing else on this base class, which is what a
+        ref belonging to a system with remoting switched off is: a peer reading
+        it can tell which system it names and that it has nowhere to dial. The
+        refs a running system hands out override this with the canonical
+        address that system advertises.
+        """
+        return Address(system=self._path.system)
 
     def tell(self, message: T) -> None:
         """Send a message, without waiting and without blocking.
@@ -153,19 +164,11 @@ class ActorRef(Generic[T]):
 
 
 def _validate_ref(value: object) -> ActorRef[Any]:
-    """Accept a live ref, and reject a path string with a pointed error."""
+    """Accept a live ref, and resolve a string against the reading system."""
     if isinstance(value, ActorRef):
         return value
     if isinstance(value, str):
-        msg = (
-            f"cannot rebuild an ActorRef from {value!r}: resolving a path back "
-            "to a live ref needs a registry that tapio does not have yet. "
-            "Models containing an ActorRef serialize for logging and "
-            "debugging, but do not round-trip. Remoting is the feature that "
-            "will make this work, since a ref has to cross a wire before it "
-            "has to come back from one; until then, pass the ref itself."
-        )
-        raise ActorRefDeserializationError(msg)
+        return resolve_ref(value)
     # A ValueError here is the right shape: Pydantic folds it into the
     # enclosing ValidationError alongside any other field errors.
     msg = f"expected an ActorRef, got {type(value).__name__}"
@@ -173,5 +176,5 @@ def _validate_ref(value: object) -> ActorRef[Any]:
 
 
 def _serialize_ref(ref: ActorRef[Any]) -> str:
-    """Serialize a ref to its path string."""
-    return str(ref.path)
+    """Serialize a ref to its full string form, address and uid included."""
+    return format_ref(ref.address, ref.path)

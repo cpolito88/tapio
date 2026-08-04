@@ -18,20 +18,26 @@ from tapio.actor.system import ActorSystem
 from tapio.actor.timers import TimerScheduler
 from tapio.errors import (
     ActorNameError,
-    ActorRefDeserializationError,
     ActorSystemTerminating,
     AskTargetTerminated,
     AskTimeoutError,
     AskTypeError,
     BehaviorTypeError,
+    FrameTooLargeError,
     MailboxFullError,
+    MessageDecodingError,
+    MessageEncodingError,
+    MessageRegistrationError,
     MessageTypeError,
+    RefResolutionError,
     StashOverflowError,
     TapioError,
     WatchError,
 )
 from tapio.message import Message
-from tapio.settings import TapioSettings
+from tapio.remote.address import Address
+from tapio.remote.registry import register_message
+from tapio.settings import RemoteSettings, TapioSettings
 
 __all__ = [
     "AbstractBehavior",
@@ -39,9 +45,9 @@ __all__ = [
     "ActorNameError",
     "ActorPath",
     "ActorRef",
-    "ActorRefDeserializationError",
     "ActorSystem",
     "ActorSystemTerminating",
+    "Address",
     "AskTargetTerminated",
     "AskTimeoutError",
     "AskTypeError",
@@ -53,13 +59,19 @@ __all__ = [
     "DeadLetter",
     "DeadLetterReason",
     "Decision",
+    "FrameTooLargeError",
     "MailboxConfig",
     "MailboxFullError",
     "Message",
+    "MessageDecodingError",
+    "MessageEncodingError",
+    "MessageRegistrationError",
     "MessageTypeError",
     "OverflowStrategy",
     "PostStop",
     "PreRestart",
+    "RefResolutionError",
+    "RemoteSettings",
     "RoundRobin",
     "Routers",
     "RoutingStrategy",
@@ -73,6 +85,7 @@ __all__ = [
     "TimerScheduler",
     "WatchError",
     "__version__",
+    "register_message",
 ]
 
 __version__ = "0.0.0"

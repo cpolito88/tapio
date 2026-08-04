@@ -9,12 +9,14 @@ they share nothing but that loop.
 """
 
 import asyncio
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from types import TracebackType
-from typing import Self, TypeVar
+from typing import Any, Self, TypeVar
 
 from tapio.actor.behavior import Behavior, Behaviors
 from tapio.actor.cell import ActorCell, ActorRuntime
-from tapio.actor.dead_letters import DeadLetterOffice
+from tapio.actor.dead_letters import DeadLetterOffice, DeadLetterReason, DeadLetterRef
 from tapio.actor.mailbox import MailboxConfig
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
@@ -22,11 +24,24 @@ from tapio.dispatch.dispatcher import Dispatcher
 from tapio.errors import ActorSystemTerminating
 from tapio.logging import ActorLogAdapter, actor_logger
 from tapio.message import Message
-from tapio.settings import TapioSettings
+from tapio.remote.address import Address
+from tapio.remote.codec import receive_frame
+from tapio.remote.context import use_context
+from tapio.remote.registry import RefRegistry
+from tapio.settings import RemoteSettings, TapioSettings
 
-__all__ = ["ActorSystem"]
+__all__ = ["ActorSystem", "PeerResolver"]
 
 T = TypeVar("T", bound=Message)
+
+PeerResolver = Callable[[Address, ActorPath], "ActorRef[Any] | None"]
+"""Turns another system's address and a path into a ref that reaches it.
+
+The association layer installs one when remoting is switched on. Without one,
+and for an address no link exists to, a foreign ref resolves to a dead-letter
+target: `tell` stays total, and the message is accounted for rather than
+dropped.
+"""
 
 
 class _GuardianMessage(Message):
@@ -41,6 +56,22 @@ async def _guardian_receive(message: _GuardianMessage) -> Behavior[_GuardianMess
 def _guardian() -> Behavior[_GuardianMessage]:
     """Build a guardian's behavior."""
     return Behaviors.receive_message(_guardian_receive, msg_type=_GuardianMessage)
+
+
+def _canonical_address(name: str, remote: RemoteSettings | None) -> Address:
+    """Work out the address this system's refs write down.
+
+    Canonical falls back to bind, which is right for the ordinary case of a
+    process whose peers dial the interface it listens on, and overridable for
+    the ones where they cannot: containers, NAT and port mapping.
+    """
+    if remote is None:
+        return Address(system=name)
+    return Address(
+        system=name,
+        host=remote.canonical_host or remote.bind_host,
+        port=remote.canonical_port or remote.bind_port,
+    )
 
 
 class ActorSystem:
@@ -76,6 +107,9 @@ class ActorSystem:
         """
         self._settings = settings if settings is not None else TapioSettings()
         self._root = ActorPath.root(name)
+        self._address = _canonical_address(name, self._settings.remote)
+        self._refs = RefRegistry()
+        self._peer_resolver: PeerResolver | None = None
         dispatcher = Dispatcher.from_running_loop()
         self._dead_letters = DeadLetterOffice(
             log_first=self._settings.dead_letter_log_first,
@@ -86,6 +120,8 @@ class ActorSystem:
         )
         self._runtime = ActorRuntime(
             name=name,
+            address=self._address,
+            refs=self._refs,
             settings=self._settings,
             dispatcher=dispatcher,
             dead_letters=self._dead_letters,
@@ -135,9 +171,131 @@ class ActorSystem:
         return self._dead_letters
 
     @property
+    def address(self) -> Address:
+        """How peers address this system, and what its refs write down.
+
+        The canonical address when remoting is configured, which is what a peer
+        dials and not necessarily what a socket is bound to. Otherwise the
+        system name alone: a ref from a system with remoting off says which
+        system it belongs to and offers nowhere to dial.
+        """
+        return self._address
+
+    @property
+    def refs(self) -> RefRegistry:
+        """The live refs of this system, by path and incarnation uid.
+
+        Exposed for the same reason `watchers` is on a cell: "the registry was
+        emptied" has to be something a test can assert rather than infer, and
+        an entry outliving its actor is a leak of exactly the kind the runtime
+        promises not to have.
+        """
+        return self._refs
+
+    @property
     def is_terminating(self) -> bool:
         """Whether shutdown has begun."""
         return self._terminating
+
+    def set_peer_resolver(self, resolve: PeerResolver | None) -> None:
+        """Install what turns another system's address into a usable ref.
+
+        The association layer calls this when remoting starts. Until then, and
+        for any address it has no link to, a foreign ref resolves to a
+        dead-letter target.
+
+        Args:
+            resolve: Returns a ref for an address it can reach, and `None` for
+                one it cannot.
+        """
+        self._peer_resolver = resolve
+
+    def as_deserialization_context(self) -> AbstractContextManager[None]:
+        """Make this system the one refs deserialize against inside the block.
+
+        A ref's string form only means something relative to a system: the
+        reading system has to know whether the address is its own, so it can
+        hand back the live local ref rather than a proxy to itself. The
+        receiving end of a link enters this for the duration of a decode, and
+        it is exported so that `Greet.model_validate_json(blob)` is a thing a
+        test or a debugging session can do deliberately.
+
+        Returns:
+            A context manager. Refs resolve against this system inside it, and
+            raise [RefResolutionError][tapio.errors.RefResolutionError] outside.
+        """
+        return use_context(self)
+
+    def resolve(self, address: Address, path: ActorPath) -> ActorRef[Any]:
+        """Turn an address and a path into something that can be told messages.
+
+        This is the whole of ref resolution, and it never raises about the
+        target. There are three answers:
+
+        * The address is this system's own, and a live actor answers to that
+          path and uid: the live local ref, so a reply to a `reply_to` that
+          crossed a link is an ordinary local `tell` on the way back.
+        * The address is this system's own and nothing answers: a dead-letter
+          target. The uid is what makes this safe. A path on its own is
+          reusable, so without it a stale ref would address whoever occupies
+          that path now.
+        * The address is another system's: the peer resolver's answer, or a
+          dead-letter target when there is no link to that address.
+
+        Args:
+            address: The system the ref names.
+            path: Where in that system it points.
+
+        Returns:
+            A ref. Always.
+        """
+        if address.system == self.name and (
+            not address.is_addressable or address == self._address
+        ):
+            local = self._refs.lookup(path)
+            if local is not None:
+                return local
+            return DeadLetterRef(
+                path,
+                dead_letters=self._dead_letters,
+                reason=DeadLetterReason.UNKNOWN_RECIPIENT,
+            )
+        if self._peer_resolver is not None:
+            remote = self._peer_resolver(address, path)
+            if remote is not None:
+                return remote
+        return DeadLetterRef(
+            path,
+            dead_letters=self._dead_letters,
+            reason=DeadLetterReason.NO_ASSOCIATION,
+            peer=address,
+        )
+
+    def deliver_frame(self, data: bytes, *, peer: Address | None = None) -> None:
+        """Take one frame off a link and deliver what is in it.
+
+        The receiving half of remoting, and the reason it is a plain method:
+        every failure a peer can inflict is decided here, with no socket in
+        sight, so all of it is testable by handing one system the bytes another
+        one produced.
+
+        It never raises. A size, a version, a type key this system does not
+        know, a payload that will not validate, a recipient that has stopped
+        and a message the recipient does not accept all become dead letters on
+        this system's stream, carrying the peer address when there is one.
+
+        Args:
+            data: One complete frame, length prefix included.
+            peer: Where it came from, recorded on any dead letter.
+        """
+        remote = self._settings.remote
+        receive_frame(
+            data,
+            context=self,
+            dead_letters=self._dead_letters,
+            max_frame_bytes=remote.max_frame_bytes if remote is not None else None,
+            peer=peer,
+        )
 
     def spawn(
         self,

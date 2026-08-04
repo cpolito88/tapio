@@ -6,7 +6,39 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from tapio.actor.mailbox import MailboxConfig, OverflowStrategy
 
-__all__ = ["TapioSettings"]
+__all__ = ["RemoteSettings", "TapioSettings"]
+
+
+class RemoteSettings(BaseSettings):
+    """Where this system listens, and how peers address it.
+
+    Nested under `TapioSettings.remote` rather than spread across it, so "is
+    this system reachable from outside the process" is one `is None` check
+    instead of a handful of defaults that individually look harmless.
+
+    Bind and canonical are separate because they routinely differ: containers,
+    NAT and port mapping all mean the address a peer dials is not the one the
+    socket is bound to. What a ref writes down is always the canonical one.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="TAPIO_REMOTE_", frozen=True)
+
+    bind_host: str = "127.0.0.1"
+    """The interface to listen on. Loopback by default: a port that accepts
+    frames naming actor paths and message types is a serious surface, and the
+    default is set for someone who has not thought about it yet."""
+
+    bind_port: int = 25520
+    """The port to listen on."""
+
+    canonical_host: str | None = None
+    """The host peers dial. `bind_host` when omitted."""
+
+    canonical_port: int | None = None
+    """The port peers dial. `bind_port` when omitted."""
+
+    max_frame_bytes: int = 4 * 1024 * 1024
+    """Refuse a frame larger than this, before its body is read."""
 
 
 class TapioSettings(BaseSettings):
@@ -67,6 +99,15 @@ class TapioSettings(BaseSettings):
 
     dead_letter_summary_interval: timedelta = timedelta(seconds=60)
     """How often to log a summary once `dead_letter_log_first` is spent."""
+
+    remote: RemoteSettings | None = None
+    """How this system is addressed from outside the process.
+
+    `None` means remoting is off, which is the default: a system that has not
+    asked to be reachable is not. Refs it hands out still serialize, carrying
+    the system name and no host, so a peer reading one can tell which system it
+    names and that there is nowhere to dial.
+    """
 
     @property
     def default_mailbox(self) -> MailboxConfig:
