@@ -1,4 +1,4 @@
-# tapio — developer entry point.
+# tapio: developer entry point.
 #
 # This file is the single source of truth for what CI runs: the pipeline calls
 # `make ci` rather than re-spelling these commands, so local and CI cannot
@@ -55,15 +55,15 @@ check: lint type test ## Pre-push gate: lint + types + tests
 # --- testing -----------------------------------------------------------------
 
 .PHONY: test
-test: ## Run the test suite
-	$(UV) run pytest
+test: ## Run the test suite with coverage
+	$(UV) run pytest --cov=$(PKG) --cov-report=term-missing --cov-report=xml
 
 .PHONY: test-fast
 test-fast: ## Run tests, stop at first failure, quiet
 	$(UV) run pytest -x -q
 
 .PHONY: cov
-cov: ## Run tests with a coverage report
+cov: ## Run tests and open-ready HTML coverage in htmlcov/
 	$(UV) run pytest --cov=$(PKG) --cov-report=term-missing --cov-report=html
 
 .PHONY: bench
@@ -107,5 +107,5 @@ ci: ## What GitHub Actions runs: locked install, then the full gate
 
 .PHONY: clean
 clean: ## Remove build, cache, and coverage artifacts
-	rm -rf dist build site htmlcov .coverage .pytest_cache .mypy_cache .ruff_cache
+	rm -rf dist build site htmlcov .coverage coverage.xml .pytest_cache .mypy_cache .ruff_cache
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +

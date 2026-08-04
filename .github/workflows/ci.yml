@@ -32,6 +32,43 @@ jobs:
       - name: make ci
         run: make ci
 
+      # The badge is written from one leg of the matrix only: three legs racing
+      # a PATCH against the same gist would publish whichever finished last.
+      #
+      # Dormant until the repository variable COVERAGE_GIST_ID is set, in the
+      # same spirit as PUBLISH_DOCS below. It also needs a GIST_TOKEN secret: a
+      # personal access token with the `gist` scope, because the built-in
+      # GITHUB_TOKEN is scoped to the repository and cannot write gists.
+      - name: Publish the coverage badge
+        if: >-
+          matrix.python-version == '3.12'
+          && github.ref == 'refs/heads/main'
+          && github.event_name == 'push'
+          && vars.COVERAGE_GIST_ID != ''
+        env:
+          GH_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GIST_ID: ${{ vars.COVERAGE_GIST_ID }}
+        run: |
+          # The secrets context is not readable from a step `if`, so the token
+          # is checked here: a repository without GIST_TOKEN yet should skip
+          # the badge, not fail the gate.
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "GIST_TOKEN is not set, skipping the coverage badge."
+            exit 0
+          fi
+          total=$(uv run coverage report --format=total)
+          if   [ "$total" -ge 90 ]; then color=brightgreen
+          elif [ "$total" -ge 80 ]; then color=green
+          elif [ "$total" -ge 70 ]; then color=yellowgreen
+          elif [ "$total" -ge 60 ]; then color=yellow
+          else                           color=red
+          fi
+          jq -n --arg message "$total%" --arg color "$color" \
+            '{files: {"tapio-coverage.json": {content: (
+                {schemaVersion: 1, label: "coverage", message: $message, color: $color}
+                | tojson)}}}' \
+            | gh api -X PATCH "/gists/$GIST_ID" --input -
+
   # Publishing is a step of the same pipeline, not a workflow of its own: the
   # site only goes out if the gate above passed, on main, and it is built by
   # the same `make docs-build` that runs locally.

@@ -1,5 +1,8 @@
 # tapio
 
+[![CI](https://github.com/cpolito88/tapio/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/cpolito88/tapio/actions/workflows/ci.yml?query=branch%3Amain)
+[![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Fcpolito88%2Fe24a1b7f2d4f05b76fa10fb594e54347%2Fraw%2Ftapio-coverage.json)](https://github.com/cpolito88/tapio/actions/workflows/ci.yml?query=branch%3Amain)
+
 A Pekko-inspired actor toolkit for Python. Typed, asyncio-native actors with
 supervision, and Pydantic models throughout.
 
@@ -7,6 +10,16 @@ supervision, and Pydantic models throughout.
 > typed `tell`, bounded mailboxes, dead letters, a deadline-based shutdown,
 > supervision with backoff, and death watch. `ask`, timers, stash and routers
 > are still to come.
+
+> **Why this exists.** `tapio` is a testbed for AI agentic development. The
+> point of the project is to find out what coding agents can carry on their
+> own over a real codebase: a non-trivial design, invariants that span
+> modules, and a gate that has to stay green. Nearly all of the code, tests
+> and documentation here is written by agents under human review.
+>
+> The library itself is meant to work, and the design decisions are argued
+> rather than generated. Treat it as an experiment that happens to be
+> functional software, not as something to depend on in production yet.
 
 Named for the Finnish god of the forest, because supervision hierarchies are
 trees. It keeps the mythological lineage of Akka (Sámi) and Apache Pekko
