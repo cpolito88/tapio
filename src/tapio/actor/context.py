@@ -21,8 +21,12 @@ U = TypeVar("U", bound=Message)
 class ActorContext(ABC, Generic[T]):
     """The runtime handed to a behavior for the duration of a message.
 
-    Only the members the runtime can honour today are declared. Timers,
-    stashing and `run_blocking` arrive with the milestones that implement them.
+    Only the members the runtime can honour today are declared; `run_blocking`
+    arrives with the milestone that implements it. Timers and stashing are not
+    here on purpose: both are handed to a behavior by
+    `Behaviors.with_timers` and `Behaviors.with_stash`, because both outlive an
+    incarnation and belong to the cell rather than to whatever the actor is
+    doing when it reaches for one.
     An abstract class rather than a Protocol, because the runtime hands out one
     concrete implementation and users are never expected to write their own.
     """

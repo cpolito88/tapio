@@ -118,6 +118,48 @@ Awaiting an ask inside a handler stops that actor reading its mailbox until the
 reply lands. That is occasionally what you want and usually not: an actor that
 asks and waits is an actor that cannot answer.
 
+## Doing something later, and holding what you cannot do yet
+
+A timer sends the actor a message on its own user lane. That is the whole
+design: a tick is ordinary traffic, so it queues behind what is already there
+and can never re-enter a handler that is still running. Timers belong to the
+cell, not to the behavior, which is why they come from
+`Behaviors.with_timers` and why a restart cancels them: a tick scheduled by
+the incarnation that just failed must not arrive at the one replacing it.
+
+`start_fixed_delay` measures the gap from one send to the next, so an actor
+that falls behind simply gets fewer ticks. `start_fixed_rate` counts ticks off
+a fixed schedule and sends the missed ones back to back once a stall is over.
+The second is the one to think twice about, since the catch-up burst arrives
+at an actor that has just proved it is not keeping up, and it is the right
+choice when the promise really is a rate:
+
+```python
+--8<-- "examples/tapio_examples/rate_limiter.py"
+```
+
+An actor that cannot answer yet has one good option: accept what arrives, put
+it aside, and replay it once it can. `Behaviors.with_stash` gives it a bounded
+buffer to do that with, and `stash.unstash_all(next_behavior)` switches state
+and replays the backlog in one call.
+
+The replay goes to the *front* of the mailbox, ahead of anything that queued
+up in the meantime, so nothing is reordered. The actor also stays an ordinary
+actor throughout, which is why the replay is not a loop inside the unstash: a
+stop arriving mid-replay is honoured rather than queued behind work nobody
+wants any more.
+
+```python
+--8<-- "examples/tapio_examples/stash_on_startup.py"
+```
+
+The capacity is required. A stash holds traffic the actor is by definition not
+keeping up with, so an unbounded one is a memory leak with a good excuse.
+Overflow raises `StashOverflowError` in the actor that stashed, where the
+decision about what to shed belongs, and a restart empties the buffer:
+messages held by the state that just failed are not the new state's to answer,
+and what is discarded is published as a dead letter rather than dropped.
+
 ## What the runtime gives you today
 
 - `ActorSystem`, with a `/user` guardian above everything you spawn.
@@ -133,8 +175,12 @@ asks and waits is an actor that cannot answer.
 - `ctx.watch` and `Terminated`, plus `PreRestart` and `PostStop`.
 - `await ref.ask(...)`, with a required reply type, a deadline, and a fast
   failure when the target stops rather than a wait for the deadline.
+- `Behaviors.with_timers(...)`: single, fixed-delay and fixed-rate timers,
+  cancelled by the cell on restart and on stop.
+- `Behaviors.with_stash(...)`: a bounded buffer and `unstash_all`, which
+  replays in arrival order ahead of newer traffic.
 - `ctx.log`, which tags every record with the actor's path.
 - `await system.terminate()`, which drains the tree bottom-up against a single
   deadline and cancels anything still wedged when it passes.
 
-Timers, stash, message adapters and routers are next.
+Message adapters and routers are next.

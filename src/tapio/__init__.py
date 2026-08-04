@@ -11,8 +11,10 @@ from tapio.actor.mailbox import MailboxConfig, OverflowStrategy
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
 from tapio.actor.signals import ChildFailed, PostStop, PreRestart, Signal, Terminated
+from tapio.actor.stash import StashBuffer
 from tapio.actor.supervision import Backoff, Decision, SupervisorStrategy
 from tapio.actor.system import ActorSystem
+from tapio.actor.timers import TimerScheduler
 from tapio.errors import (
     ActorNameError,
     ActorRefDeserializationError,
@@ -23,6 +25,7 @@ from tapio.errors import (
     BehaviorTypeError,
     MailboxFullError,
     MessageTypeError,
+    StashOverflowError,
     TapioError,
     WatchError,
 )
@@ -57,10 +60,13 @@ __all__ = [
     "PostStop",
     "PreRestart",
     "Signal",
+    "StashBuffer",
+    "StashOverflowError",
     "SupervisorStrategy",
     "TapioError",
     "TapioSettings",
     "Terminated",
+    "TimerScheduler",
     "WatchError",
     "__version__",
 ]

@@ -2,9 +2,9 @@
 
 Every row of the restart table is asserted here rather than described, because
 a supervision library whose restart semantics are implicit is one nobody can
-reason about. Two rows are missing on purpose: restart-clears-stash and
-restart-cancels-timers, since neither a stash nor a timer exists yet. They land
-with the feature they are about.
+reason about. Two rows are asserted elsewhere, next to the feature they are
+about: restart-cancels-timers in `tests/test_timers.py` and
+restart-clears-stash in `tests/test_stash.py`.
 """
 
 import asyncio

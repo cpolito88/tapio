@@ -21,7 +21,7 @@ import inspect
 import typing
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from tapio.actor.context import ActorContext
 from tapio.actor.signals import Signal
@@ -29,6 +29,10 @@ from tapio.actor.supervision import SupervisorStrategy
 from tapio.errors import BehaviorTypeError
 from tapio.message import Message
 from tapio.validation import MessageType, normalize_msg_type
+
+if TYPE_CHECKING:  # both modules import this one, so importing them back at
+    from tapio.actor.stash import StashBuffer  # runtime would be a cycle
+    from tapio.actor.timers import TimerScheduler
 
 __all__ = [
     "AbstractBehavior",
@@ -40,6 +44,8 @@ __all__ = [
     "SignalHandler",
     "Supervise",
     "SuperviseBehavior",
+    "WithStashBehavior",
+    "WithTimersBehavior",
     "directive_of",
     "resolve_handler_msg_type",
 ]
@@ -298,6 +304,51 @@ class SetupBehavior(Behavior[T]):
     def __repr__(self) -> str:
         """Name the wrapped factory."""
         return f"Behaviors.setup({_name_of(self._factory)})"
+
+
+class WithTimersBehavior(Behavior[T]):
+    """Deferred construction that also hands over a timer scheduler.
+
+    Like `setup`, and for the same reason: the scheduler belongs to the cell,
+    so it cannot exist until there is one. A restart re-runs the factory
+    against the same scheduler, whose timers the cell has just cancelled.
+    """
+
+    def __init__(self, factory: "Callable[[TimerScheduler[T]], Behavior[T]]") -> None:
+        """Bind the factory to run when the actor starts."""
+        self._factory = factory
+
+    def with_timers(self, timers: "TimerScheduler[T]") -> Behavior[T]:
+        """Produce the actual behavior for a starting actor."""
+        return self._factory(timers)
+
+    def __repr__(self) -> str:
+        """Name the wrapped factory."""
+        return f"Behaviors.with_timers({_name_of(self._factory)})"
+
+
+class WithStashBehavior(Behavior[T]):
+    """Deferred construction that also hands over a stash buffer.
+
+    The capacity is declared here rather than on the buffer the factory
+    receives, because the cell owns the buffer across incarnations and a
+    restart must not be able to quietly resize it.
+    """
+
+    def __init__(
+        self, capacity: int, factory: "Callable[[StashBuffer[T]], Behavior[T]]"
+    ) -> None:
+        """Bind the factory and the capacity of the buffer it will be given."""
+        self._factory = factory
+        self.capacity = capacity
+
+    def with_stash(self, stash: "StashBuffer[T]") -> Behavior[T]:
+        """Produce the actual behavior for a starting actor."""
+        return self._factory(stash)
+
+    def __repr__(self) -> str:
+        """Name the capacity and the wrapped factory."""
+        return f"Behaviors.with_stash({self.capacity}, {_name_of(self._factory)})"
 
 
 class AbstractBehavior(ReceivingBehavior[T], ABC):
@@ -582,6 +633,70 @@ class Behaviors:
             The behavior.
         """
         return SetupBehavior(factory)
+
+    @staticmethod
+    def with_timers(
+        factory: "Callable[[TimerScheduler[T]], Behavior[T]]",
+    ) -> Behavior[T]:
+        """Defer construction, handing the behavior a scheduler for its timers.
+
+        ```python
+        Behaviors.with_timers(
+            lambda timers: poller(timers, every=timedelta(seconds=30))
+        )
+        ```
+
+        A timer sends the actor a message on its own user lane, so a tick is
+        ordinary traffic: it queues behind whatever is already there and never
+        re-enters a busy handler.
+
+        The scheduler belongs to the cell, and the cell cancels every timer it
+        holds when the actor restarts or stops. A tick from an incarnation that
+        has gone away therefore cannot arrive at the one that replaced it, and
+        the factory below runs again on restart to schedule what the new
+        incarnation needs.
+
+        Args:
+            factory: Called with the scheduler to produce the real behavior.
+
+        Returns:
+            The behavior.
+        """
+        return WithTimersBehavior(factory)
+
+    @staticmethod
+    def with_stash(
+        capacity: int,
+        factory: "Callable[[StashBuffer[T]], Behavior[T]]",
+    ) -> Behavior[T]:
+        """Defer construction, handing the behavior a buffer to hold messages in.
+
+        ```python
+        Behaviors.with_stash(100, lambda stash: loading(stash))
+        ```
+
+        For an actor that cannot answer yet: put what arrives aside, and
+        `return stash.unstash_all(ready_behavior)` once it can. The held
+        messages go back to the front of the mailbox, ahead of anything that
+        queued up since, and the buffer is left empty.
+
+        The capacity is required. A stash holds traffic the actor is by
+        definition not keeping up with, so an unbounded one is a memory leak
+        with an excuse; overflow raises `StashOverflowError` in the actor that
+        stashed, where the decision about what to do belongs.
+
+        A restart empties the buffer, since messages held by the state that
+        just failed are not the new state's to answer, and what is discarded is
+        published as a dead letter rather than dropped.
+
+        Args:
+            capacity: How many messages the buffer can hold.
+            factory: Called with the buffer to produce the real behavior.
+
+        Returns:
+            The behavior.
+        """
+        return WithStashBehavior(capacity, factory)
 
     @staticmethod
     def same() -> Behavior[T]:

@@ -11,6 +11,8 @@ from tapio.actor.behavior import (
     SignalHandler,
     Supervise,
     SuperviseBehavior,
+    WithStashBehavior,
+    WithTimersBehavior,
 )
 from tapio.actor.cell import ActorCell, LocalActorRef
 from tapio.actor.context import ActorContext
@@ -30,8 +32,10 @@ from tapio.actor.signals import (
     Signal,
     Terminated,
 )
+from tapio.actor.stash import StashBuffer, UnstashBehavior
 from tapio.actor.supervision import Backoff, Decision, SupervisorStrategy
 from tapio.actor.system import ActorSystem
+from tapio.actor.timers import TimerScheduler
 from tapio.actor.watch import Watcher
 
 __all__ = [
@@ -62,11 +66,16 @@ __all__ = [
     "SetupBehavior",
     "Signal",
     "SignalHandler",
+    "StashBuffer",
     "Subscription",
     "Supervise",
     "SuperviseBehavior",
     "SupervisorStrategy",
     "Terminated",
+    "TimerScheduler",
+    "UnstashBehavior",
     "Watcher",
+    "WithStashBehavior",
+    "WithTimersBehavior",
     "ask",
 ]

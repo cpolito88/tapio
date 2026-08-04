@@ -164,6 +164,20 @@ class Mailbox:
                 self._append(message)
                 return displaced
 
+    def put_front(self, message: Message) -> None:
+        """Put a message back at the head of the user lane.
+
+        For unstashing, which is a replay rather than a send: these messages
+        were accepted once already and are going back where they would have
+        been, ahead of everything that queued up while the actor was not ready
+        for them. Capacity is deliberately not consulted, for the same reason
+        the system lane has none: a replay that could be refused would make
+        `unstash_all` a request rather than a guarantee, and the messages have
+        nowhere else to go.
+        """
+        self._user.appendleft(message)
+        self._nonempty.set()
+
     def put_system(self, signal: Signal) -> None:
         """Append to the system lane.
 

@@ -18,6 +18,8 @@ from tapio_examples import (
     graceful_shutdown,
     hello_world,
     ping_pong,
+    rate_limiter,
+    stash_on_startup,
     supervision_backoff,
 )
 
@@ -30,6 +32,8 @@ ASSERTED = {
     "graceful_shutdown",
     "hello_world",
     "ping_pong",
+    "rate_limiter",
+    "stash_on_startup",
     "supervision_backoff",
 }
 
@@ -168,6 +172,40 @@ async def test_graceful_shutdown():
         "conn-1: closed",
         "conn-2: closed",
         "pool: closed, after every connection in it",
+    ]
+
+
+async def test_stash_on_startup():
+    with assert_no_leaked_tasks():
+        lines = await stash_on_startup.main()
+
+    # The two that arrived before the template are answered first and in the
+    # order they were sent, and the one that arrived after does not overtake
+    # them despite the actor being ready by the time it landed.
+    assert lines == [
+        "greeter: loading, holding what arrives",
+        "greeter: not ready, stashed ada",
+        "greeter: not ready, stashed grace",
+        "greeter: loaded, replaying 2 held",
+        "greeter: hello, ada!",
+        "greeter: hello, grace!",
+        "greeter: hello, carol!",
+    ]
+
+
+async def test_rate_limiter():
+    with assert_no_leaked_tasks():
+        lines = await rate_limiter.main()
+
+    # A bucket of two against a burst of five, then one refilled permit. The
+    # burst is sent in a single go, so no refill can land inside it.
+    assert lines == [
+        "req-1: allowed",
+        "req-2: allowed",
+        "req-3: throttled",
+        "req-4: throttled",
+        "req-5: throttled",
+        "req-6: allowed",
     ]
 
 
