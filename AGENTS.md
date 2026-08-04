@@ -64,10 +64,24 @@ you are already editing.
 - **Do not wrap pull request bodies.** One line per paragraph and one per list
   item, however long. GitHub renders Markdown, so a hard-wrapped body and an
   unwrapped one look identical in the browser, and the wrapping only shows in
-  the raw editor. It is not free, though: a squash merge re-wraps the body at
-  72 into the merge commit, so text that was already wrapped at 79 gets wrapped
-  twice and lands in the permanent history ragged, with stray two-word lines.
-  Wrapping once, at merge time, is the point.
+  the raw editor. What it costs is in the permanent history: GitHub generates a
+  squash merge's message from the pull request body and wraps it at 72, so a
+  body already wrapped at 79 gets wrapped a second time and lands ragged, with
+  stray two-word lines. Wrapping once, at merge time, is the point. PR #3's
+  merge commit has the artifact, with "and a / shutdown / that drains the tree"
+  split across three lines.
+- **Let the merge generate its own message.** `gh pr merge --squash` with no
+  `--body-file` uses the pull request body and applies the wrapping above.
+  Passing a body explicitly sends it verbatim and skips the wrapping entirely,
+  so an unwrapped body becomes an unwrapped commit: one paragraph, one
+  several-hundred-character line, unreadable in `git log`. PR #4's merge commit
+  has *that* artifact, which is how this rule got its second half. If a merge
+  message really has to be supplied by hand, wrap it at 72 first.
+- **End the pull request body with the `Co-Authored-By` trailer**, not just the
+  branch commits. The squash message is built from the body and the branch
+  commits' trailers are discarded with their messages, so a trailer on every
+  commit of the branch still does not reach `main`. PR #4's merge commit has
+  none, while all four of its branch commits did.
 - Say what changed and why, and where a decision contradicts the design notes,
   say so explicitly. That is a decision, not an oversight.
 - Name the tests that would fail if the change regressed. "CI is green" is not
