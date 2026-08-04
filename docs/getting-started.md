@@ -239,5 +239,17 @@ unwritable rather than merely checked for:
 - `ctx.log`, which tags every record with the actor's path.
 - `await system.terminate()`, which drains the tree bottom-up against a single
   deadline and cancels anything still wedged when it passes.
+- `@register_message()`, which gives a message type the key a frame names it
+  by. A key is a registry lookup and never an import path, so a type name that
+  arrived on a socket can never become an import.
+- `system.address` and refs that write themselves down in full, address and
+  incarnation uid included, and resolve back to live refs inside
+  `with system.as_deserialization_context():`.
+- `system.deliver_frame(...)`, the receiving half of remoting. Everything a
+  peer can get wrong is decided here and becomes a dead letter naming the
+  peer: an unreadable frame, a type key this system does not know, a payload
+  that will not validate, an actor that has stopped, a stale incarnation, a
+  message the recipient does not accept.
 
-Remoting is next: addressing, a wire format, and refs that survive a crossing.
+The transport is next: TCP associations, a handshake, and frames that travel
+between processes rather than being handed over by hand.

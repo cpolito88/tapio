@@ -36,6 +36,7 @@ from tapio.errors import (
 )
 from tapio.logging import runtime_logger
 from tapio.message import Message
+from tapio.remote.address import Address
 from tapio.validation import MessageValidator, normalize_msg_type, resolve_validator
 
 if TYPE_CHECKING:
@@ -55,11 +56,11 @@ _PROMISES = "promises"
 class PromiseRef(ActorRef[R]):
     """A ref with no actor behind it, whose `tell` completes one ask.
 
-    It is addressable rather than anonymous because a reply may one day come
-    back across a wire and has to be able to find its way: every promise has a
-    path under `/system/promises`. Nothing registers that path today, since
-    only serialization needs a lookup and no ref is serialized until remoting
-    lands, so a local ask pays for the path and nothing more.
+    It is addressable rather than anonymous because a reply may come back
+    across a wire and has to find its way: every promise has a path under
+    `/system/promises` and is registered there for as long as the ask is
+    running, which is what lets a `reply_to` that crossed a link resolve back
+    to the future somebody is awaiting.
     """
 
     __slots__ = ("_expected", "_future", "_runtime", "_settled", "_target", "_validate")
@@ -89,6 +90,11 @@ class PromiseRef(ActorRef[R]):
         self._target = target
         self._future: asyncio.Future[R] = runtime.dispatcher.loop.create_future()
         self._settled = False
+
+    @property
+    def address(self) -> Address:
+        """The canonical address of the system the asker is running in."""
+        return self._runtime.address
 
     @property
     def future(self) -> "asyncio.Future[R]":
@@ -157,8 +163,12 @@ class PromiseRef(ActorRef[R]):
         arrived in the same breath as the caller giving up is retrieved here,
         since an unretrieved one is reported by asyncio at collection time as
         if something had gone unhandled.
+
+        The promise also stops being addressable, so an ask leaves nothing
+        behind in the ref registry however it ended.
         """
         self._settled = True
+        self._runtime.refs.deregister(self.path)
         if not self._future.done():
             self._future.cancel()
         elif not self._future.cancelled():
@@ -251,6 +261,9 @@ async def ask(
         )
         raise AskTargetTerminated(msg)
     cell.add_watcher(promise)
+    # After the early exit above, so that an ask which never starts leaves
+    # nothing registered. `settle` in the `finally` below takes it out again.
+    runtime.refs.register(promise)
 
     seconds = (
         timeout if timeout is not None else runtime.settings.ask_timeout

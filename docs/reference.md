@@ -56,6 +56,22 @@ Generated from the source, so it cannot drift from what is installed.
 
 ::: tapio.settings.TapioSettings
 
+## Addressing and the wire format
+
+::: tapio.remote.address.Address
+
+::: tapio.remote.address.format_ref
+
+::: tapio.remote.address.parse_ref
+
+::: tapio.remote.registry
+
+::: tapio.remote.codec
+
+::: tapio.remote.context
+
+::: tapio.settings.RemoteSettings
+
 ## Supervision
 
 ::: tapio.actor.supervision.SupervisorStrategy

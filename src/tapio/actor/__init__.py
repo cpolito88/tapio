@@ -21,6 +21,7 @@ from tapio.actor.dead_letters import (
     DeadLetter,
     DeadLetterOffice,
     DeadLetterReason,
+    DeadLetterRef,
     Subscription,
 )
 from tapio.actor.mailbox import Envelope, Mailbox, MailboxConfig, OverflowStrategy
@@ -36,7 +37,7 @@ from tapio.actor.signals import (
 )
 from tapio.actor.stash import StashBuffer, UnstashBehavior
 from tapio.actor.supervision import Backoff, Decision, SupervisorStrategy
-from tapio.actor.system import ActorSystem
+from tapio.actor.system import ActorSystem, PeerResolver
 from tapio.actor.timers import TimerScheduler
 from tapio.actor.watch import Watcher
 
@@ -55,6 +56,7 @@ __all__ = [
     "DeadLetter",
     "DeadLetterOffice",
     "DeadLetterReason",
+    "DeadLetterRef",
     "Decision",
     "Directive",
     "Envelope",
@@ -62,6 +64,7 @@ __all__ = [
     "Mailbox",
     "MailboxConfig",
     "OverflowStrategy",
+    "PeerResolver",
     "PostStop",
     "PreRestart",
     "PromiseRef",

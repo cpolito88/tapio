@@ -1,18 +1,16 @@
 """`ActorRef` as a Pydantic field.
 
-A model with an `ActorRef` field must validate from a live ref and dump to a
-path string, and the dump-then-validate direction must raise the documented
-error rather than half-working.
+A model with an `ActorRef` field must validate from a live ref and dump to the
+ref's full string form. The dump-then-validate direction needs a system to
+resolve against, and says so when there is none.
 """
-
-import re
 
 import pytest
 from pydantic import ValidationError
 
 from tapio import Message
 from tapio.actor import ActorPath, ActorRef
-from tapio.errors import ActorRefDeserializationError
+from tapio.errors import RefResolutionError
 from tests.messages import Greet, Greeted
 
 
@@ -37,19 +35,18 @@ def test_a_ref_serializes_to_a_path_string_in_json_mode(ref):
     assert dumped["reply_to"] == "tapio://sys/user/greeter#42"
 
 
-def test_a_model_holding_a_ref_does_not_round_trip(ref):
-    # Worth an explicit test because it reads as a bug otherwise: the dump
-    # succeeds, and feeding it back does not.
+def test_a_model_holding_a_ref_does_not_round_trip_outside_a_system(ref):
+    # The documented asymmetry: a dump succeeds anywhere, and validating it
+    # back needs the system that would resolve the ref. Worth an explicit test
+    # because it reads as a bug otherwise.
     dumped = Greet(whom="world", count=1, reply_to=ref).model_dump()
-    with pytest.raises(
-        ActorRefDeserializationError, match="cannot rebuild an ActorRef"
-    ):
+    with pytest.raises(RefResolutionError, match="without a system"):
         Greet.model_validate(dumped)
 
 
-def test_the_round_trip_error_names_the_feature_that_will_fix_it(ref):
+def test_the_resolution_error_says_how_to_get_a_system_in_scope(ref):
     dumped = Greet(whom="world", count=1, reply_to=ref).model_dump()
-    with pytest.raises(ActorRefDeserializationError, match=re.escape("Remoting")):
+    with pytest.raises(RefResolutionError, match="as_deserialization_context"):
         Greet.model_validate(dumped)
 
 

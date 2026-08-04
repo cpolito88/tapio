@@ -56,6 +56,8 @@ from tapio.errors import (
 )
 from tapio.logging import ActorLogAdapter, actor_logger, runtime_logger
 from tapio.message import Message
+from tapio.remote.address import Address
+from tapio.remote.registry import RefRegistry
 from tapio.settings import TapioSettings
 from tapio.validation import MessageType, MessageValidator, resolve_validator
 
@@ -104,6 +106,18 @@ class ActorRuntime:
 
     name: str
     """The system name, and so the first element of every path."""
+
+    address: Address
+    """The canonical address every ref from this system writes itself with."""
+
+    refs: RefRegistry
+    """The live refs of this system, by path and incarnation uid.
+
+    A cell registers when it starts and deregisters in its termination
+    sequence, which is what lets a ref that crossed a wire find its way back to
+    a live actor, and what makes a stale uid resolve to nothing rather than to
+    the newcomer at that path.
+    """
 
     settings: TapioSettings
     """Tunables shared by every cell in the system."""
@@ -158,6 +172,11 @@ class LocalActorRef(ActorRef[T]):
         """Bind the ref to its cell."""
         super().__init__(cell.path)
         self._cell = cell
+
+    @property
+    def address(self) -> Address:
+        """The canonical address of the system this actor runs in."""
+        return self._cell.runtime.address
 
     @property
     def cell(self) -> "ActorCell[T]":
@@ -315,6 +334,7 @@ class ActorCell(Generic[T]):
         self._children: dict[str, ActorCell[Any]] = {}
         self._anonymous = itertools.count(1)
         self._adapters = itertools.count(1)
+        self._adapter_paths: list[ActorPath] = []
         # Both sides of every watch, so that neither a watcher nor a watched
         # actor leaves an entry behind in the other when it stops. The watchers
         # are not all cells: an ask's promise watches its target too.
@@ -430,6 +450,10 @@ class ActorCell(Generic[T]):
             settings=self._runtime.settings,
             target=self._path,
         )
+        # Registered here rather than in the constructor, so that a cell which
+        # never starts is never addressable, and deregistered in `_finish`, so
+        # that the registry holds exactly the live actors.
+        self._runtime.refs.register(self._ref)
         self._task = self._runtime.dispatcher.spawn_task(
             self._run(), name=f"tapio-cell:{self._path}"
         )
@@ -535,7 +559,7 @@ class ActorCell(Generic[T]):
         path = self._path.child(
             f"$adapter-{next(self._adapters)}", uid=self._runtime.next_uid()
         )
-        return AdapterRef(
+        ref: AdapterRef[U] = AdapterRef(
             cell=self,
             path=path,
             adapt=cast("Callable[[Any], Message]", adapt),
@@ -543,6 +567,12 @@ class ActorCell(Generic[T]):
                 msg_type=resolved, settings=self._runtime.settings, target=path
             ),
         )
+        # An adapter is addressable like the actor behind it, so a ref handed
+        # to a peer resolves on the way back. It lives and dies with its owner,
+        # which is why the owner is what deregisters it.
+        self._runtime.refs.register(ref)
+        self._adapter_paths.append(path)
+        return ref
 
     def watch(self, ref: ActorRef[Any]) -> None:
         """Ask to be told when another actor stops.
@@ -1069,10 +1099,24 @@ class ActorCell(Generic[T]):
         self._drain_to_dead_letters()
         self._discard_stash()
         self._release_watches()
+        self._deregister_refs()
         if self._parent is not None:
             self._parent._remove_child(self)
         self._log.debug("stopped")
         self._terminated.set_result(None)
+
+    def _deregister_refs(self) -> None:
+        """Take this actor and its adapters out of the ref registry.
+
+        A registry that outlives what it names is the same leak death watch
+        exists to prevent, one layer down: an entry left behind would let a
+        stale ref address whoever occupies that path next.
+        """
+        refs = self._runtime.refs
+        refs.deregister(self._path)
+        for path in self._adapter_paths:
+            refs.deregister(path)
+        self._adapter_paths.clear()
 
     def _release_watches(self) -> None:
         """Tell the watchers, and leave nothing behind in the watched.

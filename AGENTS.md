@@ -30,9 +30,10 @@ first.
 |---|---|
 | `src/tapio/` | the library, shipped in the wheel |
 | `src/tapio/actor/` | paths, refs, behaviors, cell, mailbox, system |
+| `src/tapio/remote/` | addressing, the wire format, and the registries behind them |
 | `src/tapio/dispatch/` | the event loop a system's tasks run on |
 | `src/tapio/testkit/` | helpers for testing actor code, shipped |
-| `tests/` | unit tests, plus `tests/examples/` and `tests/benchmarks/` |
+| `tests/` | unit tests, mirroring the source packages, plus `tests/examples/` and `tests/benchmarks/` |
 | `examples/tapio_examples/` | runnable examples, dev-only, never shipped |
 | `docs/` | mkdocs-material, code included from `examples/` |
 
@@ -89,8 +90,15 @@ you are already editing.
 
 ## Testing
 
+- **The test tree mirrors the source tree.** A test for `tapio.remote.codec`
+  lives in `tests/remote/test_codec.py`. Shared fixtures and fakes stay at
+  `tests/`, since they are shared by every package.
 - `pytest-asyncio` runs in auto mode, so an `async def test_...` needs no
   marker. Warnings are errors.
+- **Stop an actor through its behavior, not with `cell.abort()`.** Abort
+  cancels the cell's task, and the `CancelledError` that follows lands in the
+  test rather than in the runtime. Send a message the behavior answers with
+  `Behaviors.stopped()` and wait for the effect with `eventually`.
 - Anything that starts a system wraps itself in
   `tapio.testkit.assert_no_leaked_tasks()`. The runtime deliberately does not
   use `TaskGroup`, so "no orphaned tasks" is an invariant this suite has to

@@ -13,18 +13,21 @@ everything else in the log.
 
 import time
 from collections.abc import Callable, Iterator
-from typing import Annotated, TypeAlias
+from typing import Annotated, Any, TypeAlias
 
 from pydantic import PlainValidator, SerializeAsAny
 
 from tapio.actor.path import ActorPath
+from tapio.actor.ref import ActorRef
 from tapio.logging import runtime_logger
 from tapio.message import Message
+from tapio.remote.address import Address
 
 __all__ = [
     "DeadLetter",
     "DeadLetterOffice",
     "DeadLetterReason",
+    "DeadLetterRef",
     "Subscription",
 ]
 
@@ -86,6 +89,30 @@ class DeadLetterReason:
     this message. Which message that is depends on the strategy: the arriving
     one under `DROP_NEW`, the oldest queued one under `DROP_OLDEST`."""
 
+    UNKNOWN_RECIPIENT = "unknown-recipient"
+    """No live actor answers to that path and incarnation uid. Either nothing
+    was ever there, or the ref is stale: the actor it named has stopped, and
+    whoever occupies that path now is a stranger to the sender."""
+
+    UNKNOWN_MESSAGE_TYPE = "unknown-message-type"
+    """A frame named a type key this system has not registered. Nothing is
+    imported to find out what it might have meant."""
+
+    WRONG_MESSAGE_TYPE = "wrong-message-type"
+    """A frame decoded into a message the recipient does not accept. The
+    sender's declaration and the recipient's real protocol are independently
+    deployed, so this is the check that can be trusted."""
+
+    MALFORMED_FRAME = "malformed-frame"
+    """A frame was not readable: not JSON, not a version this system speaks, or
+    a payload that failed validation."""
+
+    FRAME_TOO_LARGE = "frame-too-large"
+    """A frame exceeded the configured size limit and was refused."""
+
+    NO_ASSOCIATION = "no-association"
+    """A ref addressed another system that this one has no link to."""
+
 
 class DeadLetter(Message):
     """One message that was sent and never delivered."""
@@ -98,6 +125,16 @@ class DeadLetter(Message):
 
     reason: str
     """One of the `DeadLetterReason` constants."""
+
+    peer: str | None = None
+    """The address involved, when a remote link was. Carried as a field rather
+    than folded into `reason` so a subscriber can tell "this actor is gone"
+    from "that node is gone" without parsing a string."""
+
+    detail: str | None = None
+    """The specifics, when the reason alone does not carry them: the type key
+    nobody registered, the two types that did not match, the size that was
+    refused."""
 
 
 class Subscription:
@@ -196,16 +233,32 @@ class DeadLetterOffice:
 
         return Subscription(cancel)
 
-    def publish(self, message: Message, recipient: ActorPath, reason: str) -> None:
+    def publish(
+        self,
+        message: Message,
+        recipient: ActorPath,
+        reason: str,
+        *,
+        peer: Address | None = None,
+        detail: str | None = None,
+    ) -> None:
         """Record an undeliverable message and tell everyone who asked.
 
         Args:
             message: The message that was not delivered.
             recipient: Where it was addressed.
             reason: One of the `DeadLetterReason` constants.
+            peer: The remote address involved, when one was.
+            detail: The specifics the reason alone does not carry.
         """
         self._total += 1
-        event = DeadLetter(message=message, recipient=str(recipient), reason=reason)
+        event = DeadLetter(
+            message=message,
+            recipient=str(recipient),
+            reason=reason,
+            peer=str(peer) if peer is not None else None,
+            detail=detail,
+        )
         for handler in list(self._subscribers.values()):
             try:
                 handler(event)
@@ -248,3 +301,58 @@ class DeadLetterOffice:
             f"DeadLetterOffice(total={self._total}, "
             f"subscribers={len(self._subscribers)})"
         )
+
+
+class DeadLetterRef(ActorRef[Any]):
+    """A ref that accepts anything and delivers none of it.
+
+    What resolving an address gives you when there is nothing behind it: an
+    actor that has stopped, an incarnation whose uid has been retired, or a
+    system this one has no link to. Resolution has to return *something*
+    tellable, because `tell` is total and a ref is a handle rather than a
+    liveness claim, and this is the honest something.
+    """
+
+    __slots__ = ("_dead_letters", "_peer", "_reason")
+
+    def __init__(
+        self,
+        path: ActorPath,
+        *,
+        dead_letters: DeadLetterOffice,
+        reason: str,
+        peer: Address | None = None,
+    ) -> None:
+        """Bind a dead-letter target to the office that will hear about it.
+
+        Args:
+            path: The path that was asked for.
+            dead_letters: Where what is told to this ref is accounted for.
+            reason: One of the `DeadLetterReason` constants.
+            peer: The address involved, when a remote one was.
+        """
+        super().__init__(path)
+        self._dead_letters = dead_letters
+        self._reason = reason
+        self._peer = peer
+
+    @property
+    def address(self) -> Address:
+        """The address that was asked for, reachable or not."""
+        return self._peer if self._peer is not None else super().address
+
+    def tell(self, message: Message) -> None:
+        """Account for a message that had nowhere to go.
+
+        Args:
+            message: The undelivered message.
+        """
+        self._dead_letters.publish(message, self.path, self._reason, peer=self._peer)
+
+    async def offer(self, message: Message) -> None:
+        """Account for a message, since there is no capacity to wait for.
+
+        Args:
+            message: The undelivered message.
+        """
+        self.tell(message)

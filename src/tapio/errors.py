@@ -13,14 +13,18 @@ would bury the message; raising something else lets it propagate intact.
 
 __all__ = [
     "ActorNameError",
-    "ActorRefDeserializationError",
     "ActorSystemTerminating",
     "AskTargetTerminated",
     "AskTimeoutError",
     "AskTypeError",
     "BehaviorTypeError",
+    "FrameTooLargeError",
     "MailboxFullError",
+    "MessageDecodingError",
+    "MessageEncodingError",
+    "MessageRegistrationError",
     "MessageTypeError",
+    "RefResolutionError",
     "StashOverflowError",
     "TapioError",
     "WatchError",
@@ -58,12 +62,53 @@ class ActorNameError(TapioError):
     """
 
 
-class ActorRefDeserializationError(TapioError):
-    """An `tapio.actor.ActorRef` was validated from its path string.
+class RefResolutionError(TapioError):
+    """A ref could not be rebuilt from its string form.
 
-    A path cannot be resolved back to a live local ref without a registry, so
-    a model containing an `ActorRef` does not round-trip: `model_dump()`
-    succeeds and feeding its output back to `model_validate()` raises this.
+    Raised when no system is in scope to resolve it against, and when the
+    string is not a ref at all. `model_dump()` on a model holding a ref
+    succeeds anywhere; feeding the result back to `model_validate()` succeeds
+    only inside a system's decode path or an explicit
+    `with system.as_deserialization_context():` block. The asymmetry is
+    deliberate: a ref is a handle into a live runtime, and there is no
+    meaningful ref outside of one.
+    """
+
+
+class MessageRegistrationError(TapioError):
+    """A message type could not be registered, or was never registered.
+
+    Raised at import time for a duplicate wire key, since two classes sharing
+    one would otherwise decode as whichever imported last, and at encode time
+    for a type that has no key, since a key is never an import path and an
+    unregistered type could not be rebuilt by the peer.
+    """
+
+
+class MessageEncodingError(TapioError):
+    """A message could not be written to the wire.
+
+    Raised at the send site, because the message belongs to the sender: an
+    error about it is the sender's to catch, exactly as it is for a local
+    `tell`.
+    """
+
+
+class FrameTooLargeError(MessageEncodingError):
+    """A frame exceeded the configured size limit.
+
+    On the way out this raises at the send site. On the way in, the declared
+    length is checked before the body is read, so the frame costs a header and
+    a refusal rather than the memory it asked for.
+    """
+
+
+class MessageDecodingError(TapioError):
+    """A frame could not be read.
+
+    Never raised into application code: the receiving end turns one of these
+    into a dead letter naming what was wrong, because the failure belongs to a
+    peer and there is no local caller to tell about it.
     """
 
 
