@@ -16,6 +16,10 @@ class Greet(Message):
     reply_to: ActorRef[Greeted]
 
 
+class Ping(Message):
+    n: int
+
+
 class Increment(Message):
     by: int = 1
 

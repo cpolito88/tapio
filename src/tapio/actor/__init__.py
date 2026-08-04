@@ -10,7 +10,13 @@ from tapio.actor.behavior import (
 )
 from tapio.actor.cell import ActorCell, LocalActorRef
 from tapio.actor.context import ActorContext
-from tapio.actor.mailbox import Envelope, Mailbox
+from tapio.actor.dead_letters import (
+    DeadLetter,
+    DeadLetterOffice,
+    DeadLetterReason,
+    Subscription,
+)
+from tapio.actor.mailbox import Envelope, Mailbox, MailboxConfig, OverflowStrategy
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
 from tapio.actor.signals import PostStop, Signal
@@ -25,12 +31,18 @@ __all__ = [
     "ActorSystem",
     "Behavior",
     "Behaviors",
+    "DeadLetter",
+    "DeadLetterOffice",
+    "DeadLetterReason",
     "Directive",
     "Envelope",
     "LocalActorRef",
     "Mailbox",
+    "MailboxConfig",
+    "OverflowStrategy",
     "PostStop",
     "ReceivingBehavior",
     "SetupBehavior",
     "Signal",
+    "Subscription",
 ]

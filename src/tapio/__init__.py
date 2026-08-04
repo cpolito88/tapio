@@ -6,6 +6,8 @@ throughout.
 
 from tapio.actor.behavior import AbstractBehavior, Behavior, Behaviors
 from tapio.actor.context import ActorContext
+from tapio.actor.dead_letters import DeadLetter, DeadLetterReason
+from tapio.actor.mailbox import MailboxConfig, OverflowStrategy
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
 from tapio.actor.system import ActorSystem
@@ -39,9 +41,13 @@ __all__ = [
     "Behavior",
     "BehaviorTypeError",
     "Behaviors",
+    "DeadLetter",
+    "DeadLetterReason",
+    "MailboxConfig",
     "MailboxFullError",
     "Message",
     "MessageTypeError",
+    "OverflowStrategy",
     "TapioError",
     "TapioSettings",
     "__version__",

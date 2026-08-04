@@ -4,6 +4,8 @@ from datetime import timedelta
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from tapio.actor.mailbox import MailboxConfig, OverflowStrategy
+
 __all__ = ["TapioSettings"]
 
 
@@ -33,6 +35,12 @@ class TapioSettings(BaseSettings):
     that could refuse a stop signal would make shutdown unreliable.
     """
 
+    default_mailbox_overflow: OverflowStrategy = OverflowStrategy.FAIL
+    """What a bounded mailbox does when full, unless a spawn overrides it.
+
+    Never consulted while `default_mailbox_capacity` is `None`.
+    """
+
     ask_timeout: timedelta = timedelta(seconds=5)
     """Default deadline for `ActorRef.ask` when the call does not give one."""
 
@@ -56,3 +64,14 @@ class TapioSettings(BaseSettings):
 
     A dead actor in a hot send loop must not drown the log.
     """
+
+    dead_letter_summary_interval: timedelta = timedelta(seconds=60)
+    """How often to log a summary once `dead_letter_log_first` is spent."""
+
+    @property
+    def default_mailbox(self) -> MailboxConfig:
+        """The mailbox configuration a spawn gets when it asks for nothing."""
+        return MailboxConfig(
+            capacity=self.default_mailbox_capacity,
+            on_overflow=self.default_mailbox_overflow,
+        )

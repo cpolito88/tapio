@@ -9,9 +9,9 @@ import pkgutil
 
 import tapio_examples
 from tapio.testkit import assert_no_leaked_tasks
-from tapio_examples import counter, hello_world, ping_pong
+from tapio_examples import counter, dead_letters, hello_world, ping_pong
 
-ASSERTED = {"counter", "hello_world", "ping_pong"}
+ASSERTED = {"counter", "dead_letters", "hello_world", "ping_pong"}
 
 
 async def test_hello_world():
@@ -44,6 +44,22 @@ async def test_counter():
 
     # Both increments are applied before the query queued behind them.
     assert value == 3
+
+
+async def test_dead_letters():
+    with assert_no_leaked_tasks():
+        lines = await dead_letters.main()
+
+    # Three sends that did not arrive, and three different diagnoses. The
+    # reasons are the lesson: a stopped actor, a mailbox that shed the stalest
+    # work it was holding, and a send that outlived its system.
+    assert len(lines) == 3
+    assert "Work(item=1)" in lines[0]
+    assert lines[0].endswith("(recipient-terminated)")
+    assert "Work(item=3)" in lines[1]
+    assert lines[1].endswith("(mailbox-full)")
+    assert "Work(item=6)" in lines[2]
+    assert lines[2].endswith("(system-terminated)")
 
 
 def test_every_example_is_asserted():
