@@ -1,5 +1,6 @@
 """Actors: refs, paths, behaviors, and the runtime they run in."""
 
+from tapio.actor.ask import PromiseRef, ask
 from tapio.actor.behavior import (
     AbstractBehavior,
     Behavior,
@@ -31,6 +32,7 @@ from tapio.actor.signals import (
 )
 from tapio.actor.supervision import Backoff, Decision, SupervisorStrategy
 from tapio.actor.system import ActorSystem
+from tapio.actor.watch import Watcher
 
 __all__ = [
     "AbstractBehavior",
@@ -55,6 +57,7 @@ __all__ = [
     "OverflowStrategy",
     "PostStop",
     "PreRestart",
+    "PromiseRef",
     "ReceivingBehavior",
     "SetupBehavior",
     "Signal",
@@ -64,4 +67,6 @@ __all__ = [
     "SuperviseBehavior",
     "SupervisorStrategy",
     "Terminated",
+    "Watcher",
+    "ask",
 ]

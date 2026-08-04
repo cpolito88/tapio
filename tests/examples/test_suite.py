@@ -10,6 +10,7 @@ import pkgutil
 import tapio_examples
 from tapio.testkit import assert_no_leaked_tasks
 from tapio_examples import (
+    ask_timeout,
     counter,
     dead_letters,
     death_watch,
@@ -21,6 +22,7 @@ from tapio_examples import (
 )
 
 ASSERTED = {
+    "ask_timeout",
     "counter",
     "dead_letters",
     "death_watch",
@@ -39,6 +41,20 @@ async def test_hello_world():
     assert lines == [
         "greeter: hello, world!",
         "listener: world has been greeted",
+    ]
+
+
+async def test_ask_timeout():
+    with assert_no_leaked_tasks():
+        lines = await ask_timeout.main()
+
+    # One reply, one deadline, one answer that arrived too late to be one, and
+    # one failure that did not wait for the deadline it was given.
+    assert lines == [
+        "reader: 'Dune' is on shelf 3",
+        "reader: gave up on 'Ulysses' after 0.05s",
+        "dead letter: Shelf (ask-settled)",
+        "reader: the desk closed, so there was no point waiting",
     ]
 
 

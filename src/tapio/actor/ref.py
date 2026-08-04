@@ -1,5 +1,7 @@
 """`ActorRef`: a local handle to an actor, usable as a Pydantic field."""
 
+from collections.abc import Callable
+from datetime import timedelta
 from typing import Any, Generic, TypeVar
 
 from pydantic import GetCoreSchemaHandler
@@ -12,6 +14,7 @@ from tapio.message import Message
 __all__ = ["ActorRef"]
 
 T = TypeVar("T", bound=Message)
+R = TypeVar("R", bound=Message)
 
 
 class ActorRef(Generic[T]):
@@ -78,6 +81,29 @@ class ActorRef(Generic[T]):
 
         Args:
             message: The message to deliver.
+
+        Raises:
+            NotImplementedError: Always, on this base class. Delivery belongs
+                to the concrete refs a running actor system hands out.
+        """
+        raise NotImplementedError(self._undeliverable())
+
+    async def ask(
+        self,
+        make: "Callable[[ActorRef[R]], T]",
+        *,
+        expect: type[R],
+        timeout: timedelta | None = None,  # noqa: ASYNC109 - the ask deadline
+    ) -> R:
+        """Send one message and await one reply.
+
+        Args:
+            make: Builds the request from the ref the reply should go to.
+            expect: The reply type, which is required.
+            timeout: How long to wait. The system's `ask_timeout` when omitted.
+
+        Returns:
+            The reply.
 
         Raises:
             NotImplementedError: Always, on this base class. Delivery belongs
