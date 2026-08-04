@@ -14,6 +14,8 @@ from typing import Self, TypeVar
 
 from tapio.actor.behavior import Behavior, Behaviors
 from tapio.actor.cell import ActorCell, ActorRuntime
+from tapio.actor.dead_letters import DeadLetterOffice
+from tapio.actor.mailbox import MailboxConfig
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
 from tapio.dispatch.dispatcher import Dispatcher
@@ -74,10 +76,19 @@ class ActorSystem:
         """
         self._settings = settings if settings is not None else TapioSettings()
         self._root = ActorPath.root(name)
+        dispatcher = Dispatcher.from_running_loop()
+        self._dead_letters = DeadLetterOffice(
+            log_first=self._settings.dead_letter_log_first,
+            summary_interval=(
+                self._settings.dead_letter_summary_interval.total_seconds()
+            ),
+            clock=dispatcher.now,
+        )
         self._runtime = ActorRuntime(
             name=name,
             settings=self._settings,
-            dispatcher=Dispatcher.from_running_loop(),
+            dispatcher=dispatcher,
+            dead_letters=self._dead_letters,
         )
         self._log: ActorLogAdapter = actor_logger(self._root)
         self._terminating = False
@@ -113,16 +124,32 @@ class ActorSystem:
         return self._log
 
     @property
+    def dead_letters(self) -> DeadLetterOffice:
+        """Where undeliverable messages go, and what to subscribe to.
+
+        Subscribing is what makes an absence testable: without it, "the message
+        was dropped" and "the code never ran" look identical.
+        """
+        return self._dead_letters
+
+    @property
     def is_terminating(self) -> bool:
         """Whether shutdown has begun."""
         return self._terminating
 
-    def spawn(self, behavior: Behavior[T], name: str) -> ActorRef[T]:
+    def spawn(
+        self,
+        behavior: Behavior[T],
+        name: str,
+        mailbox: MailboxConfig | None = None,
+    ) -> ActorRef[T]:
         """Start a top-level actor under `/user`.
 
         Args:
             behavior: What the actor does.
             name: Its name, unique among top-level actors.
+            mailbox: Capacity and overflow behaviour. The system's default when
+                omitted.
 
         Returns:
             A ref to the new actor.
@@ -132,13 +159,17 @@ class ActorSystem:
             ActorNameError: If a live top-level actor already has that name.
         """
         self._reject_if_terminating(name)
-        return self._user.spawn(behavior, name)
+        return self._user.spawn(behavior, name, mailbox)
 
-    def spawn_anonymous(self, behavior: Behavior[T]) -> ActorRef[T]:
+    def spawn_anonymous(
+        self, behavior: Behavior[T], mailbox: MailboxConfig | None = None
+    ) -> ActorRef[T]:
         """Start a top-level actor under a generated name.
 
         Args:
             behavior: What the actor does.
+            mailbox: Capacity and overflow behaviour. The system's default when
+                omitted.
 
         Returns:
             A ref to the new actor.
@@ -147,7 +178,7 @@ class ActorSystem:
             ActorSystemTerminating: If the system is shutting down.
         """
         self._reject_if_terminating("an anonymous actor")
-        return self._user.spawn_anonymous(behavior)
+        return self._user.spawn_anonymous(behavior, mailbox)
 
     def _reject_if_terminating(self, name: str) -> None:
         """Refuse a spawn once shutdown has begun."""
@@ -182,6 +213,10 @@ class ActorSystem:
         # facilities that theirs may still be using on the way out.
         await self._user.stop(deadline)
         await self._system.stop(deadline)
+        # Set before the event: a send racing shutdown should be told the
+        # system is gone, which is a different diagnosis from one actor having
+        # stopped while the rest of the tree runs on.
+        self._runtime.terminated = True
         self._terminated.set()
         self._log.debug("terminated")
 

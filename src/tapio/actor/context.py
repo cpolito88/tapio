@@ -3,6 +3,7 @@
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Generic, TypeVar
 
+from tapio.actor.mailbox import MailboxConfig
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
 from tapio.logging import ActorLogAdapter
@@ -49,7 +50,12 @@ class ActorContext(ABC, Generic[T]):
         """A logger that tags every record with this actor's path."""
 
     @abstractmethod
-    def spawn(self, behavior: "Behavior[U]", name: str) -> ActorRef[U]:
+    def spawn(
+        self,
+        behavior: "Behavior[U]",
+        name: str,
+        mailbox: MailboxConfig | None = None,
+    ) -> ActorRef[U]:
         """Start a child actor under this one.
 
         Args:
@@ -57,6 +63,8 @@ class ActorContext(ABC, Generic[T]):
                 here, synchronously, so the child's message type is known
                 before the ref is handed back.
             name: The child's name, unique among this actor's live children.
+            mailbox: Capacity and overflow behaviour for the child. The
+                system's default when omitted.
 
         Returns:
             A ref to the new child.
@@ -69,7 +77,9 @@ class ActorContext(ABC, Generic[T]):
         """
 
     @abstractmethod
-    def spawn_anonymous(self, behavior: "Behavior[U]") -> ActorRef[U]:
+    def spawn_anonymous(
+        self, behavior: "Behavior[U]", mailbox: MailboxConfig | None = None
+    ) -> ActorRef[U]:
         """Start a child under a generated name.
 
         Generated names begin with `$`, which user-chosen names may not, so a
@@ -77,6 +87,8 @@ class ActorContext(ABC, Generic[T]):
 
         Args:
             behavior: What the child does.
+            mailbox: Capacity and overflow behaviour for the child. The
+                system's default when omitted.
 
         Returns:
             A ref to the new child.

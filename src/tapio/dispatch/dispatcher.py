@@ -8,7 +8,7 @@ answers cannot drift apart.
 """
 
 import asyncio
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from typing import Any
 
 __all__ = ["Dispatcher"]
@@ -46,6 +46,19 @@ class Dispatcher:
     ) -> asyncio.Task[None]:
         """Start a named task on this system's loop."""
         return self._loop.create_task(coro, name=name)
+
+    def call_soon_threadsafe(self, callback: Callable[..., None], *args: Any) -> None:
+        """Schedule a callback onto this system's loop from any thread.
+
+        Args:
+            callback: What to run on the loop.
+            *args: Its arguments.
+
+        Raises:
+            RuntimeError: If the loop is already closed, which means the system
+                is gone and there is nothing left to schedule onto.
+        """
+        self._loop.call_soon_threadsafe(callback, *args)
 
     def now(self) -> float:
         """The loop's monotonic clock, which deadlines are measured against."""

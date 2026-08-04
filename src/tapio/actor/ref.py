@@ -17,8 +17,8 @@ T = TypeVar("T", bound=Message)
 class ActorRef(Generic[T]):
     """A handle for sending messages to one actor.
 
-    An `ActorRef` is local. There is no location transparency in tapio, and a
-    ref cannot be resolved from a string: see the round-trip note below.
+    Every `ActorRef` is local today, and a ref cannot be resolved from a
+    string: see the round-trip note below.
 
     A ref stays a valid handle after its actor dies, so sending to it never
     raises on account of the target being gone; the message goes to dead
@@ -38,8 +38,8 @@ class ActorRef(Generic[T]):
       not check that the target is still alive: that is a race, since the
       target can die between the check and the send, and a dead target is not a
       schema error.
-    * Serialization is the actor path string. It is a debugging and logging
-      affordance, not a wire format.
+    * Serialization is the actor path string, which is a debugging and logging
+      affordance today and the basis of the wire format once remoting lands.
     * Deserialization is not supported. A model containing an `ActorRef`
       therefore does *not* round-trip: `model_dump()` succeeds, and feeding its
       output back to `model_validate()` raises
@@ -68,11 +68,29 @@ class ActorRef(Generic[T]):
             NotImplementedError: Always, on this base class. Delivery belongs
                 to the concrete refs a running actor system hands out.
         """
-        msg = (
+        raise NotImplementedError(self._undeliverable())
+
+    async def offer(self, message: T) -> None:
+        """Send a message, waiting for the recipient's mailbox to have room.
+
+        Backpressure belongs to the mailbox rather than to the send, so on an
+        unbounded mailbox this is `tell` with an `await` in front of it.
+
+        Args:
+            message: The message to deliver.
+
+        Raises:
+            NotImplementedError: Always, on this base class. Delivery belongs
+                to the concrete refs a running actor system hands out.
+        """
+        raise NotImplementedError(self._undeliverable())
+
+    def _undeliverable(self) -> str:
+        """Explain that this ref is not attached to a running actor."""
+        return (
             f"{type(self).__name__} cannot deliver messages; a ref obtained "
             "from a running actor system can"
         )
-        raise NotImplementedError(msg)
 
     def __eq__(self, other: object) -> bool:
         """Refs are equal when they address the same incarnation."""
@@ -114,12 +132,12 @@ def _validate_ref(value: object) -> ActorRef[Any]:
         return value
     if isinstance(value, str):
         msg = (
-            f"cannot rebuild an ActorRef from {value!r}: a path is not a wire "
-            "format, and resolving one back to a live local ref needs a "
-            "registry that tapio does not have. Models containing an ActorRef "
-            "serialize for logging and debugging, but do not round-trip. "
-            "Persistence (planned for v0.3) is the feature that will make this "
-            "work; until then, pass the ref itself."
+            f"cannot rebuild an ActorRef from {value!r}: resolving a path back "
+            "to a live ref needs a registry that tapio does not have yet. "
+            "Models containing an ActorRef serialize for logging and "
+            "debugging, but do not round-trip. Remoting is the feature that "
+            "will make this work, since a ref has to cross a wire before it "
+            "has to come back from one; until then, pass the ref itself."
         )
         raise ActorRefDeserializationError(msg)
     # A ValueError here is the right shape: Pydantic folds it into the
