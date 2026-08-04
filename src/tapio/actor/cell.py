@@ -26,12 +26,18 @@ from tapio.actor.behavior import (
     directive_of,
 )
 from tapio.actor.context import ActorContext
-from tapio.actor.mailbox import Mailbox
+from tapio.actor.dead_letters import DeadLetterOffice, DeadLetterReason
+from tapio.actor.mailbox import Mailbox, MailboxConfig
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
 from tapio.actor.signals import PostStop, Signal
 from tapio.dispatch.dispatcher import Dispatcher
-from tapio.errors import ActorNameError, ActorSystemTerminating, BehaviorTypeError
+from tapio.errors import (
+    ActorNameError,
+    ActorSystemTerminating,
+    BehaviorTypeError,
+    MailboxFullError,
+)
 from tapio.logging import ActorLogAdapter, actor_logger, runtime_logger
 from tapio.message import Message
 from tapio.settings import TapioSettings
@@ -69,6 +75,17 @@ class ActorRuntime:
     dispatcher: Dispatcher
     """The loop cells create their tasks on, and whose clock times shutdown."""
 
+    dead_letters: DeadLetterOffice
+    """Where a message goes when its recipient cannot take it."""
+
+    terminated: bool = False
+    """Whether the system has finished shutting down.
+
+    Read only to tell one dead-letter reason from another: a message sent to a
+    stopped actor and a message sent after the system went away are different
+    diagnoses, and the sender usually cares which.
+    """
+
     # Quoted: itertools.count is only subscriptable to a type checker.
     _uids: "itertools.count[int]" = field(default_factory=lambda: itertools.count(1))
 
@@ -100,18 +117,74 @@ class LocalActorRef(ActorRef[T]):
     def tell(self, message: T) -> None:
         """Deliver a message, without waiting and without blocking.
 
+        Safe to call from any thread. Validation runs on the calling thread,
+        before any hop, so an error about the message reaches the code that
+        wrote it; delivery then happens on the system's loop.
+
+        The split is one line: **the message is yours, the recipient is not.**
+        Errors about the message raise here. Errors about the recipient, a
+        stopped actor or a full mailbox, are resolved on the target's loop
+        after this call has returned, where nothing can be raised into the
+        caller, so they become dead letters.
+
         Args:
-            message: The message to deliver. It is validated against the
-                target's declared message type first, on the calling thread,
-                and the recipient always receives this exact object.
+            message: The message to deliver. The recipient always receives this
+                exact object.
 
         Raises:
             MessageTypeError: If the message does not match the target's
                 declared message type.
+            MailboxFullError: If the target's mailbox is full under
+                `OverflowStrategy.FAIL` *and* the caller is on the system's own
+                loop. From another thread the same overflow dead-letters, since
+                there is no caller left to raise into.
             pydantic.ValidationError: If content validation is on and the
                 message does not satisfy its own model.
         """
-        self._cell.enqueue(message)
+        cell = self._cell
+        cell.validate(message)
+        dispatcher = cell.runtime.dispatcher
+        if dispatcher.is_current():
+            cell.deliver(message)
+            return
+        try:
+            dispatcher.call_soon_threadsafe(cell.deliver_offloop, message)
+        except RuntimeError:
+            # The loop is closed, so there is nothing to schedule onto and no
+            # subscriber left to notify. Logging is all that remains.
+            cell.log.warning(
+                "dead letter: %s sent after the loop closed",
+                type(message).__name__,
+            )
+
+    async def offer(self, message: T) -> None:
+        """Deliver a message, waiting for mailbox capacity if it is full.
+
+        Backpressure is a property of the mailbox rather than of the send, so
+        this is `tell` plus waiting, and on an unbounded mailbox the two are
+        the same thing.
+
+        Args:
+            message: The message to deliver.
+
+        Raises:
+            MessageTypeError: If the message does not match the target's
+                declared message type.
+            RuntimeError: If called from a thread that is not running the
+                system's loop. Awaiting capacity across a thread boundary is a
+                bridge too far; use `tell` from other threads.
+            pydantic.ValidationError: If content validation is on and the
+                message does not satisfy its own model.
+        """
+        cell = self._cell
+        cell.validate(message)
+        if not cell.runtime.dispatcher.is_current():
+            msg = (
+                f"offer to {cell.path} must run on the system's loop; `tell` "
+                "is the thread-safe send"
+            )
+            raise RuntimeError(msg)
+        await cell.offer(message)
 
 
 class ActorCell(Generic[T]):
@@ -124,6 +197,7 @@ class ActorCell(Generic[T]):
         path: ActorPath,
         behavior: Behavior[T],
         parent: "ActorCell[Any] | None" = None,
+        mailbox: MailboxConfig | None = None,
     ) -> None:
         """Create a cell. Nothing runs until `start` is called."""
         self._runtime = runtime
@@ -134,7 +208,9 @@ class ActorCell(Generic[T]):
         # comes back as what it originally was.
         self._initial = behavior
         self._behavior: Behavior[T] = behavior
-        self._mailbox = Mailbox()
+        self._mailbox = Mailbox(
+            mailbox if mailbox is not None else runtime.settings.default_mailbox
+        )
         self._children: dict[str, ActorCell[Any]] = {}
         self._anonymous = itertools.count(1)
         self._log = actor_logger(path)
@@ -214,21 +290,63 @@ class ActorCell(Generic[T]):
             self._run(), name=f"tapio-cell:{self._path}"
         )
 
-    def enqueue(self, message: Message) -> None:
-        """Validate a message and put it on the user lane.
+    def validate(self, message: Message) -> None:
+        """Check a message against this actor's declared type and model.
 
-        Validation runs before the liveness check and on the calling thread:
-        an error about the message is the sender's bug and the sender can act
-        on it, while an error about the recipient is resolved here and turns
-        into a dead letter.
+        Called on the sender's thread, before any hop onto the system's loop,
+        because an error about the message is the sender's bug to handle.
         """
         self._validate(message)
-        if not self._alive:
-            self._dead_letter(message)
-            return
-        self._mailbox.put(message)
 
-    def spawn(self, behavior: Behavior[U], name: str) -> ActorRef[U]:
+    def deliver(self, message: Message) -> None:
+        """Put an already-validated message on the user lane.
+
+        Raises:
+            MailboxFullError: If the mailbox is full under
+                `OverflowStrategy.FAIL`.
+        """
+        if not self._alive:
+            self._dead_letter(message, self._unreachable_reason())
+            return
+        displaced = self._mailbox.put(message)
+        if displaced is not None:
+            self._dead_letter(displaced, DeadLetterReason.MAILBOX_FULL)
+
+    def deliver_offloop(self, message: Message) -> None:
+        """Deliver a message that arrived from another thread.
+
+        Identical to `deliver` except that a `FAIL` mailbox at capacity cannot
+        raise: the sender is on another thread and has long since moved on, so
+        the overflow becomes a dead letter like every other recipient error.
+        """
+        try:
+            self.deliver(message)
+        except MailboxFullError:
+            self._dead_letter(message, DeadLetterReason.MAILBOX_FULL)
+
+    async def offer(self, message: Message) -> None:
+        """Put an already-validated message on the user lane, waiting if full.
+
+        Liveness is read through a call rather than the attribute so that the
+        second check is honest: the actor can stop while this sender is parked,
+        which is exactly the case the check below exists for.
+        """
+        if not self._still_alive():
+            self._dead_letter(message, self._unreachable_reason())
+            return
+        await self._mailbox.offer(message)
+        if not self._still_alive():
+            # The actor stopped while this sender was parked. Whatever it just
+            # enqueued will never be read, so account for it rather than
+            # leaving it in a mailbox nobody owns.
+            self._drain_to_dead_letters()
+
+    def spawn(
+        self,
+        behavior: Behavior[U],
+        name: str,
+        mailbox: MailboxConfig | None = None,
+    ) -> ActorRef[U]:
         """Start a child under this actor."""
         if self._terminating:
             msg = (
@@ -243,9 +361,11 @@ class ActorCell(Generic[T]):
                 "names are unique among siblings"
             )
             raise ActorNameError(msg)
-        return self._spawn_child(behavior, name)
+        return self._spawn_child(behavior, name, mailbox)
 
-    def spawn_anonymous(self, behavior: Behavior[U]) -> ActorRef[U]:
+    def spawn_anonymous(
+        self, behavior: Behavior[U], mailbox: MailboxConfig | None = None
+    ) -> ActorRef[U]:
         """Start a child under a generated name."""
         if self._terminating:
             msg = (
@@ -253,15 +373,21 @@ class ActorCell(Generic[T]):
                 "actor is terminating"
             )
             raise ActorSystemTerminating(msg)
-        return self._spawn_child(behavior, f"${next(self._anonymous)}")
+        return self._spawn_child(behavior, f"${next(self._anonymous)}", mailbox)
 
-    def _spawn_child(self, behavior: Behavior[U], name: str) -> ActorRef[U]:
+    def _spawn_child(
+        self,
+        behavior: Behavior[U],
+        name: str,
+        mailbox: MailboxConfig | None = None,
+    ) -> ActorRef[U]:
         """Create, register and start a child cell."""
         child: ActorCell[U] = ActorCell(
             runtime=self._runtime,
             path=self._path.child(name, uid=self._runtime.next_uid()),
             behavior=behavior,
             parent=self,
+            mailbox=mailbox,
         )
         self._children[name] = child
         try:
@@ -427,6 +553,10 @@ class ActorCell(Generic[T]):
         for child in list(self._children.values()):
             child.abort()
         self._children.clear()
+        # Wake any parked sender first, then account for what is left. A
+        # message that was queued and never read is not silently lost.
+        self._mailbox.close()
+        self._drain_to_dead_letters()
         if self._parent is not None:
             self._parent._remove_child(self)
         self._log.debug("stopped")
@@ -437,17 +567,30 @@ class ActorCell(Generic[T]):
         if self._children.get(child.path.name) is child:
             del self._children[child.path.name]
 
-    def _dead_letter(self, message: Message) -> None:
-        """Account for a message that had nowhere to go.
+    def _dead_letter(self, message: Message, reason: str) -> None:
+        """Account for a message that had nowhere to go."""
+        self._runtime.dead_letters.publish(message, self._path, reason)
 
-        A real dead-letter sink, with an event stream and throttled logging,
-        replaces this. Until then the drop is at least never silent.
+    def _still_alive(self) -> bool:
+        """Whether this actor is still reading its mailbox, checked afresh."""
+        return self._alive
+
+    def _unreachable_reason(self) -> str:
+        """Say why this actor could not take a message.
+
+        A stopped actor and a stopped system are different diagnoses, and the
+        sender usually cares which: one is an ordering bug in the application,
+        the other is a send that outlived its runtime.
         """
-        _log.warning(
-            "dead letter: %s sent to %s, which is not running",
-            type(message).__name__,
-            self._path,
-        )
+        if self._runtime.terminated:
+            return DeadLetterReason.SYSTEM_TERMINATED
+        return DeadLetterReason.RECIPIENT_TERMINATED
+
+    def _drain_to_dead_letters(self) -> None:
+        """Send everything left on the user lane to dead letters."""
+        reason = self._unreachable_reason()
+        while (pending := self._mailbox.take_pending()) is not None:
+            self._runtime.dead_letters.publish(pending, self._path, reason)
 
     def __repr__(self) -> str:
         """Render the path and the current behavior."""
@@ -478,13 +621,20 @@ class _CellContext(ActorContext[T]):
         """A logger that tags every record with this actor's path."""
         return self._cell.log
 
-    def spawn(self, behavior: Behavior[U], name: str) -> ActorRef[U]:
+    def spawn(
+        self,
+        behavior: Behavior[U],
+        name: str,
+        mailbox: MailboxConfig | None = None,
+    ) -> ActorRef[U]:
         """Start a child actor under this one."""
-        return self._cell.spawn(behavior, name)
+        return self._cell.spawn(behavior, name, mailbox)
 
-    def spawn_anonymous(self, behavior: Behavior[U]) -> ActorRef[U]:
+    def spawn_anonymous(
+        self, behavior: Behavior[U], mailbox: MailboxConfig | None = None
+    ) -> ActorRef[U]:
         """Start a child under a generated name."""
-        return self._cell.spawn_anonymous(behavior)
+        return self._cell.spawn_anonymous(behavior, mailbox)
 
     def __repr__(self) -> str:
         """Render the actor this context belongs to."""

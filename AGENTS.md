@@ -57,6 +57,22 @@ you are already editing.
   enforces the convention; mypy runs `--strict` over `src` and `examples`.
 - Explain *why* in comments, not *what*. The code says what it does.
 
+## Commit messages and pull requests
+
+- **Wrap commit messages at 72 columns.** `git log` does not reflow, so an
+  unwrapped paragraph becomes one very long line in a terminal.
+- **Do not wrap pull request bodies.** One line per paragraph and one per list
+  item, however long. GitHub renders Markdown, so a hard-wrapped body and an
+  unwrapped one look identical in the browser, and the wrapping only shows in
+  the raw editor. It is not free, though: a squash merge re-wraps the body at
+  72 into the merge commit, so text that was already wrapped at 79 gets wrapped
+  twice and lands in the permanent history ragged, with stray two-word lines.
+  Wrapping once, at merge time, is the point.
+- Say what changed and why, and where a decision contradicts the design notes,
+  say so explicitly. That is a decision, not an oversight.
+- Name the tests that would fail if the change regressed. "CI is green" is not
+  verification, it is a precondition.
+
 ## Testing
 
 - `pytest-asyncio` runs in auto mode, so an `async def test_...` needs no

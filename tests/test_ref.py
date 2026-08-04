@@ -47,9 +47,9 @@ def test_a_model_holding_a_ref_does_not_round_trip(ref):
         Greet.model_validate(dumped)
 
 
-def test_the_round_trip_error_names_persistence_as_the_fix(ref):
+def test_the_round_trip_error_names_the_feature_that_will_fix_it(ref):
     dumped = Greet(whom="world", count=1, reply_to=ref).model_dump()
-    with pytest.raises(ActorRefDeserializationError, match=re.escape("v0.3")):
+    with pytest.raises(ActorRefDeserializationError, match=re.escape("Remoting")):
         Greet.model_validate(dumped)
 
 

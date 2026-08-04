@@ -10,7 +10,14 @@ from collections.abc import AsyncIterator
 import pytest
 
 from tapio import Message
-from tapio.actor import ActorContext, ActorPath, ActorRef, ActorSystem, Behavior
+from tapio.actor import (
+    ActorContext,
+    ActorPath,
+    ActorRef,
+    ActorSystem,
+    Behavior,
+    MailboxConfig,
+)
 from tapio.logging import ActorLogAdapter, actor_logger
 from tapio.settings import TapioSettings
 from tests.messages import Greeted
@@ -35,10 +42,17 @@ class FakeContext(ActorContext[Message]):
     def log(self) -> ActorLogAdapter:
         return actor_logger(self._path)
 
-    def spawn(self, behavior: Behavior[Message], name: str) -> ActorRef[Message]:
+    def spawn(
+        self,
+        behavior: Behavior[Message],
+        name: str,
+        mailbox: MailboxConfig | None = None,
+    ) -> ActorRef[Message]:
         raise NotImplementedError
 
-    def spawn_anonymous(self, behavior: Behavior[Message]) -> ActorRef[Message]:
+    def spawn_anonymous(
+        self, behavior: Behavior[Message], mailbox: MailboxConfig | None = None
+    ) -> ActorRef[Message]:
         raise NotImplementedError
 
 
