@@ -75,6 +75,12 @@ class DeadLetterReason:
     been answered, or lost its target, so there was no longer a future for the
     reply to resolve and nobody left awaiting one."""
 
+    STASH_DISCARDED = "stash-discarded"
+    """A message was still stashed when its actor restarted or stopped. A
+    restart clears the stash, since messages held by the state that just failed
+    are not the new state's to answer, and a stop leaves nobody to replay
+    them."""
+
     MAILBOX_FULL = "mailbox-full"
     """A bounded mailbox was at capacity and its overflow strategy discarded
     this message. Which message that is depends on the strategy: the arriving

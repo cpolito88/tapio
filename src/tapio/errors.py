@@ -21,6 +21,7 @@ __all__ = [
     "BehaviorTypeError",
     "MailboxFullError",
     "MessageTypeError",
+    "StashOverflowError",
     "TapioError",
     "WatchError",
 ]
@@ -85,6 +86,16 @@ class AskTypeError(TapioError, TypeError):
 
 class AskTargetTerminated(TapioError):  # noqa: N818 - reads as a state, not a failure
     """The target of an ask stopped before it replied."""
+
+
+class StashOverflowError(TapioError):
+    """A stash was full and one more message was put aside.
+
+    Raised in the *stashing* actor, since only it knows whether the right
+    answer is to shed the message, reject it, or let the failure become a
+    supervision decision. A stash is bounded for the same reason a mailbox can
+    be: it holds traffic the actor is by definition not keeping up with.
+    """
 
 
 class MailboxFullError(TapioError):

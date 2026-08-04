@@ -30,6 +30,8 @@ from tapio.actor.behavior import (
     ReceivingBehavior,
     SetupBehavior,
     SuperviseBehavior,
+    WithStashBehavior,
+    WithTimersBehavior,
     directive_of,
 )
 from tapio.actor.context import ActorContext
@@ -38,7 +40,9 @@ from tapio.actor.mailbox import Envelope, Mailbox, MailboxConfig
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
 from tapio.actor.signals import ChildFailed, PostStop, PreRestart, Signal, Terminated
+from tapio.actor.stash import StashBuffer, UnstashBehavior
 from tapio.actor.supervision import Decision, SupervisorStrategy
+from tapio.actor.timers import TimerScheduler
 from tapio.actor.watch import Watcher
 from tapio.dispatch.dispatcher import Dispatcher
 from tapio.errors import (
@@ -314,6 +318,11 @@ class ActorCell(Generic[T]):
         self._watchers: dict[ActorPath, Watcher] = {}
         self._watching: dict[ActorPath, ActorCell[Any]] = {}
         self._log = actor_logger(path)
+        # Both are owned by the cell rather than by a behavior, and both
+        # outlive an incarnation: a restart empties them and hands the same
+        # objects to the behavior the re-run factory produces.
+        self._timers: TimerScheduler[T] = TimerScheduler(self)
+        self._stash: StashBuffer[T] | None = None
         self._ctx: ActorContext[T] = _CellContext(self)
         self._ref: LocalActorRef[T] = LocalActorRef(self)
         self._task: asyncio.Task[None] | None = None
@@ -355,6 +364,15 @@ class ActorCell(Generic[T]):
         the leak death watch exists to prevent.
         """
         return tuple(self._watchers)
+
+    @property
+    def timers(self) -> TimerScheduler[T]:
+        """The timers this actor has running.
+
+        Exposed for the same reason `watchers` is: "the restart cancelled the
+        timers" has to be something a test can assert rather than infer.
+        """
+        return self._timers
 
     @property
     def is_alive(self) -> bool:
@@ -765,6 +783,11 @@ class ActorCell(Generic[T]):
             "restarting after a failure in %s", self._describe_current(), exc_info=error
         )
         await self._run_lifecycle_hook(PreRestart())
+        # Both belong to the incarnation that just failed. A tick scheduled by
+        # it must not arrive at its replacement, and messages it put aside are
+        # not the replacement's to answer.
+        self._timers.cancel_all()
+        self._discard_stash()
         await self._stop_children(self._own_deadline())
 
         if strategy.backoff is not None:
@@ -936,6 +959,13 @@ class ActorCell(Generic[T]):
                 behavior = behavior.behavior
             elif isinstance(behavior, SetupBehavior):
                 behavior = behavior.setup(self._ctx)
+            elif isinstance(behavior, WithTimersBehavior):
+                behavior = behavior.with_timers(self._timers)
+            elif isinstance(behavior, WithStashBehavior):
+                behavior = behavior.with_stash(self._stash_buffer(behavior.capacity))
+            elif isinstance(behavior, UnstashBehavior):
+                self._unstash(behavior.buffer)
+                behavior = behavior.behavior
             else:
                 break
             seen += 1
@@ -966,8 +996,10 @@ class ActorCell(Generic[T]):
         self._children.clear()
         # Wake any parked sender first, then account for what is left. A
         # message that was queued and never read is not silently lost.
+        self._timers.cancel_all()
         self._mailbox.close()
         self._drain_to_dead_letters()
+        self._discard_stash()
         self._release_watches()
         if self._parent is not None:
             self._parent._remove_child(self)
@@ -998,6 +1030,44 @@ class ActorCell(Generic[T]):
         """Deregister a stopped child, freeing its name for reuse."""
         if self._children.get(child.path.name) is child:
             del self._children[child.path.name]
+
+    def _stash_buffer(self, capacity: int) -> StashBuffer[T]:
+        """The buffer this actor stashes into, created once and then kept.
+
+        Created on the first evaluation and reused by every incarnation after
+        it, so a restart cannot silently resize the buffer and the cell always
+        knows which one to empty.
+        """
+        if self._stash is None:
+            self._stash = StashBuffer(capacity)
+        return self._stash
+
+    def _unstash(self, buffer: StashBuffer[T]) -> None:
+        """Put everything held back at the head of the user lane.
+
+        In arrival order, ahead of whatever queued up while the actor was not
+        ready, and the actor stays an ordinary actor throughout: the messages
+        go through the receive loop one at a time, so signals still outrank
+        them and a stop arriving mid-replay is honoured.
+        """
+        for message in reversed(buffer.take_all()):
+            self._mailbox.put_front(message)
+
+    def _discard_stash(self) -> None:
+        """Empty the stash, accounting for what it held.
+
+        A restart clears it because messages held by the state that just failed
+        are not the new state's to answer, and a stop clears it because there
+        is nobody left to replay them. Neither is a reason to lose them
+        silently.
+        """
+        if self._stash is None:
+            return
+        for message in self._stash.take_all():
+            # Its own reason rather than the mailbox's: a message that was
+            # accepted and then put aside by the actor is a different story
+            # from one that never got in, and the sender may care which.
+            self._dead_letter(message, DeadLetterReason.STASH_DISCARDED)
 
     def _dead_letter(self, message: Message, reason: str) -> None:
         """Account for a message that had nowhere to go."""

@@ -32,6 +32,12 @@ Generated from the source, so it cannot drift from what is installed.
 
 ::: tapio.actor.ask.PromiseRef
 
+## Timers and stash
+
+::: tapio.actor.timers.TimerScheduler
+
+::: tapio.actor.stash.StashBuffer
+
 ## Messages and validation
 
 ::: tapio.message.Message
