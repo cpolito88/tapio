@@ -104,7 +104,13 @@ you are already editing.
   use `TaskGroup`, so "no orphaned tasks" is an invariant this suite has to
   keep honest.
 - Tests use the `system` fixture from `tests/conftest.py` when they need a live
-  tree; it terminates whatever the test leaves behind.
+  tree; it terminates whatever the test leaves behind. A fixture only one
+  package needs lives in that package's own `conftest.py`, with its helpers
+  beside it: `tests/remote/conftest.py` holds the two systems every remoting
+  test starts, and `tests/remote/peers.py` the messages, behaviors and
+  misbehaving peer they share.
+- **A test that listens binds port 0.** The OS picks, the canonical address
+  follows what it picked, and no two tests argue over a number somebody chose.
 - Examples are tests. Every module in `examples/tapio_examples/` has an
   assertion in `tests/examples/test_suite.py`, and a new example with no
   assertion fails the suite on purpose.
@@ -113,6 +119,9 @@ you are already editing.
 
 - **A message's identity never depends on a setting.** Delivery-time validation
   discards its result; the recipient always gets the object the sender passed.
+  The guarantee is local: a message that crossed a link was rebuilt from JSON,
+  so it is `==` to what was sent and never `is` it. Say which side of that line
+  a test is on.
 - **`tell` never blocks and never raises about the recipient.** Errors about
   the message belong to the sender. Errors about the recipient become dead
   letters.
@@ -122,4 +131,18 @@ you are already editing.
 - **Shutdown races one deadline for the whole tree**, not one per actor, so
   worst-case shutdown does not multiply by depth.
 - **Every task belongs to a cell and is cancelled in its termination
-  sequence.** If you add a task, say which cell owns it.
+  sequence.** If you add a task, say which cell owns it. Remoting adds no
+  exception: an association is an actor whose reader is its own task, and the
+  endpoint actor owns the listener and any connection still mid-handshake.
+- **A type key on a frame is a registry key, never an import path.** Resolving
+  a dotted name that arrived on a socket into an importable object is remote
+  code execution. An unregistered key is a dead letter naming the key, and
+  nothing is imported to find out what it might have meant.
+- **Remoting is off unless it is configured**, and when it is, the port is
+  bound while the system is being constructed. That is what settles the
+  canonical address before any ref can write itself down, and what makes a
+  configuration that would listen to the world fail to start rather than fail
+  to be secure.
+- **Delivery across a link is at-most-once, FIFO per association**, the same
+  guarantee as a local send. No acks and no retries: upgrading that belongs to
+  the user's protocol, where they know what is safe to repeat.
