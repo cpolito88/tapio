@@ -1,9 +1,4 @@
-"""Who is on the other end, and whether they get to say anything at all.
-
-Most tests here dial a real system with a peer that writes its own handshake,
-so the assertions are about what the *receiving* end does with a hello it does
-not like: close the connection, log the reason, and read no further frames.
-"""
+"""Tests for the handshake, mostly from the receiving end."""
 
 import asyncio
 import contextlib
@@ -21,7 +16,7 @@ from tests.remote.peers import Tick, counting, dial, remoting
 
 @pytest.fixture
 async def guarded() -> AsyncIterator[ActorSystem]:
-    """A system that requires a secret, for the tests about being refused."""
+    """A system that requires a secret."""
     running = ActorSystem("beta", remoting(secret="shh"))
     try:
         yield running
@@ -30,7 +25,7 @@ async def guarded() -> AsyncIterator[ActorSystem]:
 
 
 async def closed(link: FrameLink) -> bool:
-    """Whether the peer closed the link rather than carrying on."""
+    """Whether the peer closed the link."""
     try:
         await link.read_frame()
     except (asyncio.IncompleteReadError, ConnectionError):
@@ -45,17 +40,16 @@ async def test_a_peer_that_says_who_it_is_gets_a_welcome(beta: ActorSystem):
     link = await dial(beta)
     try:
         assert beta.remote is not None
-        # The welcome has been read by `dial`, and the association is keyed by
-        # the address the peer advertised rather than the socket it dialled
-        # from: those differ routinely, and only one of them can be dialled.
+        # `dial` has read the welcome. The association is keyed by the address
+        # the peer advertised, not the socket it dialled from: only the
+        # advertised one can be dialled back.
         await eventually(lambda: beta.remote.associations != ())  # type: ignore[union-attr]
     finally:
         await link.close()
 
 
 async def test_the_version_must_match(beta: ActorSystem):
-    # An incompatible wire format that half works is worse than one that
-    # refuses, and a version is the cheapest thing to check first.
+    # A wire format that half works is worse than one that refuses.
     link = await dial(beta, version="99.0.0", welcome=False)
     try:
         assert await closed(link)
@@ -66,8 +60,7 @@ async def test_the_version_must_match(beta: ActorSystem):
 
 
 async def test_a_peer_with_no_address_to_dial_is_refused(beta: ActorSystem):
-    # A system that opens a link advertises the address its refs are written
-    # with. One that advertises nothing has nothing to be answered at.
+    # A peer advertising no address cannot be answered at.
     link = await dial(beta, address=Address(system="ghost"), welcome=False)
     try:
         assert await closed(link)
@@ -129,13 +122,13 @@ async def test_a_peer_with_no_answer_at_all_is_refused(guarded: ActorSystem):
 
 
 async def test_a_refused_peer_gets_nothing_delivered(guarded: ActorSystem):
-    # No frames are read after a failed handshake, so a message written
-    # immediately behind a bad hello is not a way in.
+    # No frames are read after a failed handshake, so writing a message right
+    # behind a bad hello is not a way in.
     seen: list[int] = []
     ticker = guarded.spawn(counting(seen), "ticker")
     link = await dial(guarded, proof="wrong", welcome=False)
     try:
-        # The peer may already have hung up, which is the point.
+        # The peer may already have hung up, which is the point of the test.
         with contextlib.suppress(OSError):
             await link.write_frame(encode(Tick(n=1), to=ticker.path))
         assert await closed(link)
@@ -150,8 +143,8 @@ async def test_a_refused_peer_gets_nothing_delivered(guarded: ActorSystem):
 async def test_dialling_something_that_is_not_tapio_fails_as_a_handshake(
     alpha: ActorSystem,
 ):
-    # The dial fails where it can be reported, rather than as a message that
-    # silently never lands: what was queued for the peer is dead-lettered.
+    # The dial fails, so what was queued for the peer is dead-lettered rather
+    # than silently never landing.
     async def rude(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         writer.close()
 

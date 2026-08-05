@@ -1,4 +1,4 @@
-"""Resolving, configuring and shutting down the thing that holds the port."""
+"""Tests for the endpoint: resolving, addressing and shutdown."""
 
 import asyncio
 
@@ -17,8 +17,8 @@ from tests.remote.peers import Tick, counting, remoting, uri
 
 
 async def test_resolving_this_system_gives_the_live_local_ref(alpha: ActorSystem):
-    # Resolving your own address must not put a socket in the middle of a local
-    # send, so it does not: the answer is the ref the spawn handed out.
+    # Resolving your own address must not put a socket in the middle of a
+    # local send.
     ticker = alpha.spawn(counting([]), "ticker")
 
     assert await alpha.resolve(uri(alpha, ticker), expect=Tick) is ticker
@@ -39,8 +39,8 @@ async def test_resolving_a_peer_gives_a_ref_addressed_to_it(
 async def test_every_ref_for_a_peer_shares_one_association(
     alpha: ActorSystem, beta: ActorSystem
 ):
-    # One connection per peer pair, however many refs point at it, which is
-    # what makes FIFO per association a guarantee worth having.
+    # One connection per peer pair, however many refs point at it. That is
+    # what makes FIFO per association mean anything.
     here: list[int] = []
     there: list[int] = []
     ticker = beta.spawn(counting(here), "ticker")
@@ -59,8 +59,8 @@ async def test_every_ref_for_a_peer_shares_one_association(
 async def test_a_ref_outlives_the_link_it_was_resolved_on(
     alpha: ActorSystem, beta: ActorSystem
 ):
-    # A ref is a handle to an actor on a node, not to a socket that happened
-    # to be open when it was resolved: the next send dials again.
+    # A ref points at an actor on a node, not at the socket that was open when
+    # it was resolved, so the next send dials again.
     seen: list[int] = []
     ticker = beta.spawn(counting(seen), "ticker")
     remote = await alpha.resolve(uri(beta, ticker), expect=Tick)
@@ -84,8 +84,8 @@ async def test_resolving_something_that_is_not_a_ref_says_so(alpha: ActorSystem)
 
 
 async def test_resolving_an_address_with_nowhere_to_dial_says_so(alpha: ActorSystem):
-    # What a system with remoting switched off writes its refs down as. It is
-    # readable, it names a system, and there is nothing to send to.
+    # This is how a system with remoting off writes its refs: a name, and no
+    # host to send to.
     with pytest.raises(RefResolutionError, match="no host to dial"):
         await alpha.resolve("tapio://other/user/x#1", expect=Tick)
 
@@ -129,16 +129,16 @@ async def test_an_actor_resolves_through_its_own_context(
 
 
 async def test_the_advertised_port_is_the_one_the_os_handed_out(alpha: ActorSystem):
-    # Bound at construction rather than in a task, so a ref handed out a
-    # microsecond later already writes down a port a peer can dial.
+    # The port is bound during construction, so the first ref handed out
+    # already names a port a peer can dial.
     assert alpha.address.port is not None
     assert alpha.address.port > 0
     assert alpha.address.host == "127.0.0.1"
 
 
 async def test_a_canonical_address_overrides_what_the_socket_says():
-    # Containers, NAT and port mapping: what peers dial is not always what the
-    # socket is bound to, and what a ref writes down is always the former.
+    # Under NAT or port mapping, what peers dial is not what the socket is
+    # bound to. A ref always writes down the former.
     settings = TapioSettings(
         _env_file=None,
         remote=RemoteSettings(
@@ -153,8 +153,8 @@ async def test_a_canonical_address_overrides_what_the_socket_says():
 
 
 async def test_each_incarnation_has_its_own_uid():
-    # A system restarted at the same host and port is a different peer, and
-    # this is what says so.
+    # A system restarted on the same host and port is a different peer, and
+    # the uid is what says so.
     async with (
         ActorSystem("alpha", remoting()) as one,
         ActorSystem("alpha", remoting()) as two,
@@ -169,8 +169,8 @@ async def test_remoting_is_off_unless_it_is_configured():
 
 
 async def test_binding_beyond_loopback_without_a_secret_refuses_to_start():
-    # At construction, so a misconfigured deployment fails to start rather than
-    # serving strangers.
+    # It raises during construction, so a misconfigured deployment fails to
+    # start rather than serving strangers.
     with pytest.raises(InsecureRemoteConfig, match="secret"):
         ActorSystem(
             "exposed",
@@ -225,6 +225,6 @@ async def test_a_terminated_system_holds_no_associations():
 
 
 async def refused(port: int) -> None:
-    """Assert that nothing answers on a port any more."""
+    """Assert that nothing answers on a port."""
     with pytest.raises(ConnectionRefusedError):
         await asyncio.open_connection("127.0.0.1", port)

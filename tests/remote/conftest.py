@@ -1,7 +1,7 @@
-"""The two systems every remoting test starts with.
+"""The two systems the remoting tests start.
 
-Fixtures rather than helpers because each one has to be terminated however the
-test ends, and a system left listening outlives the test that forgot it.
+Fixtures rather than helpers so that each is terminated however the test ends.
+A system left listening would outlive the test that forgot it.
 """
 
 from collections.abc import AsyncIterator
@@ -14,7 +14,7 @@ from tests.remote.peers import remoting
 
 @pytest.fixture
 async def alpha() -> AsyncIterator[ActorSystem]:
-    """One system, listening on a loopback port the OS picked."""
+    """One system, listening on a loopback port the OS picks."""
     running = ActorSystem("alpha", remoting())
     try:
         yield running

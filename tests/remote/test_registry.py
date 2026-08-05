@@ -1,9 +1,8 @@
-"""The two registries: message types by wire key, and live refs by path.
+"""Tests for the two registries: message types by wire key, live refs by path.
 
-The message-type registry is what keeps a type name off the wire from becoming
-an import, and the ref registry is what makes a stale incarnation resolve to
-nothing rather than to whoever occupies that path now. Both are asserted to
-leave nothing behind: a registry that outlives what it names is a leak.
+The type registry keeps a name off the wire from becoming an import. The ref
+registry makes a stale incarnation resolve to nothing rather than to whoever
+holds that path now. Neither may leave anything behind.
 """
 
 from datetime import timedelta
@@ -41,13 +40,13 @@ class Registered(Message):
 
 @register_message("tests.explicit-key")
 class Renamed(Message):
-    """Registered under a key that does not follow the class around."""
+    """Registered under an explicit key, so renaming the class is safe."""
 
     n: int
 
 
 async def counts(ping: Ping) -> Behavior[Ping]:
-    """Stop on a negative count, and otherwise do nothing at all."""
+    """Stops on a negative count, and otherwise does nothing."""
     return Behaviors.stopped() if ping.n < 0 else Behaviors.same()
 
 
@@ -60,21 +59,21 @@ def test_a_type_is_found_by_its_key():
 
 
 def test_an_explicit_key_is_used_verbatim():
-    # The reason the explicit form exists: a class can be renamed or moved
-    # without breaking a peer still running the previous version.
+    # With an explicit key, the class can be renamed or moved without
+    # breaking a peer running the previous version.
     assert key_for_type(Renamed) == "tests.explicit-key"
     assert type_for_key("tests.explicit-key") is Renamed
 
 
 def test_an_unregistered_key_resolves_to_nothing():
-    # Emphatically not an import: a dotted name that arrived on a socket is a
-    # string, and looking it up is a dict lookup that can only miss.
+    # Not an import. A dotted name off a socket is just a string, and looking
+    # it up is a dict lookup that can only miss.
     assert type_for_key("os.system") is None
 
 
 def test_a_duplicate_key_raises_at_import_time():
-    # Import time rather than decode time, because the alternative is that the
-    # class which happened to import last silently wins.
+    # It fails at import time, not decode time. Otherwise whichever class
+    # imported last would silently win.
     with pytest.raises(MessageRegistrationError, match="already has that key"):
 
         @register_message("tests.explicit-key")
@@ -112,8 +111,8 @@ def test_a_ref_is_found_by_path_and_uid():
 
 
 def test_a_different_incarnation_of_the_same_path_is_not_found():
-    # The incarnation rule, at its smallest: paths are reusable and uids are
-    # not, so a ref written down before a stop cannot address the newcomer.
+    # Paths are reusable and uids are not, so a ref written down before a stop
+    # cannot address whoever comes next.
     registry = RefRegistry()
     path = ActorPath.root("sys").child("user").child("worker", uid=1)
     registry.register(ActorRef(path))
@@ -138,8 +137,7 @@ async def test_a_stopped_actor_leaves_nothing_registered(system: ActorSystem):
 
 
 async def test_a_respawned_name_gets_a_uid_of_its_own(system: ActorSystem):
-    # Stop and respawn under the same name: the path is reusable and the uid
-    # is not, which is the whole of the incarnation rule.
+    # Stop and respawn under the same name: same path, different uid.
     behavior = Behaviors.receive_message(counts, msg_type=Ping)
     first = system.spawn(behavior, "worker")
     first.tell(Ping(n=-1))
@@ -154,8 +152,8 @@ async def test_a_respawned_name_gets_a_uid_of_its_own(system: ActorSystem):
 async def test_an_adapter_is_registered_and_released_with_its_owner(
     system: ActorSystem,
 ):
-    # An adapter is addressable like the actor behind it, so a ref handed to a
-    # peer resolves on the way back, and it dies with its owner.
+    # An adapter is addressable like any actor, so a ref handed to a peer
+    # resolves on the way back. It is released with its owner.
     adapters: list[ActorRef[Greeted]] = []
 
     def make(ctx: ActorContext[Ping]) -> Behavior[Ping]:
@@ -175,9 +173,8 @@ async def test_an_adapter_is_registered_and_released_with_its_owner(
 async def test_an_ask_registers_its_promise_and_takes_it_out_again(
     system: ActorSystem,
 ):
-    # The promise has to be addressable while the ask is running, so a reply
-    # that crossed a link finds the future somebody is awaiting, and it must
-    # not still be there afterwards.
+    # A promise is addressable while the ask runs, so a reply off a link finds
+    # the future being awaited. It must not still be there afterwards.
     seen: list[ActorPath] = []
 
     async def note_the_registry(message: Ping) -> Behavior[Ping]:
@@ -203,6 +200,5 @@ async def test_the_registry_is_empty_once_the_system_has_terminated(settings):
         running.spawn(Behaviors.receive_message(counts, msg_type=Ping), "worker")
         await running.terminate()
 
-    # The same invariant as leaked tasks, one layer down: what the runtime
-    # registered, the runtime released.
+    # What the runtime registered, the runtime releases.
     assert running.refs.paths() == ()

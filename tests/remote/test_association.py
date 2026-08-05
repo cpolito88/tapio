@@ -1,9 +1,4 @@
-"""Messages crossing a real link, and every way one fails to.
-
-Two systems in one process on two loopback ports. What is under test here is
-the association: the link it opens, the order it keeps, what it does with a
-frame it cannot write, and what a peer can make it do.
-"""
+"""Tests for the association: messages over a real link."""
 
 import asyncio
 
@@ -45,9 +40,6 @@ async def test_a_message_crosses_an_association(alpha: ActorSystem, beta: ActorS
 async def test_a_reply_arrives_at_a_reply_to_that_crossed_the_wire(
     alpha: ActorSystem, beta: ActorSystem
 ):
-    # The counterpart of hello_world, and deliberately almost the same code:
-    # the requester hands out its own ref, the answer comes back to it, and
-    # neither actor knows there is a socket in the middle.
     answers: list[Pong] = []
     echo = beta.spawn(echoing(), "echo")
     cart = alpha.spawn(collecting(answers), "cart")
@@ -61,8 +53,8 @@ async def test_a_reply_arrives_at_a_reply_to_that_crossed_the_wire(
 async def test_the_reply_travels_back_over_the_same_association(
     alpha: ActorSystem, beta: ActorSystem
 ):
-    # One connection per peer pair, whoever dialled it. beta never resolved
-    # anything, and answering still opens no second link.
+    # One connection per peer pair: beta never resolved anything, so its reply
+    # has to reuse the link alpha opened.
     answers: list[Pong] = []
     echo = beta.spawn(echoing(), "echo")
     cart = alpha.spawn(collecting(answers), "cart")
@@ -80,9 +72,8 @@ async def test_the_reply_travels_back_over_the_same_association(
 async def test_a_message_off_the_wire_equals_what_was_sent_without_being_it(
     alpha: ActorSystem, beta: ActorSystem
 ):
-    # Where the identity invariant stops. A message rebuilt from JSON is equal
-    # to what was sent and never the same object; `Message` is frozen, so
-    # equality is well defined and the substitution is safe.
+    # A message rebuilt from JSON is equal to what was sent, never the same
+    # object. `Message` is frozen, so equality is enough.
     answers: list[Pong] = []
     echo = beta.spawn(echoing(), "echo")
     cart = alpha.spawn(collecting(answers), "cart")
@@ -99,9 +90,8 @@ async def test_a_message_off_the_wire_equals_what_was_sent_without_being_it(
 async def test_fifo_holds_for_ten_thousand_messages(
     alpha: ActorSystem, beta: ActorSystem
 ):
-    # Ordering per association is the guarantee remoting keeps, and the only
-    # honest way to test it is with enough traffic to fill a socket buffer and
-    # make the writer park in `drain`.
+    # 10,000 messages fills the socket buffer, so the writer waits in `drain`,
+    # which is where ordering would break.
     seen: list[int] = []
     ticker = beta.spawn(counting(seen), "ticker")
     remote = await alpha.resolve(uri(beta, ticker), expect=Tick)
@@ -119,8 +109,7 @@ async def test_fifo_holds_for_ten_thousand_messages(
 async def test_an_unregistered_message_raises_at_the_send_site(
     alpha: ActorSystem, beta: ActorSystem
 ):
-    # The message is yours: a type with no wire key cannot be written, and the
-    # code that wrote it is the code that can fix it. Nothing has been sent.
+    # Errors about the message belong to the sender, and nothing is sent.
     ticker = beta.spawn(counting([]), "ticker")
     remote = await alpha.resolve(uri(beta, ticker), expect=Unregistered)
 
@@ -129,15 +118,14 @@ async def test_an_unregistered_message_raises_at_the_send_site(
 
 
 async def test_a_full_outbound_buffer_dead_letters_instead_of_raising():
-    # The recipient is not yours: a peer that is not reading is a dead letter
-    # naming the peer, never an exception in the sender.
+    # Errors about the recipient are dead letters, never an exception.
     async with ActorSystem("alpha", remoting(outbound_capacity=2)) as one:
         letters: list[DeadLetter] = []
         one.dead_letters.subscribe(letters.append)
         remote = await one.resolve(f"{GHOST}/user/ticker#1", expect=Tick)
 
-        # No await between the sends, so the association cannot drain anything
-        # while this loop runs and the overflow is a fact rather than a race.
+        # No await in the loop, so the association cannot drain and the
+        # overflow is certain rather than a race.
         for n in range(64):
             remote.tell(Tick(n=n))
 
@@ -154,8 +142,8 @@ async def test_a_full_outbound_buffer_dead_letters_instead_of_raising():
 async def test_a_tell_to_a_peer_that_was_never_reachable_dead_letters(
     alpha: ActorSystem,
 ):
-    # It dead-letters rather than hanging, and rather than raising: the dial
-    # fails behind the send, and what was queued for it is accounted for.
+    # The dial fails behind the send, so the message is dead-lettered rather
+    # than left hanging.
     letters: list[DeadLetter] = []
     alpha.dead_letters.subscribe(letters.append)
 
@@ -186,9 +174,8 @@ async def test_a_failed_association_is_forgotten_so_the_next_send_dials_again(
 async def test_a_type_key_the_peer_does_not_know_dead_letters_over_there(
     beta: ActorSystem,
 ):
-    # Registry-only type resolution, over a real link: the key is named, the
-    # sending address is named, and nothing is imported to find out what the
-    # key might have meant.
+    # The dead letter names the key and the sender. Nothing is imported to
+    # find out what the key meant.
     letters: list[DeadLetter] = []
     beta.dead_letters.subscribe(letters.append)
     ticker = beta.spawn(counting([]), "ticker")
@@ -206,8 +193,8 @@ async def test_a_type_key_the_peer_does_not_know_dead_letters_over_there(
 
 
 async def test_an_oversized_frame_is_refused_and_the_link_closed(beta: ActorSystem):
-    # The declared length is checked before the body is read, so a peer
-    # announcing a gigabyte costs a header and a refusal.
+    # The length is checked before the body is read, so a peer announcing a
+    # gigabyte costs a header and a refusal.
     letters: list[DeadLetter] = []
     beta.dead_letters.subscribe(letters.append)
     settings = beta.settings.remote
@@ -235,16 +222,14 @@ async def test_a_frame_arriving_before_the_handshake_is_refused(beta: ActorSyste
     writer.write(encode(Tick(n=1), to=ticker.path))
     await writer.drain()
 
-    # The peer never said who it was, so nothing it wrote is read as a message.
+    # The peer never said who it was, so nothing it wrote is read.
     with pytest.raises(asyncio.IncompleteReadError):
         await reader.readexactly(1024)
     writer.close()
 
 
 async def test_an_idle_association_heartbeats(beta: ActorSystem):
-    # A link that carries traffic needs none of these. They exist so that
-    # silence can be told from a peer with nothing to say, which is what the
-    # failure detector will read.
+    # Heartbeats are what tells a dead peer from a quiet one.
     link = await dial(beta)
     try:
         frame = await asyncio.wait_for(link.read_frame(), 2.0)
@@ -255,7 +240,7 @@ async def test_an_idle_association_heartbeats(beta: ActorSystem):
 
 
 async def test_a_link_frame_this_version_does_not_know_is_ignored(beta: ActorSystem):
-    # A peer running something newer is not a reason to drop a working link.
+    # A peer running something newer must not break a working link.
     seen: list[int] = []
     ticker = beta.spawn(counting(seen), "ticker")
     link = await dial(beta)
@@ -271,8 +256,8 @@ async def test_a_link_frame_this_version_does_not_know_is_ignored(beta: ActorSys
 async def test_asking_across_an_association_says_what_to_do_instead(
     alpha: ActorSystem, beta: ActorSystem
 ):
-    # An ask that could only time out would be worse than none: across a link
-    # it needs the remote death watch to fail fast, which is not here yet.
+    # A remote ask needs the remote death watch to fail fast. Until that
+    # lands, an ask here could only time out, so it refuses instead.
     echo = beta.spawn(echoing(), "echo")
     remote = await alpha.resolve(uri(beta, echo), expect=Ping)
 
@@ -286,8 +271,8 @@ async def test_asking_across_an_association_says_what_to_do_instead(
 async def test_both_ends_dialling_at_once_end_up_with_one_association(
     alpha: ActorSystem, beta: ActorSystem
 ):
-    # Normal under load, and without a rule the pair keeps two connections and
-    # FIFO per association stops meaning anything.
+    # Without a rule for this the pair keeps two connections, and FIFO per
+    # association stops meaning anything.
     here: list[int] = []
     there: list[int] = []
     mine = alpha.spawn(counting(here), "ticker")
@@ -308,9 +293,7 @@ async def test_both_ends_dialling_at_once_end_up_with_one_association(
 async def test_traffic_survives_the_link_that_lost_the_dial(
     alpha: ActorSystem, beta: ActorSystem
 ):
-    # Whichever link is closed, the messages already queued on the winner
-    # arrive: at-most-once is about the link that fails, not about the one
-    # that was never needed.
+    # Closing the losing link must not drop what was already queued on it.
     there: list[int] = []
     theirs = beta.spawn(counting(there), "ticker")
     mine = alpha.spawn(counting([]), "ticker")
@@ -353,8 +336,8 @@ async def test_a_peer_with_the_wrong_secret_gets_nothing_through():
         remote = await one.resolve(uri(two, ticker), expect=Tick)
         remote.tell(Tick(n=1))
 
-        # The handshake fails, the association ends, and what it was holding is
-        # accounted for. Nothing is delivered, and nothing raises at the sender.
+        # The handshake fails, so the queued message is dead-lettered. Nothing
+        # is delivered and nothing raises at the sender.
         await eventually(lambda: bool(letters))
         assert seen == []
         assert letters[0].reason == DeadLetterReason.LINK_FAILED

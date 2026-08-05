@@ -1,4 +1,4 @@
-"""The link itself: framing, classification, and what refuses to listen."""
+"""Tests for the link: framing, frame kinds, binding and TLS."""
 
 import asyncio
 
@@ -25,7 +25,7 @@ from tests.remote.peers import Tick
 
 
 def remote(**overrides: object) -> RemoteSettings:
-    """Remote settings that ignore whatever is in the developer's environment."""
+    """Remote settings that ignore the developer's environment."""
     return RemoteSettings(_env_file=None, **overrides)  # type: ignore[arg-type]
 
 
@@ -61,8 +61,8 @@ async def test_a_frame_arrives_whole():
 
 
 async def test_a_frame_over_the_limit_is_refused_from_its_prefix():
-    # Before the body is read, which is the cheapest way to keep a hostile or
-    # buggy peer from asking for the memory it announced.
+    # Refused before the body is read, so a peer cannot make this end allocate
+    # the memory it announced.
     client, server_side, server = await linked()
     try:
         await client.write_frame((10_000).to_bytes(LENGTH_PREFIX, "big") + b"x")
@@ -129,8 +129,8 @@ def test_binding_anywhere_else_without_a_secret_is_refused():
 
 
 def test_a_name_that_is_not_an_address_literal_is_not_assumed_to_be_loopback():
-    # It may well resolve to loopback, and it may not. Refusing to guess is the
-    # safe direction, since the cost of being wrong is an open port.
+    # It might resolve to loopback, it might not. Guessing wrong leaves an
+    # open port, so it does not guess.
     with pytest.raises(InsecureRemoteConfig):
         verify_bind_security(remote(bind_host="orders.svc"))
 

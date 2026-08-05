@@ -54,6 +54,10 @@ you are already editing.
   `[Name][tapio.module.Name]`.
 - **No blanket `from __future__ import annotations`.** The floor is Python
   3.11. Quote the few genuinely forward references instead.
+- **Plain sentences.** Subject, verb, object. No inverted clauses, no
+  aphorisms, no sentence written for its cadence. This applies hardest to
+  tests, where a module docstring is one line and a comment exists only where
+  the code is genuinely surprising. Say the fact and stop.
 - Google-style docstrings on every public module, class, and function. Ruff
   enforces the convention; mypy runs `--strict` over `src` and `examples`.
 - Explain *why* in comments, not *what*. The code says what it does.
