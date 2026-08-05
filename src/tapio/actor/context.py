@@ -148,6 +148,45 @@ class ActorContext(ABC, Generic[T]):
         """
 
     @abstractmethod
+    async def resolve(self, uri: str, *, expect: type[U]) -> ActorRef[U]:
+        """Turn a ref's string form into a ref, wherever the actor it names is.
+
+        ```python
+        stock = await ctx.resolve(
+            "tapio://inventory@inventory.svc:25520/user/stock", expect=Reserve
+        )
+        ```
+
+        The same call as
+        [ActorSystem.resolve][tapio.actor.system.ActorSystem.resolve], from
+        inside an actor. An address this system owns resolves to the live local
+        ref, so resolving your own system never puts a socket in the middle of
+        a local send; another system's resolves to a ref that reaches it
+        through an association.
+
+        Nothing waits on the peer: the association is created and dialled
+        behind the sends that follow, so a `tell` to a peer that never answers
+        dead-letters instead of hanging, and this call does not fail because a
+        node is down.
+
+        Args:
+            uri: The full string form, `tapio://sys@host:port/user/x#uid`.
+            expect: What the target accepts. A claim about the peer, checked at
+                this end; the receiving node checks it against the target's
+                real message type, which is the check that can be trusted.
+
+        Returns:
+            A ref to the actor it names.
+
+        Raises:
+            RefResolutionError: If the text is not a ref, if it names a system
+                with no host to dial, or if it names a reachable peer while
+                this system has remoting switched off.
+            MessageTypeError: If `expect` is not a `Message` subclass or a
+                union of them.
+        """
+
+    @abstractmethod
     def watch(self, ref: ActorRef[Any]) -> None:
         """Ask to be sent `Terminated` when another actor stops.
 

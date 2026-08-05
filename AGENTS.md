@@ -30,7 +30,7 @@ first.
 |---|---|
 | `src/tapio/` | the library, shipped in the wheel |
 | `src/tapio/actor/` | paths, refs, behaviors, cell, mailbox, system |
-| `src/tapio/remote/` | addressing, the wire format, and the registries behind them |
+| `src/tapio/remote/` | addressing, the wire format, the link and the associations over it |
 | `src/tapio/dispatch/` | the event loop a system's tasks run on |
 | `src/tapio/testkit/` | helpers for testing actor code, shipped |
 | `tests/` | unit tests, mirroring the source packages, plus `tests/examples/` and `tests/benchmarks/` |

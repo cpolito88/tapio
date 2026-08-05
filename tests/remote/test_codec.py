@@ -66,11 +66,27 @@ class Unregistered(Message):
     n: int
 
 
-def settings_for(port: int) -> TapioSettings:
-    """Settings for a system that advertises itself on a loopback port."""
+def settings_for() -> TapioSettings:
+    """Settings for a system that advertises itself on a loopback port.
+
+    Port 0: the OS picks, the canonical address follows what it picked, and two
+    systems in one test process never collide over a number someone chose.
+    """
     return TapioSettings(
-        _env_file=None, remote=RemoteSettings(_env_file=None, bind_port=port)
+        _env_file=None, remote=RemoteSettings(_env_file=None, bind_port=0)
     )
+
+
+def unlinked(running: ActorSystem) -> ActorSystem:
+    """Take away a system's ability to reach a peer by itself.
+
+    These systems listen, because a ref has to be written with a dialable
+    address for any of this to mean anything, and nothing here dials: every
+    frame in this file is carried by the test. Replacing the resolver keeps it
+    that way, so what is under test stays the codec rather than a socket.
+    """
+    running.set_peer_resolver(lambda address, path: None)
+    return running
 
 
 def collecting(seen: list[Reserved]) -> Behavior[Reserved]:
@@ -108,8 +124,8 @@ def tamper(frame: bytes, old: bytes, new: bytes) -> bytes:
 
 @pytest.fixture
 async def alpha() -> AsyncIterator[ActorSystem]:
-    """One of the two systems, addressed as `tapio://alpha@127.0.0.1:25520`."""
-    running = ActorSystem("alpha", settings_for(25520))
+    """One of the two systems, on a loopback port the OS picked."""
+    running = unlinked(ActorSystem("alpha", settings_for()))
     try:
         yield running
     finally:
@@ -118,8 +134,8 @@ async def alpha() -> AsyncIterator[ActorSystem]:
 
 @pytest.fixture
 async def beta() -> AsyncIterator[ActorSystem]:
-    """The other, addressed as `tapio://beta@127.0.0.1:25521`."""
-    running = ActorSystem("beta", settings_for(25521))
+    """The other, on a different loopback port."""
+    running = unlinked(ActorSystem("beta", settings_for()))
     try:
         yield running
     finally:
@@ -146,7 +162,7 @@ def link(source: ActorSystem, target: ActorSystem) -> None:
     def resolve(address: Address, path: ActorPath) -> ActorRef[Message] | None:
         if address != target.address:
             return None
-        return target.resolve(address, path)
+        return target.resolve_path(address, path)
 
     source.set_peer_resolver(resolve)
 
@@ -553,8 +569,8 @@ async def test_receiving_a_frame_leaves_no_context_behind(
 
 async def test_two_systems_terminate_leaving_nothing_behind():
     with assert_no_leaked_tasks():
-        one = ActorSystem("alpha", settings_for(25520))
-        two = ActorSystem("beta", settings_for(25521))
+        one = ActorSystem("alpha", settings_for())
+        two = ActorSystem("beta", settings_for())
         stock = two.spawn(reserving([]), "stock")
         cart = one.spawn(collecting([]), "cart")
         two.deliver_frame(

@@ -22,6 +22,7 @@ from tapio_examples import (
     stash_on_startup,
     state_machine,
     supervision_backoff,
+    two_nodes,
     worker_pool,
 )
 
@@ -38,6 +39,7 @@ ASSERTED = {
     "stash_on_startup",
     "state_machine",
     "supervision_backoff",
+    "two_nodes",
     "worker_pool",
 }
 
@@ -49,6 +51,20 @@ async def test_hello_world():
     assert lines == [
         "greeter: hello, world!",
         "listener: world has been greeted",
+    ]
+
+
+async def test_two_nodes():
+    with assert_no_leaked_tasks():
+        lines = await two_nodes.main()
+
+    # The same three beats as hello_world, with a link between the first and
+    # the second: the request crosses, the greeting happens on the other node,
+    # and the reply comes back to a ref that crossed with it.
+    assert lines[0].startswith("home: resolving tapio://away@127.0.0.1:")
+    assert lines[1:] == [
+        "away: hello, world!",
+        "home: world has been greeted",
     ]
 
 

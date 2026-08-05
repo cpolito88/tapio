@@ -64,6 +64,9 @@ class FakeContext(ActorContext[Message]):
     ) -> ActorRef[Message]:
         raise NotImplementedError
 
+    async def resolve(self, uri: str, *, expect: type[Any]) -> ActorRef[Any]:
+        raise NotImplementedError
+
     def watch(self, ref: ActorRef[Any]) -> None:
         raise NotImplementedError
 

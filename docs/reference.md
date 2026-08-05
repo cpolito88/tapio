@@ -72,6 +72,20 @@ Generated from the source, so it cannot drift from what is installed.
 
 ::: tapio.settings.RemoteSettings
 
+## Links and associations
+
+::: tapio.remote.transport
+
+::: tapio.remote.handshake
+
+::: tapio.remote.association
+
+::: tapio.remote.endpoint.RemoteEndpoint
+
+::: tapio.remote.ref.RemoteRef
+
+::: tapio.settings.TLSSettings
+
 ## Supervision
 
 ::: tapio.actor.supervision.SupervisorStrategy

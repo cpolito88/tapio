@@ -24,6 +24,8 @@ from tapio.errors import (
     AskTypeError,
     BehaviorTypeError,
     FrameTooLargeError,
+    HandshakeError,
+    InsecureRemoteConfig,
     MailboxFullError,
     MessageDecodingError,
     MessageEncodingError,
@@ -37,7 +39,8 @@ from tapio.errors import (
 from tapio.message import Message
 from tapio.remote.address import Address
 from tapio.remote.registry import register_message
-from tapio.settings import RemoteSettings, TapioSettings
+from tapio.settings import RemoteSettings, TapioSettings, TLSSettings
+from tapio.version import __version__
 
 __all__ = [
     "AbstractBehavior",
@@ -60,6 +63,8 @@ __all__ = [
     "DeadLetterReason",
     "Decision",
     "FrameTooLargeError",
+    "HandshakeError",
+    "InsecureRemoteConfig",
     "MailboxConfig",
     "MailboxFullError",
     "Message",
@@ -79,6 +84,7 @@ __all__ = [
     "StashBuffer",
     "StashOverflowError",
     "SupervisorStrategy",
+    "TLSSettings",
     "TapioError",
     "TapioSettings",
     "Terminated",
@@ -87,5 +93,3 @@ __all__ = [
     "__version__",
     "register_message",
 ]
-
-__version__ = "0.0.0"

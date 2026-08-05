@@ -19,6 +19,8 @@ __all__ = [
     "AskTypeError",
     "BehaviorTypeError",
     "FrameTooLargeError",
+    "HandshakeError",
+    "InsecureRemoteConfig",
     "MailboxFullError",
     "MessageDecodingError",
     "MessageEncodingError",
@@ -109,6 +111,25 @@ class MessageDecodingError(TapioError):
     Never raised into application code: the receiving end turns one of these
     into a dead letter naming what was wrong, because the failure belongs to a
     peer and there is no local caller to tell about it.
+    """
+
+
+class InsecureRemoteConfig(TapioError):  # noqa: N818 - names a configuration
+    """Remoting was configured to listen beyond loopback with nothing to prove.
+
+    Raised at system construction, so a deployment that would have accepted
+    frames from anything that can reach the port fails to start instead. The
+    error names both settings involved: bind somewhere else, or set a secret.
+    """
+
+
+class HandshakeError(TapioError):
+    """A link was refused before it carried a single message.
+
+    A version this system does not speak, a secret that did not match, or a
+    peer that stopped talking part-way through. The connection is closed with
+    the reason logged and no further frames read: an incompatible wire format
+    that half works is worse than one that refuses.
     """
 
 

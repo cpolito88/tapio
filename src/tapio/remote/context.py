@@ -41,7 +41,7 @@ class DeserializationContext(Protocol):
         """The reading system's own canonical address."""
         ...
 
-    def resolve(self, address: Address, path: "ActorPath") -> "ActorRef[Any]":
+    def resolve_path(self, address: Address, path: "ActorPath") -> "ActorRef[Any]":
         """Turn an address and a path into a ref that can be told things.
 
         Never raises about the target: an actor that has stopped, an
@@ -105,4 +105,4 @@ def resolve_ref(text: str) -> "ActorRef[Any]":
         address, path = parse_ref(text)
     except ValueError as error:
         raise RefResolutionError(str(error)) from error
-    return context.resolve(address, path)
+    return context.resolve_path(address, path)

@@ -24,6 +24,8 @@ from tapio.message import Message
 from tapio.remote.address import Address
 
 __all__ = [
+    "CarriedMessage",
+    "Carrier",
     "DeadLetter",
     "DeadLetterOffice",
     "DeadLetterReason",
@@ -56,6 +58,20 @@ CarriedMessage: TypeAlias = SerializeAsAny[Annotated[Message, PlainValidator(_ca
 `SerializeAsAny` is the other half of `_carry`: without it a dump would emit
 only the base class's fields, which for `Message` is none of them.
 """
+
+
+class Carrier(Message):
+    """A message on its way somewhere, wrapped in how it is travelling.
+
+    An adapter's wrapper and an association's outbound frame are both one of
+    these: internal, short-lived, and never something a user writes. They share
+    a base class so that a dead letter reports the *payload*, since how a
+    message travelled is a detail of the runtime and a subscriber matching on
+    message types should not have to know about one.
+    """
+
+    payload: "CarriedMessage"
+    """The message its sender actually sent."""
 
 
 class DeadLetterReason:
@@ -112,6 +128,17 @@ class DeadLetterReason:
 
     NO_ASSOCIATION = "no-association"
     """A ref addressed another system that this one has no link to."""
+
+    OUTBOUND_BUFFER_FULL = "outbound-buffer-full"
+    """An association was holding all the frames it will hold for a peer that
+    is not reading. Backpressure against a socket, and deliberately not
+    backpressure from the receiving actor: nothing in a fire-and-forget wire
+    protocol can offer the latter."""
+
+    LINK_FAILED = "link-failed"
+    """The link to the peer failed while the message was on it or queued for
+    it. At-most-once means exactly this: a message written to a socket that
+    then died may or may not have been processed."""
 
 
 class DeadLetter(Message):
