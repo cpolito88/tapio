@@ -4,9 +4,9 @@ Concepts: starting an `ActorSystem`, spawning a top-level actor, sending it a
 message with `tell`, and carrying a return address in the message as an
 `ActorRef` field.
 
-There is no `ask` here. A reply is just another message sent to a ref the
-sender put in the request, and seeing that plainly once makes `ask` read as the
-sugar it is.
+There is no `ask` here. A reply is just another message, sent to a ref the
+sender put in the request. Seeing that once makes `ask` read as the sugar it
+is.
 
 What to watch in the output: the greeter's line comes first, then the
 listener's, because the reply is a second message and cannot overtake the
@@ -71,9 +71,9 @@ async def main() -> list[str]:
 
     async def on_greeted(message: Greeted) -> Behavior[Greeted]:
         lines.append(f"listener: {message.whom} has been greeted")
-        # Handing a result back out to non-actor code. A future is the honest
-        # way to do that from inside a handler, and `ask` wraps this pattern up
-        # once the request/response shape is familiar.
+        # Handing a result back out to non-actor code. A future is the way to
+        # do that from inside a handler, and `ask` packages this pattern once
+        # the request/response shape is familiar.
         done.set_result(None)
         return Behaviors.same()
 

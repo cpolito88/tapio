@@ -1,14 +1,14 @@
 """The link: length-framed JSON over a TCP stream, with optional TLS.
 
 A link carries two kinds of frame over the same stream, and tells them apart
-without parsing either. **Message frames** are what
-[tapio.remote.codec][] writes: they open with `{"v":`. **Link frames** are the
-transport's own, the handshake and the heartbeat, and they open with
-`{"link":`. So the reader can hand a message frame straight on to the system
-that owns the recipient, and only ever parses the frames addressed to itself.
+without parsing either. **Message frames** are what [tapio.remote.codec][]
+writes, and they open with `{"v":`. **Link frames** are the transport's own,
+the handshake and the heartbeat, and they open with `{"link":`. The reader can
+therefore pass a message frame straight on, and only parses the frames meant
+for itself.
 
 Everything here is about bytes and sockets. What a frame means is
-[tapio.remote.codec][]'s business, and who it reaches is
+[tapio.remote.codec][]'s job, and who it reaches is
 [tapio.remote.association][]'s.
 """
 
@@ -67,9 +67,9 @@ class Heartbeat(LinkFrame):
     """Proof that a silent peer is still there.
 
     Written on an idle association every `heartbeat_interval`. The receiving
-    end notes when it arrived and does nothing else with it: what to conclude
-    from heartbeats that stop is a decision for the failure detector rather
-    than for the reader.
+    end records when it arrived and does nothing else with it. What to
+    conclude when heartbeats stop is the failure detector's decision, not the
+    reader's.
     """
 
     link: str = "heartbeat"
@@ -118,8 +118,8 @@ def framed(body: bytes) -> bytes:
 class FrameLink:
     """One TCP connection, read and written a whole frame at a time.
 
-    Not thread-safe and not meant to be: a link is read by one task and written
-    by one actor, both on the system's own loop.
+    Not thread-safe, and not meant to be. A link is read by one task and
+    written by one actor, both on the system's own loop.
     """
 
     __slots__ = ("_max_frame_bytes", "_peer", "_reader", "_writer")
@@ -148,9 +148,9 @@ class FrameLink:
     def peer(self) -> str:
         """The socket address on the other end, for a log line.
 
-        The dialable address of the *system* over there is what the handshake
-        establishes; this is only where the packets come from, which is not
-        always the same thing and is still what a reader wants in a log.
+        The handshake establishes the dialable address of the system over
+        there. This is only where the packets come from, which is not always
+        the same thing, and is still what a reader wants in a log.
         """
         return self._peer
 
@@ -162,7 +162,8 @@ class FrameLink:
 
         Raises:
             FrameTooLargeError: If the declared length is over the limit. The
-                body is not read: a peer announcing a gigabyte costs a header.
+                body is not read, so a peer announcing a gigabyte costs only
+                a header.
             MessageDecodingError: If the prefix is malformed.
             asyncio.IncompleteReadError: If the peer closed, either cleanly
                 between frames or part-way through one. Both mean the link is
@@ -177,9 +178,9 @@ class FrameLink:
     async def write_frame(self, data: bytes) -> None:
         """Write one complete frame and wait for the buffer to drain.
 
-        The drain is what makes a slow peer visible as a slow actor: the
-        association parks here, its mailbox fills, and the overflow strategy
-        decides, rather than the write buffer growing without a limit.
+        The drain is what makes a slow peer show up as a slow actor. The
+        association waits here, its mailbox fills, and the overflow strategy
+        decides what happens. The write buffer never grows without a limit.
 
         Args:
             data: One complete frame, length prefix included.
@@ -276,10 +277,9 @@ async def connect(
 def bind(settings: RemoteSettings) -> socket.socket:
     """Bind and listen, synchronously, so the port is known before anything runs.
 
-    Binding here rather than inside the server task is what lets a system with
-    `bind_port=0` advertise a canonical address the moment it is constructed:
-    a ref handed out a microsecond later already writes down a port a peer can
-    dial.
+    Binding here rather than inside the server task lets a system with
+    `bind_port=0` advertise a canonical address as soon as it is constructed.
+    The first ref it hands out already names a port a peer can dial.
 
     Args:
         settings: Where to listen.
@@ -290,8 +290,8 @@ def bind(settings: RemoteSettings) -> socket.socket:
     Raises:
         OSError: If the address could not be bound.
     """
-    # IPv6 only when the host is written as one: an address family guessed
-    # from anything else is a guess about somebody's network.
+    # IPv6 only when the host is written as an IPv6 literal. Guessing the
+    # address family from anything else is guessing about someone's network.
     family = socket.AF_INET6 if ":" in settings.bind_host else socket.AF_INET
     listener = socket.create_server(
         (settings.bind_host.strip("[]"), settings.bind_port), family=family
@@ -348,9 +348,9 @@ def _is_loopback(host: str) -> bool:
     try:
         return ipaddress.ip_address(host.strip("[]")).is_loopback
     except ValueError:
-        # A name that is not an address literal. It may well resolve to
-        # loopback, and it may not: refusing to guess is the safe direction,
-        # since the cost of being wrong is an open port.
+        # A name that is not an address literal. It might resolve to loopback,
+        # it might not. Guessing wrong leaves an open port, so it refuses to
+        # guess.
         return False
 
 

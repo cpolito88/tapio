@@ -1,7 +1,7 @@
-"""The leak assertions the lifecycle tests lean on.
+"""Tests for the leak assertions the lifecycle tests rely on.
 
 They are only worth having if they fail when they should, so both directions
-are checked here.
+are checked.
 """
 
 import asyncio

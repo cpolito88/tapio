@@ -1,10 +1,4 @@
-"""What happens between `ref.tell(message)` and a handler running.
-
-The validation claim is the one that has to hold end to end: a message is
-checked against the recipient's declared type on every send, its contents are
-re-checked when that is switched on, and the recipient receives the object the
-sender passed either way.
-"""
+"""Tests for what happens between `ref.tell(message)` and a handler running."""
 
 import asyncio
 import logging
@@ -65,8 +59,8 @@ async def test_a_tampered_message_is_rejected_on_send(system: ActorSystem):
 
 
 async def test_content_validation_can_be_switched_off():
-    # Turning it off changes cost and nothing else: the message still arrives,
-    # and it is still the sender's object.
+    # Turning it off changes the cost and nothing else. The message still
+    # arrives, and it is still the sender's object.
     settings = TapioSettings(validate_on_tell=False)
     received: list[Message] = []
     arrived = asyncio.Event()

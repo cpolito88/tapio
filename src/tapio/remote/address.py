@@ -8,15 +8,15 @@ tapio://orders@10.0.0.4:25520/user/checkout/session-7#3
 ```
 
 The address a ref carries is the **canonical** one, which is what a peer
-dials, and not necessarily what a socket is bound to: containers, NAT and port
-mapping routinely make the two different. A system with remoting switched off
-has no host and port at all and writes `tapio://orders/user/x#3`, which a peer
-reads as a ref it cannot reach rather than as an address to guess at.
+dials. It is not always what a socket is bound to, since containers, NAT and
+port mapping routinely make the two differ. A system with remoting switched
+off has no host and port at all and writes `tapio://orders/user/x#3`, which a
+peer reads as a ref it cannot reach rather than an address to guess at.
 
 The uid is the incarnation guard, and it is why a bare path will not do. Paths
-are reusable: stop `/user/worker`, spawn another actor under the same name, and
-a ref written down before the stop would now address a stranger. A frame whose
-uid does not match the live actor is a dead letter instead.
+are reusable: stop `/user/worker`, spawn another actor under the same name,
+and a ref written down before the stop would now address a stranger. A frame
+whose uid does not match the live actor becomes a dead letter.
 """
 
 import re
@@ -29,8 +29,8 @@ __all__ = ["Address", "format_ref", "parse_ref"]
 
 _MAX_PORT: Final = 65535
 
-# A host is either a bracketed IPv6 literal or a run of characters that cannot
-# be confused with the delimiters around it: no "/", no ":", no "@".
+# A host is either a bracketed IPv6 literal, or a run of characters that
+# cannot be confused with the delimiters around it: no "/", ":" or "@".
 _HOST: Final = r"\[[0-9A-Fa-f:.]+\]|[^/:@\s]+"
 
 _ADDRESS_RE: Final = re.compile(
@@ -49,8 +49,8 @@ class Address:
     """Where one actor system is, as far as other systems are concerned.
 
     `host` and `port` are set together or not at all. Without them the address
-    is *unaddressable*: it names a system, which is enough to tell a local ref
-    from a foreign one, and nothing a peer could dial.
+    is unaddressable. It names a system, which is enough to tell a local ref
+    from a foreign one, but there is nothing for a peer to dial.
     """
 
     system: str
@@ -64,8 +64,8 @@ class Address:
 
     def __post_init__(self) -> None:
         """Reject a half-written address and a name no path could hold."""
-        # Borrowing the path rules rather than restating them: the system name
-        # is the authority in every path, so anything a path rejects is not a
+        # It borrows the path rules rather than restating them. The system
+        # name heads every path, so anything a path rejects is not a valid
         # system name either.
         ActorPath.root(self.system)
         if (self.host is None) != (self.port is None):

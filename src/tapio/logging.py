@@ -1,10 +1,10 @@
 """Logging that always says which actor spoke.
 
-A log line from an actor system is close to useless without the actor's path:
-"connection refused" is noise, `tapio://app/user/pool/worker-3: connection
+A log line from an actor system is close to useless without the actor's path.
+"connection refused" is noise; `tapio://app/user/pool/worker-3: connection
 refused` is a bug report. So the runtime never hands a behavior a bare
-`Logger`. `ctx.log` is an adapter bound to the cell's path, and every record it
-emits carries that path both in the formatted message and as a `actor_path`
+`Logger`. `ctx.log` is an adapter bound to the cell's path, and every record
+it emits carries that path in the formatted message and as an `actor_path`
 attribute for structured handlers.
 """
 
@@ -22,10 +22,10 @@ _ROOT: str = "tapio"
 class ActorLogAdapter(logging.LoggerAdapter[logging.Logger]):
     """A logger bound to one actor path.
 
-    The path is added twice on purpose: as a prefix, so a plain
-    `logging.basicConfig()` setup is readable with no configuration, and as a
+    The path is added twice on purpose. As a prefix, so a plain
+    `logging.basicConfig()` setup is readable with no configuration. As a
     record attribute, so a structured handler can index on it without parsing
-    the message back apart.
+    the message apart again.
     """
 
     def __init__(self, logger: logging.Logger, path: ActorPath) -> None:
@@ -38,8 +38,8 @@ class ActorLogAdapter(logging.LoggerAdapter[logging.Logger]):
     ) -> tuple[Any, MutableMapping[str, Any]]:
         """Prefix the message with the path and merge, not replace, `extra`.
 
-        `LoggerAdapter.process` replaces `kwargs["extra"]` wholesale, which
-        would silently drop a caller's own structured fields.
+        `LoggerAdapter.process` replaces `kwargs["extra"]` entirely, which
+        would drop a caller's own structured fields.
         """
         extra = dict(self.extra or {})
         extra.update(kwargs.get("extra") or {})

@@ -1,32 +1,30 @@
 """A token bucket in one actor, with no lock anywhere.
 
 Concepts: `Behaviors.with_timers`, a fixed-rate refill, and the idea that the
-mailbox *is* the mutex.
+mailbox is the mutex.
 
 A rate limiter is shared mutable state under concurrent access, which is the
 textbook case for a lock. Written as an actor it needs none. The bucket is an
-ordinary variable inside one actor, and an actor handles one message at a time,
-so the mutual exclusion a lock would have bought is a property of the runtime
-rather than something this code has to remember to do. There is no critical
-section here because there is no concurrency here: the concurrency is outside,
-in the callers, and the mailbox serialises it.
+ordinary variable inside one actor, and an actor handles one message at a
+time, so the runtime provides the mutual exclusion. There is no critical
+section here because there is no concurrency here. The concurrency is outside,
+in the callers, and the mailbox puts it in order.
 
-The refill is a timer, and a timer is not a callback running beside the receive
-loop. It puts a `Refill` on this actor's own user lane, so it queues like
-everything else and cannot land in the middle of a decision about a request.
-That is why the bucket needs no synchronisation despite being read by requests
-and written by a clock.
+The refill is a timer, and a timer is not a callback running beside the
+receive loop. It puts a `Refill` on this actor's own user lane, so it queues
+like everything else and cannot land in the middle of a decision about a
+request. That is why the bucket needs no locking even though requests read it
+and a clock writes it.
 
-`start_fixed_rate` is deliberate here rather than `start_fixed_delay`: a
-limiter that lets time slip when it is busy would hand out fewer permits than
-it promised, and the promise is a rate. That choice is exactly the hazard the
-docs warn about, made on purpose, because here catching up is the correct
-behaviour.
+`start_fixed_rate` is used here on purpose, rather than `start_fixed_delay`. A
+limiter that let time slip when it was busy would hand out fewer permits than
+it promised, and the promise is a rate. The docs warn about that catch-up
+burst, and here catching up is the correct behaviour.
 
-What to watch in the output: the first burst of five spends a bucket holding
-two and the other three are refused, which is a limiter working rather than a
-limiter failing. Then one tick of the refill puts a permit back and the next
-request is allowed.
+What to watch in the output: the first burst of five requests spends a bucket
+holding two, and the other three are refused. That is the limiter working, not
+failing. Then one tick of the refill puts a permit back and the next request
+is allowed.
 
 Run it with:
 
@@ -74,15 +72,15 @@ Traffic = Request | Refill
 def limiter(capacity: int, refill: timedelta) -> Behavior[Traffic]:
     """A token bucket that refuses what it cannot allow.
 
-    Refusing rather than queueing is the honest answer for a limiter: holding
-    a request until a permit exists turns a rate limit into an unbounded
-    latency, and the caller usually has something better to do with the news.
+    A limiter should refuse rather than queue. Holding a request until a
+    permit exists turns a rate limit into unbounded latency, and the caller
+    usually has something better to do with the answer.
     """
 
     def with_scheduler(timers: TimerScheduler[Traffic]) -> Behavior[Traffic]:
         def build(ctx: ActorContext[Traffic]) -> Behavior[Traffic]:
-            # Plain state on the closure. No lock, and none needed: nothing
-            # else in the process can reach it.
+            # Plain state on the closure. No lock, and none needed, because
+            # nothing else in the process can reach it.
             tokens = capacity
             timers.start_fixed_rate("refill", Refill(), refill)
 

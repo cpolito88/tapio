@@ -1,9 +1,8 @@
-"""Shared pieces for the failure-semantics tests.
+"""Helpers shared by the failure-semantics tests.
 
-Every test in `test_supervision.py` and `test_death_watch.py` needs the same
-three things: a message that can be told to fail, a behavior that records what
-it saw, and a way to wait for something to have happened without sleeping for a
-fixed time and hoping.
+`test_supervision.py` and `test_death_watch.py` both need the same three
+things: a message that can be told to fail, a behavior that records what it
+saw, and a way to wait for something without sleeping for a fixed time.
 """
 
 import asyncio
@@ -61,7 +60,7 @@ def recording(
             if message.fail:
                 raise error("boom")
             if message.item < 0:
-                # A negative item is "stop now", so a test can end an actor
+                # A negative item means "stop now", so a test can end an actor
                 # that supervision would otherwise keep restarting.
                 return Behaviors.stopped()
             seen.append(f"job {message.item}")
@@ -94,9 +93,8 @@ async def eventually(
     """
     try:
         async with asyncio.timeout(within):
-            # Polling, and an event would genuinely be better if there were
-            # one to wait on. What is waited for here is runtime state a test
-            # can only observe, so there is nothing to subscribe to.
+            # Polling. An event would be better, but there is none to wait on:
+            # this waits for runtime state a test can only observe.
             while not predicate():  # noqa: ASYNC110
                 await asyncio.sleep(interval)
     except TimeoutError:

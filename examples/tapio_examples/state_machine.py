@@ -5,25 +5,24 @@ Concepts: behavior-switching as the states of a protocol, and
 protocol.
 
 The usual way to write a connection is a field called `state`, an enum, and a
-`match` at the top of every handler that decides whether this message is legal
-right now. An actor does not need any of that. The state *is* the behavior: a
+`match` at the top of every handler deciding whether this message is legal
+right now. An actor needs none of that. The state is the behavior. A
 connection that has not authenticated is a different function from one that
-has, so a `Send` arriving too early is not an illegal combination to check for,
-it is simply a message that state does not handle.
+has, so a `Send` arriving too early is not an illegal combination to check
+for. It is simply a message that state does not handle.
 
-What that buys is that the illegal transitions cannot be written. There is no
-branch in `ready` that could accidentally accept a second `Authenticate`,
-because `ready` does not mention it. And there is no state variable to leave
-inconsistent, because switching state is returning a different behavior and
-nothing else.
+The gain is that the illegal transitions cannot be written. No branch in
+`ready` can accidentally accept a second `Authenticate`, because `ready` never
+mentions it. And there is no state variable to leave inconsistent, because
+switching state means returning a different behavior and nothing else.
 
 The token service is the second half. It is somebody else's actor and it
-answers in its own vocabulary, `Token`, which has no business in a connection's
-protocol: widening the connection to accept a `Token` would let anyone send it
-one. Instead the connection hands out an adapter, which accepts a `Token` and
-turns it into the `Authenticated` the connection does speak. The translation
-runs inside the connection, so a mistake in it is the connection's failure and
-not the token service's.
+answers in its own vocabulary, `Token`, which does not belong in a
+connection's protocol. Widening the connection to accept a `Token` would let
+anyone send it one. Instead the connection hands out an adapter, which accepts
+a `Token` and turns it into the `Authenticated` the connection understands.
+The translation runs inside the connection, so a mistake in it is the
+connection's failure and not the token service's.
 
 What to watch in the output: the `Send` that arrives while connecting is
 refused rather than queued, and the identical `Send` after authentication goes
@@ -103,8 +102,8 @@ def connection(
 
     def build(ctx: ActorContext[Protocol]) -> Behavior[Protocol]:
         # Handed to the token service in place of this actor's own ref, so the
-        # service can answer without the connection admitting `Token` to its
-        # protocol. The lambda has no annotation to read, so it is told.
+        # service can answer without the connection accepting `Token` into its
+        # protocol. The lambda has no annotation, so the type is passed in.
         as_authenticated: ActorRef[Token] = ctx.message_adapter(
             lambda token: Authenticated(token=token.value), Token
         )
@@ -142,9 +141,9 @@ def connection(
                     case Send(payload=payload):
                         say(f"conn: sent {payload!r} with {token}")
                     case Close():
-                        # The marker trick: everything already queued is ahead
-                        # of a message sent now, so when this one comes back
-                        # the mailbox is drained and it is safe to stop.
+                        # A marker message. Everything already queued sits
+                        # ahead of a message sent now, so when this one comes
+                        # back the mailbox is drained and it is safe to stop.
                         say("conn: closing, draining what is queued")
                         ctx.self_ref.tell(Close())
                         return closing()
@@ -184,7 +183,7 @@ async def main() -> list[str]:
         service = system.spawn(tokens(), name="tokens")
         conn = system.spawn(connection(lines, marks, service), name="conn")
 
-        # Too early: the connection is not open, and this state does not
+        # Too early. The connection is not open, and this state does not
         # handle a Send at all.
         conn.tell(Send(payload="hello"))
         conn.tell(Connect())

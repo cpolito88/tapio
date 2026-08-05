@@ -3,21 +3,20 @@
 Concepts: `ctx.watch`, the `Terminated` signal, and evicting an entry without
 leaking it.
 
-A registry of live actors is the shape everyone writes first, and the bug
-everyone writes with it is the same one: entries for actors that have since
-stopped. The obvious fix, asking a ref whether it is still alive, does not
-exist in tapio and would not work if it did. A liveness answer is stale the
-moment the caller reads it, because the actor can stop in between. Watching
-inverts that: instead of asking, you are told, exactly once, on the system
-lane, and the eviction happens where the fact arrives.
+A registry of live actors is the first thing most people write, and it comes
+with the same bug every time: entries for actors that have since stopped. The
+obvious fix, asking a ref whether it is still alive, does not exist in tapio
+and would not work if it did. The answer would be out of date as soon as the
+caller read it, because the actor can stop in between. Watching turns this
+around. Instead of asking, you are told, exactly once, on the system lane, and
+the entry is removed where that fact arrives.
 
-Note also that the sessions here are not the registry's children. Watching is
-not parenthood: it is a one-way subscription to "this actor has stopped", which
-is the strongest thing one actor can know about another that it does not
-supervise.
+The sessions here are not the registry's children. Watching is not parenthood.
+It is a one-way subscription to "this actor has stopped", which is the most
+one actor can know about another it does not supervise.
 
 What to watch in the output: the registry never checks whether a session is
-alive. It is told, and the census afterwards proves the entry went away.
+alive. It is told, and the count afterwards shows the entry is gone.
 
 Run it with:
 
@@ -85,7 +84,7 @@ def registry(
             ctx: ActorContext[Register | Census], signal: Signal
         ) -> Behavior[Register | Census]:
             if isinstance(signal, Terminated):
-                # The signal names the ref, and a ref knows its own path, so
+                # The signal carries the ref, and a ref knows its own path, so
                 # the entry is found without a second lookup table.
                 who = signal.ref.path.name
                 live.pop(who, None)
@@ -114,9 +113,9 @@ async def main() -> list[str]:
         desk.tell(Register(who="ada", session=ada))
         desk.tell(Register(who="grace", session=grace))
 
-        # The session ends for its own reasons, which is exactly the case a
-        # liveness check cannot survive: nobody tells the registry, and it
-        # finds out anyway.
+        # The session ends for its own reasons. This is the case a liveness
+        # check cannot handle: nobody tells the registry, and it finds out
+        # anyway.
         ada.tell(Close())
         await evicted.wait()
 

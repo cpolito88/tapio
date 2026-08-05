@@ -49,8 +49,8 @@ def test_paths_are_hashable_and_compare_by_value():
 
 
 def test_a_different_uid_is_a_different_path():
-    # This is the point of the uid: a stale ref must not address the actor that
-    # was later spawned under the same name.
+    # This is what the uid is for. A stale ref must not address an actor
+    # spawned later under the same name.
     a = ActorPath.root("sys").child("user", uid=1)
     assert a != ActorPath.root("sys").child("user", uid=2)
 

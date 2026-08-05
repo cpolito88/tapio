@@ -1,10 +1,10 @@
 """Assertions that a block of work left nothing running behind it.
 
-Dropping structured concurrency in the runtime bought supervision semantics
-that a task group cannot express, and the price is that "no orphaned tasks" is
-an invariant the library holds rather than one the language enforces. An
-invariant nobody checks is a wish, so these helpers make it a test, and every
-lifecycle test wraps itself in one.
+The runtime does not use task groups, because supervision needs semantics a
+task group cannot express. The price is that "no orphaned tasks" is an
+invariant the library holds rather than one the language enforces. These
+helpers turn it into an assertion, and every lifecycle test wraps itself in
+one.
 """
 
 import asyncio
@@ -48,9 +48,9 @@ def assert_no_leaked_tasks() -> Iterator[None]:
 def assert_no_leaked_threads() -> Iterator[None]:
     """Fail if the block leaves a thread behind.
 
-    The companion to the task check, for the blocking-call pool: a system that
-    has terminated must leave no live threads either, and a pool is the one
-    piece of the runtime that is not a task.
+    The companion to the task check, for the blocking-call pool. A terminated
+    system must leave no live threads either, and the pool is the one piece of
+    the runtime that is not a task.
 
     Yields:
         Nothing. The check runs when the block exits.

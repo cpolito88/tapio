@@ -1,14 +1,14 @@
 """Dead letters: the one place a message goes when it cannot be delivered.
 
 An `ActorRef` stays a valid handle after its actor dies, so `tell` has to stay
-total: it cannot raise about a recipient the sender has no way to check without
-racing. The cost of that is messages with nowhere to go, and the answer is to
-account for every one of them rather than to drop them silently.
+total: it cannot raise about a recipient the sender has no way to check
+without racing. The cost is messages with nowhere to go, and the answer is to
+account for every one of them rather than drop them silently.
 
-The office is a system-wide sink with two outputs. It publishes to subscribers,
-which is what makes an absence testable, and it logs with a throttle, because a
-dead actor on the receiving end of a hot send loop would otherwise drown
-everything else in the log.
+The office is a system-wide sink with two outputs. It publishes to
+subscribers, which is what makes an absence testable, and it logs with a
+throttle, since a dead actor behind a hot send loop would otherwise drown the
+log.
 """
 
 import time
@@ -39,12 +39,12 @@ _log = runtime_logger("dead-letters")
 def _carry(value: object) -> Message:
     """Keep an undelivered message exactly as it was sent.
 
-    A field annotated with the `Message` base class cannot be validated
-    normally: `Message` sets `revalidate_instances="always"`, so Pydantic would
-    rebuild the payload *as a bare `Message`* and every field of the actual
-    subclass would be silently dropped. A dead letter that has lost the message
-    it is reporting is worse than useless, so validation here is an is-instance
-    check and the object is passed through untouched.
+    A field annotated with the `Message` base class cannot be validated the
+    normal way. `Message` sets `revalidate_instances="always"`, so Pydantic
+    would rebuild the payload as a bare `Message` and drop every field of the
+    actual subclass. A dead letter that has lost the message it reports is
+    useless, so validation here is an is-instance check and the object is
+    passed through untouched.
     """
     if isinstance(value, Message):
         return value
@@ -64,10 +64,10 @@ class Carrier(Message):
     """A message on its way somewhere, wrapped in how it is travelling.
 
     An adapter's wrapper and an association's outbound frame are both one of
-    these: internal, short-lived, and never something a user writes. They share
-    a base class so that a dead letter reports the *payload*, since how a
-    message travelled is a detail of the runtime and a subscriber matching on
-    message types should not have to know about one.
+    these. They are internal, short-lived, and never written by a user. They
+    share a base class so that a dead letter reports the payload. How a
+    message travelled is a runtime detail, and a subscriber matching on
+    message types should not have to know about it.
     """
 
     payload: "CarriedMessage"
@@ -77,10 +77,10 @@ class Carrier(Message):
 class DeadLetterReason:
     """Why a message could not be delivered.
 
-    Deliberately a namespace of string constants rather than an enum. The set
-    grows as features land, remoting most of all, and a subscriber that treats
-    it as closed would break on every release. Match on the ones you care about
-    and let the rest fall through.
+    A namespace of string constants rather than an enum, on purpose. The set
+    grows as features land, so a subscriber that treated it as closed would
+    break on every release. Match the ones you care about and let the rest
+    fall through.
     """
 
     RECIPIENT_TERMINATED = "recipient-terminated"
@@ -189,9 +189,9 @@ class Subscription:
 class DeadLetterOffice:
     """The system-wide sink for undeliverable messages.
 
-    Subscribers see every dead letter. The log sees the first few in full and
+    Subscribers see every dead letter. The log gets the first few in full and
     periodic summaries after that, so a hot send loop to a stopped actor costs
-    a bounded number of log records rather than one per message.
+    a bounded number of log records instead of one per message.
     """
 
     __slots__ = (
@@ -244,9 +244,9 @@ class DeadLetterOffice:
         """Register a handler to receive every dead letter.
 
         Args:
-            handler: Called with each `DeadLetter`. An exception raised here is
-                logged and swallowed: one bad subscriber must not stop the
-                others or fail the send that produced the event.
+            handler: Called with each `DeadLetter`. An exception raised here
+                is logged and swallowed. One bad subscriber must not stop the
+                others, or fail the send that produced the event.
 
         Returns:
             A handle for unsubscribing, usable as a context manager.
@@ -333,11 +333,11 @@ class DeadLetterOffice:
 class DeadLetterRef(ActorRef[Any]):
     """A ref that accepts anything and delivers none of it.
 
-    What resolving an address gives you when there is nothing behind it: an
-    actor that has stopped, an incarnation whose uid has been retired, or a
-    system this one has no link to. Resolution has to return *something*
-    tellable, because `tell` is total and a ref is a handle rather than a
-    liveness claim, and this is the honest something.
+    This is what resolving an address gives when there is nothing behind it:
+    an actor that has stopped, an incarnation whose uid is retired, or a
+    system this one has no link to. Resolution has to return something that
+    can be told messages, because `tell` is total and a ref is a handle rather
+    than a claim that the target is alive.
     """
 
     __slots__ = ("_dead_letters", "_peer", "_reason")

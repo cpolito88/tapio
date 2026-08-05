@@ -10,19 +10,19 @@ A frame is a 4-byte big-endian length followed by a JSON object:
        "reply_to": "tapio://web@10.0.0.9:25520/user/cart#11"}}
 ```
 
-`to` carries no address because a frame arriving on a link is by definition
-addressed to the system that received it. `from` is complete, because the
-receiver may need to reply to a system it has not talked to yet.
+`to` carries no address, because a frame arriving on a link is addressed to
+the system that received it. `from` is complete, because the receiver may need
+to reply to a system it has not talked to yet.
 
 `t` is a registry key and never an import path, for the reason
 [tapio.remote.registry][] gives. The length prefix is checked before the body
-is read, so an oversized frame costs a header and a refusal rather than the
-memory a hostile or buggy peer asked for.
+is read, so an oversized frame costs a header and a refusal instead of the
+memory the peer asked for.
 
-Encoding is `model_dump_json` and decoding is `model_validate_json` inside the
-reading system's deserialization context, which means the contents check that
-`validate_on_tell` governs locally is *already done* by the decode: a message
-off the wire is validated by construction, strictly, with no way to skip it.
+Encoding is `model_dump_json`. Decoding is `model_validate_json` inside the
+reading system's deserialization context, so the contents check that
+`validate_on_tell` governs locally has already happened: a message off the
+wire is validated by construction, strictly, with no way to skip it.
 """
 
 import json
@@ -69,9 +69,9 @@ LENGTH_PREFIX: Final = 4
 class Frame:
     """One decoded frame, before its payload has become a message.
 
-    The payload stays as JSON text at this stage on purpose: whether it can be
-    built at all depends on the type key, and a frame naming a type this system
-    has never heard of must be reportable without constructing anything.
+    The payload stays as JSON text at this stage on purpose. Whether it can be
+    built depends on the type key, and a frame naming a type this system has
+    never heard of has to be reportable without building anything.
     """
 
     version: int
@@ -93,10 +93,10 @@ class Frame:
 class UndecodableFrame(Message):
     """A frame that never became a message, so a dead letter can still report it.
 
-    Every other dead letter carries the message that was not delivered. A frame
-    refused for its size, its version or a type key this system does not know
-    has no message to carry, and reporting nothing would make the one failure a
-    peer can inflict on you the one failure you cannot see.
+    Every other dead letter carries the message that was not delivered. A
+    frame refused for its size, its version or an unknown type key has no
+    message to carry. Reporting nothing would leave the failures a peer can
+    cause as the only ones you cannot see.
     """
 
     type_key: str | None = None
@@ -139,9 +139,9 @@ def encode(
         "from": format_ref(sender.address, sender.path) if sender else None,
         "t": key,
     }
-    # Spliced rather than assembled into one dict and dumped: the payload is
-    # already JSON, and re-parsing it only to serialize it again would double
-    # the cost of every send for nothing.
+    # Spliced together rather than built as one dict and dumped. The payload
+    # is already JSON, and parsing it just to serialize it again would double
+    # the cost of every send.
     prefix = json.dumps(header, separators=(",", ":"))[:-1]
     body = (prefix + ',"p":' + message.model_dump_json() + "}").encode()
     if max_frame_bytes is not None and len(body) > max_frame_bytes:
@@ -157,7 +157,7 @@ def frame_length(prefix: bytes, *, max_frame_bytes: int | None = None) -> int:
     """Read a frame's declared body length, and refuse an oversized one.
 
     Called with the length prefix alone, before the body is read, so a peer
-    announcing a gigabyte costs this check rather than a gigabyte.
+    announcing a gigabyte costs this check instead of a gigabyte.
 
     Args:
         prefix: Exactly `LENGTH_PREFIX` bytes.
@@ -246,13 +246,13 @@ def receive_frame(
 ) -> None:
     """Take a frame off a link and deliver what is in it, or account for it.
 
-    This is the receiving half of remoting and it never raises. Everything a
-    peer can get wrong (a size, a version, a type key this system does not
-    know, a payload that will not validate, a recipient that has stopped, a
-    message the recipient does not accept) becomes a dead letter on *this*
-    system's stream. Dead letters are not sent back: a link that just failed to
-    deliver a message is not a link to report failures over, and a working
-    link's report would arrive long after the sender stopped caring.
+    This is the receiving half of remoting, and it never raises. Everything a
+    peer can get wrong becomes a dead letter on this system's stream: a bad
+    size, a bad version, an unknown type key, a payload that will not
+    validate, a recipient that has stopped, and a message the recipient does
+    not accept. Dead letters are not sent back. A link that just failed to
+    deliver a message is not a link to report failures over, and a report over
+    a working link would arrive long after the sender stopped caring.
 
     Args:
         data: One complete frame, length prefix included.
@@ -260,7 +260,7 @@ def receive_frame(
         dead_letters: Where anything undeliverable is accounted for.
         max_frame_bytes: The size limit this system enforces, if any.
         peer: The address the frame arrived from, recorded on any dead letter
-            so a subscriber can tell "that actor is gone" from "that node is".
+            so a subscriber can tell a missing actor from a missing node.
     """
     try:
         frame = decode(
@@ -323,9 +323,9 @@ def receive_frame(
     try:
         recipient.tell(message)
     except MessageTypeError as error:
-        # The authoritative check, and the only one that can be trusted: the
-        # sender's declaration and the receiving actor's real protocol are two
-        # independently deployed pieces of code.
+        # The check that decides. The sender's declaration and the receiving
+        # actor's real protocol are deployed separately, so only this one can
+        # be trusted.
         dead_letters.publish(
             message,
             frame.to,
@@ -342,9 +342,9 @@ def receive_frame(
             detail=str(error),
         )
     except MailboxFullError as error:
-        # A local sender would have this raised at its call site, where it can
-        # decide to retry or shed. There is no local sender here: the one who
-        # sent this is on the other side of a link and has moved on.
+        # A local sender would get this raised at its call site and could
+        # retry or drop the message. There is no local sender here. The one
+        # who sent this is across a link and has moved on.
         dead_letters.publish(
             message,
             frame.to,

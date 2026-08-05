@@ -1,21 +1,20 @@
 """`RemoteRef`: a handle to an actor on another system.
 
-It is an `ActorRef` and it behaves like one. `tell` does not block and does not
-raise about the recipient; a message that cannot be delivered becomes a dead
-letter; the ref stays a valid handle whatever happens to the actor behind it.
-That is what location transparency means here: an actor holding a ref sends,
-and does not know or care which node the target is on.
+It is an `ActorRef` and it behaves like one. `tell` does not block and does
+not raise about the recipient. A message that cannot be delivered becomes a
+dead letter. The ref stays a valid handle whatever happens to the actor behind
+it. An actor holding a ref just sends, and does not need to know which node
+the target is on.
 
-What is not transparent is failure, and the split is the same rule that decides
-a local send. **The message is yours, the recipient is not.** Validating and
-encoding happen at the send site, on the caller's thread, so a message that
-cannot be written raises where it was written. Everything about the far end,
-no link, a buffer that is full, a path the peer does not know, is a dead letter
-with the peer named.
+Failure is not transparent, and it splits the same way a local send does. The
+message is yours, the recipient is not. Validation and encoding happen at the
+send site, so a message that cannot be written raises where it was written.
+Everything about the far end becomes a dead letter naming the peer: no link, a
+full buffer, or a path the peer does not know.
 
-A message that crossed a link is `==` to what was sent and never `is` it: it
-was rebuilt from JSON on the other side. Within a system identity is
-guaranteed; across a link, equality is the strongest thing that can be true.
+A message that crossed a link is `==` to what was sent, and never `is` it,
+because it was rebuilt from JSON on the other side. Inside a system, identity
+is guaranteed. Across a link, equality is the most that can hold.
 """
 
 from collections.abc import Callable
@@ -90,12 +89,12 @@ class RemoteRef(ActorRef[T]):
     def tell(self, message: T) -> None:
         """Send a message to the peer, without waiting and without blocking.
 
-        The type check here is against what the *caller* declared the peer
+        The type check here is against what the caller declared the peer
         accepts, which is a claim about the peer rather than knowledge of it.
-        The authoritative check runs on the receiving node against the target
+        The check that decides runs on the receiving node, against the target
         actor's real message type, and a mismatch there dead-letters on that
-        node: the sender's declaration and the receiver's protocol are two
-        independently deployed pieces of code.
+        node. The sender's declaration and the receiver's protocol are
+        deployed separately.
 
         Args:
             message: The message to deliver.
@@ -116,10 +115,9 @@ class RemoteRef(ActorRef[T]):
     async def offer(self, message: T) -> None:
         """Send a message, waiting for room in the outbound buffer.
 
-        Local backpressure against a socket that is not draining, and not
-        end-to-end backpressure from the receiving actor: a fire-and-forget
-        wire protocol has nothing to offer the latter with, and pretending
-        otherwise would be the kind of transparency that lies.
+        This is local backpressure against a socket that is not draining. It
+        is not end-to-end backpressure from the receiving actor, which a
+        fire-and-forget wire protocol cannot provide.
 
         Args:
             message: The message to deliver.
@@ -143,12 +141,12 @@ class RemoteRef(ActorRef[T]):
     ) -> R:
         """Not yet: asking across a link waits on remote lifecycle.
 
-        An ask fails fast when its target stops, which across a link means a
-        remote death watch, and it has a failure mode a local ask does not: a
-        peer that becomes unreachable mid-flight is a different diagnosis from
-        one that answered slowly. Shipping the timeout half alone would give
-        callers an ask that waits out its full deadline for an answer that
-        provably is not coming.
+        An ask fails fast when its target stops, and across a link that needs
+        a remote death watch. It also has a failure a local ask does not: a
+        peer that becomes unreachable mid-flight is a different problem from
+        one that answered slowly. Shipping only the timeout half would give
+        callers an ask that waits out its full deadline for an answer that is
+        never coming.
 
         Args:
             make: Builds the request from the ref the reply should go to.

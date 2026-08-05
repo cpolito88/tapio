@@ -1,9 +1,4 @@
-"""Dead letters: where a message goes when nobody is there to receive it.
-
-The point of the event stream is that an absence becomes observable. Without
-it, "the message was dropped" and "the code under test never ran" look exactly
-the same from outside, and every test here would be asserting nothing.
-"""
+"""Tests for dead letters: where a message goes when nobody receives it."""
 
 import asyncio
 import logging
@@ -79,9 +74,8 @@ def test_a_subscriber_sees_the_message_the_reason_and_the_recipient():
 
 def test_the_carried_message_keeps_its_type_and_its_fields():
     # A field annotated with the Message base class would otherwise be
-    # revalidated *as* a bare Message, silently dropping every field of the
-    # actual subclass. A dead letter that has lost its payload is worse than
-    # no dead letter at all.
+    # revalidated as a bare Message, dropping every field of the actual
+    # subclass. A dead letter that has lost its payload is useless.
     sink, _ = office()
     seen: list[DeadLetter] = []
     sink.subscribe(seen.append)
@@ -153,8 +147,8 @@ def test_a_summary_lands_once_the_interval_has_passed(caplog):
 async def quick(settings: TapioSettings) -> AsyncIterator[ActorSystem]:
     """A system that gives up on a wedged actor at once.
 
-    The overflow tests deliberately wedge an actor forever, and the default
-    ten-second deadline would otherwise be paid three times over in shutdown.
+    The overflow tests block an actor on purpose, and the default ten-second
+    deadline would otherwise be paid three times over in shutdown.
     """
     running = ActorSystem(
         "test", settings.model_copy(update={"shutdown_timeout": timedelta(seconds=0)})
@@ -191,7 +185,7 @@ async def test_a_tell_after_shutdown_says_the_system_is_gone(
 
         ref.tell(Ping(n=1))
 
-    # A stopped actor and a stopped system are different diagnoses, and the
+    # A stopped actor and a stopped system are different problems, and the
     # sender usually cares which.
     assert [event.reason for event in seen] == [DeadLetterReason.SYSTEM_TERMINATED]
 
@@ -216,7 +210,7 @@ async def test_messages_still_queued_when_an_actor_stops_are_accounted_for(
     released.set()
     await asyncio.sleep(0.05)
 
-    # The first was handled and the actor then stopped; the rest were queued
+    # The first was handled and the actor then stopped. The rest were queued
     # behind it and must not vanish with the mailbox.
     assert [event.message.n for event in seen] == [1, 2, 3]  # type: ignore[attr-defined]
 
@@ -280,7 +274,7 @@ async def test_drop_oldest_dead_letters_the_head_of_the_queue(quick: ActorSystem
     ]
 
 
-# The off-loop split: the message is yours, the recipient is not
+# Sending from another thread: the message is yours, the recipient is not
 
 
 async def test_a_tell_from_another_thread_is_delivered(system: ActorSystem):
@@ -348,7 +342,7 @@ async def test_a_full_fail_mailbox_dead_letters_across_a_thread_boundary(
     thread.join()
     await asyncio.sleep(0.05)
 
-    # Nothing can be raised into a thread that has moved on, so the recipient's
-    # backpressure becomes a dead letter instead.
+    # Nothing can be raised into a thread that has moved on, so the
+    # recipient's backpressure becomes a dead letter instead.
     assert caught == []
     assert [e.reason for e in seen] == [DeadLetterReason.MAILBOX_FULL]

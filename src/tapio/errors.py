@@ -1,14 +1,14 @@
 """The tapio error hierarchy.
 
-Every error tapio raises derives from `TapioError`, so a caller can
-catch the whole library with one clause. Where an error also has an obvious
-builtin counterpart it inherits from that too. `MessageTypeError` is a `TypeError` and
+Every error tapio raises derives from `TapioError`, so a caller can catch the
+whole library with one clause. Where an error has an obvious builtin
+counterpart it inherits from that too: `MessageTypeError` is a `TypeError` and
 `AskTimeoutError` is a `TimeoutError`, so existing `except` clauses keep
 working.
 
-Note that no tapio error inherits from `ValueError`. Pydantic converts a
-`ValueError` raised inside a validator into a `ValidationError`, which
-would bury the message; raising something else lets it propagate intact.
+No tapio error inherits from `ValueError`. Pydantic turns a `ValueError`
+raised inside a validator into a `ValidationError`, which would bury the
+message. Raising something else lets it propagate intact.
 """
 
 __all__ = [
@@ -49,18 +49,17 @@ class MessageTypeError(TapioError, TypeError):
 class BehaviorTypeError(TapioError, TypeError):
     """A behavior's message type could not be resolved.
 
-    Raised when neither an explicit `msg_type` nor a readable annotation is
-    available. A behavior with no resolvable message type is never spawned:
-    silently skipping the type check is the failure mode the check exists to
-    prevent.
+    Raised when there is neither an explicit `msg_type` nor a readable
+    annotation. A behavior with no message type is never spawned, because
+    silently skipping the type check is what the check exists to prevent.
     """
 
 
 class ActorNameError(TapioError):
     """A child could not be given the name it asked for.
 
-    Names are unique among an actor's live children, since the path they form
-    is the actor's identity in logs and in every error message.
+    Names are unique among an actor's live children, because the path they
+    form is the actor's identity in logs and in every error message.
     """
 
 
@@ -68,68 +67,66 @@ class RefResolutionError(TapioError):
     """A ref could not be rebuilt from its string form.
 
     Raised when no system is in scope to resolve it against, and when the
-    string is not a ref at all. `model_dump()` on a model holding a ref
-    succeeds anywhere; feeding the result back to `model_validate()` succeeds
-    only inside a system's decode path or an explicit
-    `with system.as_deserialization_context():` block. The asymmetry is
-    deliberate: a ref is a handle into a live runtime, and there is no
-    meaningful ref outside of one.
+    string is not a ref at all. `model_dump()` on a model holding a ref works
+    anywhere. Feeding the result back to `model_validate()` works only inside
+    a system's decode path or an explicit
+    `with system.as_deserialization_context():` block. A ref is a handle into
+    a live runtime, and there is no meaningful ref without one.
     """
 
 
 class MessageRegistrationError(TapioError):
     """A message type could not be registered, or was never registered.
 
-    Raised at import time for a duplicate wire key, since two classes sharing
-    one would otherwise decode as whichever imported last, and at encode time
-    for a type that has no key, since a key is never an import path and an
-    unregistered type could not be rebuilt by the peer.
+    Raised at import time for a duplicate wire key, because two classes
+    sharing one would decode as whichever imported last. Raised at encode time
+    for a type with no key, because a key is never an import path and a peer
+    could not rebuild an unregistered type.
     """
 
 
 class MessageEncodingError(TapioError):
     """A message could not be written to the wire.
 
-    Raised at the send site, because the message belongs to the sender: an
-    error about it is the sender's to catch, exactly as it is for a local
-    `tell`.
+    Raised at the send site, because the message belongs to the sender. An
+    error about it is the sender's to catch, as it is for a local `tell`.
     """
 
 
 class FrameTooLargeError(MessageEncodingError):
     """A frame exceeded the configured size limit.
 
-    On the way out this raises at the send site. On the way in, the declared
+    On the way out it raises at the send site. On the way in, the declared
     length is checked before the body is read, so the frame costs a header and
-    a refusal rather than the memory it asked for.
+    a refusal instead of the memory it asked for.
     """
 
 
 class MessageDecodingError(TapioError):
     """A frame could not be read.
 
-    Never raised into application code: the receiving end turns one of these
-    into a dead letter naming what was wrong, because the failure belongs to a
-    peer and there is no local caller to tell about it.
+    Never raised into application code. The receiving end turns it into a dead
+    letter naming what was wrong, because the failure belongs to a peer and
+    there is no local caller to tell.
     """
 
 
 class InsecureRemoteConfig(TapioError):  # noqa: N818 - names a configuration
     """Remoting was configured to listen beyond loopback with nothing to prove.
 
-    Raised at system construction, so a deployment that would have accepted
-    frames from anything that can reach the port fails to start instead. The
-    error names both settings involved: bind somewhere else, or set a secret.
+    Raised at system construction, so a deployment that would accept frames
+    from anything that can reach the port fails to start. The error names both
+    settings involved: bind somewhere else, or set a secret.
     """
 
 
 class HandshakeError(TapioError):
     """A link was refused before it carried a single message.
 
-    A version this system does not speak, a secret that did not match, or a
-    peer that stopped talking part-way through. The connection is closed with
-    the reason logged and no further frames read: an incompatible wire format
-    that half works is worse than one that refuses.
+    The causes are a version this system does not speak, a secret that did not
+    match, or a peer that stopped talking part-way through. The connection is
+    closed, the reason is logged, and no further frames are read. A wire
+    format that half works is worse than one that refuses.
     """
 
 
@@ -137,8 +134,8 @@ class WatchError(TapioError):
     """A ref could not be watched.
 
     Raised for a ref with no live cell behind it, and for an actor watching
-    itself, which would promise a signal that cannot be delivered: by the time
-    the actor has stopped there is nobody left to read its own mailbox.
+    itself. The second would promise a signal that cannot be delivered: once
+    the actor has stopped, nobody is left to read its mailbox.
     """
 
 
@@ -157,18 +154,18 @@ class AskTargetTerminated(TapioError):  # noqa: N818 - reads as a state, not a f
 class StashOverflowError(TapioError):
     """A stash was full and one more message was put aside.
 
-    Raised in the *stashing* actor, since only it knows whether the right
-    answer is to shed the message, reject it, or let the failure become a
-    supervision decision. A stash is bounded for the same reason a mailbox can
-    be: it holds traffic the actor is by definition not keeping up with.
+    Raised in the actor that stashed, because only it knows whether to drop
+    the message, reject it, or let the failure become a supervision decision.
+    A stash is bounded for the same reason a mailbox can be: it holds traffic
+    the actor is not keeping up with.
     """
 
 
 class MailboxFullError(TapioError):
     """A bounded mailbox with the `Fail` overflow strategy was full.
 
-    Raised in the *sender*, since only the sender knows whether to retry, shed,
-    or escalate.
+    Raised in the sender, because only the sender knows whether to retry, drop
+    the message, or escalate.
     """
 
 

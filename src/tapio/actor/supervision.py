@@ -1,15 +1,15 @@
 """Supervision: what happens to an actor whose handler raised.
 
 A failure is not an exception the sender sees. It never leaves the failing
-actor's receive loop; it becomes a decision taken by whoever declared one, and
-the four decisions are all there are: carry on with the state you have
-(`resume`), rebuild from the behavior you started with (`restart`), stop
-(`stop`), or make it the parent's problem (`escalate`).
+actor's receive loop. It becomes a decision, taken by whoever declared one,
+and there are four: carry on with the state you have (`resume`), rebuild from
+the behavior you started with (`restart`), stop (`stop`), or hand it to the
+parent (`escalate`).
 
-The default is `stop`, and it is deliberately not `restart`: an actor that
-failed for a reason nobody anticipated is in a state nobody described, and
-restarting it in a loop turns one bug into a busy one. Restarting is what you
-ask for when you know the failure is transient.
+The default is `stop`, deliberately not `restart`. An actor that failed for a
+reason nobody anticipated is in a state nobody described, and restarting it in
+a loop turns one bug into a busy one. Ask for a restart when you know the
+failure is transient.
 """
 
 import enum
@@ -60,10 +60,10 @@ class Backoff:
     """Exponential backoff with jitter, for restarts that should not thrash.
 
     A dependency that just refused a connection will usually refuse the next
-    one too, so restarting immediately spends the restart window in a
-    millisecond and stops the actor for a fault that would have cleared on its
-    own. Waiting, and waiting longer each time, is what makes a restart limit
-    a description of "this is not getting better" instead of a race.
+    one too. Restarting immediately burns the whole restart window in a
+    millisecond, and stops the actor for a fault that would have cleared on
+    its own. Waiting, and waiting longer each time, is what makes a restart
+    limit mean "this is not getting better" instead of "this failed fast".
     """
 
     min_backoff: timedelta
@@ -103,9 +103,9 @@ class Backoff:
     def delay(self, restart: int, *, jitter: float) -> float:
         """How long to wait before the given restart.
 
-        Pure, and the jitter is an argument rather than a call to `random`, so
-        the schedule can be asserted exactly in a test and the randomness lives
-        at the one call site that wants it.
+        This is a pure function, and the jitter is an argument rather than a
+        call to `random`. A test can then assert the exact schedule, and the
+        randomness stays at the one call site that wants it.
 
         Args:
             restart: Which restart this is, counting from one.
@@ -126,7 +126,7 @@ class Backoff:
 class SupervisorStrategy:
     """One decision, plus the limits that apply when it is `restart`.
 
-    Built through the classmethods rather than the constructor, so that a
+    Build one with the classmethods rather than the constructor, so that a
     strategy reads as the decision it makes:
 
     ```python
@@ -206,9 +206,8 @@ class SupervisorStrategy:
             window: The span restarts are counted over. Without one, the count
                 runs for the life of the actor.
             backoff: How long to wait before each restart. Without one the
-                restart is immediate, which is right for a fault that is
-                genuinely instantaneous and wrong for anything involving a
-                dependency.
+                restart is immediate. That is right for a fault that clears
+                instantly, and wrong for anything involving a dependency.
 
         Returns:
             The strategy.

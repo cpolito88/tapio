@@ -29,7 +29,7 @@ def test_the_path_is_both_a_prefix_and_a_field(
 def test_a_caller_keeps_its_own_structured_fields(
     logger_path: ActorPath, caplog: pytest.LogCaptureFixture
 ):
-    # LoggerAdapter replaces `extra` wholesale by default, which would drop
+    # LoggerAdapter replaces `extra` entirely by default, which would drop
     # whatever the caller attached.
     log = actor_logger(logger_path)
 

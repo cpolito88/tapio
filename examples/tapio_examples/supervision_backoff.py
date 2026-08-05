@@ -4,26 +4,24 @@ Concepts: `Behaviors.supervise(...).on_failure(...)`, `Restart` with
 exponential backoff, the restart window, and what happens to messages sent to
 an actor that is between incarnations.
 
-The uploader here stands in for anything that talks to a flaky dependency: its
-first two attempts fail, and the third works. Restarting immediately would
-spend the whole restart window inside a millisecond and stop the actor for a
-fault that was about to clear, so the strategy waits, and waits longer each
-time.
+The uploader here stands in for anything that talks to a flaky dependency. Its
+first two attempts fail and the third works. Restarting immediately would burn
+the whole restart window in a millisecond and stop the actor for a fault that
+was about to clear, so the strategy waits, and waits longer each time.
 
-While it waits, the actor is *absent*, not dead. `tell` stays total, its
-mailbox keeps filling, and the work sent during the window is handled after the
-new incarnation starts rather than being dropped. On an unbounded mailbox that
-is a memory risk proportional to inbound rate times window, which is why an
+While it waits, the actor is absent, not dead. `tell` stays total, its mailbox
+keeps filling, and work sent during the window is handled after the new
+incarnation starts rather than dropped. On an unbounded mailbox that costs
+memory in proportion to the inbound rate times the window, which is why an
 actor that backs off usually wants a bounded mailbox.
 
-The second scenario is the other half of the bargain: an actor whose failures
-never clear exhausts its restart window and is stopped. A supervisor that
+The second scenario is the other half of the deal. An actor whose failures
+never clear uses up its restart window and is stopped. A supervisor that
 restarted forever would turn one bug into a busy one.
 
-What to watch in the output: item 1 fails and items 2 and 3 were sent while
-nobody was there to receive them, yet all three are accounted for. And the
-doomed actor stops itself after its second failure rather than retrying for
-ever.
+What to watch in the output: item 1 fails, and items 2 and 3 were sent while
+nobody was there to receive them, yet all three are accounted for. The doomed
+actor stops itself after its second failure instead of retrying forever.
 
 Run it with:
 
@@ -52,9 +50,9 @@ FAILING_ATTEMPTS = 2
 BACKOFF = Backoff(
     min_backoff=timedelta(milliseconds=20),
     max_backoff=timedelta(milliseconds=80),
-    # No jitter, so the example is reproducible. Leave the default in
-    # production: without jitter every actor that noticed a shared dependency
-    # fail retries at the same moment, forever.
+    # No jitter, so the example is reproducible. Keep the default in
+    # production. Without jitter, every actor that saw the same dependency
+    # fail retries at the same moment, over and over.
     random_factor=0.0,
 )
 
@@ -76,8 +74,8 @@ def uploader(
     Args:
         lines: Where to record what happened.
         attempts: Every item attempted, across incarnations. It lives outside
-            the behavior on purpose: a restart rebuilds the actor's own state,
-            and the dependency it talks to does not care.
+            the behavior on purpose. A restart rebuilds the actor's own state,
+            and the dependency it talks to does not reset.
         failed: Set after the first failure, so the example can send into the
             backoff window rather than sleeping and hoping.
         recovered: Set once every item has gone through.
@@ -132,8 +130,8 @@ def doomed(lines: list[str], gave_up: asyncio.Event) -> Behavior[Upload]:
         return Behaviors.receive_message(on_upload, on_signal=on_signal)
 
     return Behaviors.supervise(Behaviors.setup(build)).on_failure(
-        # One restart per second. The second failure inside that window is the
-        # one that says this is not transient after all.
+        # One restart per second. A second failure inside that window says the
+        # fault is not transient after all.
         SupervisorStrategy.restart(max_restarts=1, window=timedelta(seconds=1)),
         on=ConnectionError,
     )

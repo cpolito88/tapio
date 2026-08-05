@@ -9,7 +9,9 @@ supervision, and Pydantic models throughout.
 > **Status: pre-alpha.** The runtime core runs: actor systems, spawning,
 > typed `tell`, bounded mailboxes, dead letters, a deadline-based shutdown,
 > supervision with backoff, death watch, `ask`, timers, stash, message
-> adapters and a round-robin pool router. Remoting is still to come.
+> adapters and a round-robin pool router. Two systems can also talk over a
+> TCP link, with a handshake, optional TLS and messages that carry refs
+> across. Remote death watch and quarantine are still to come.
 
 > **Why this exists.** `tapio` is a testbed for AI agentic development. The
 > point of the project is to find out what coding agents can carry on their
@@ -19,7 +21,7 @@ supervision, and Pydantic models throughout.
 >
 > The library itself is meant to work, and the design decisions are argued
 > rather than generated. Treat it as an experiment that happens to be
-> functional software, not as something to depend on in production yet.
+> working software, not as something to depend on in production yet.
 
 Named for the Finnish god of the forest, because supervision hierarchies are
 trees. It keeps the mythological lineage of Akka (Sámi) and Apache Pekko
@@ -31,25 +33,32 @@ trees. It keeps the mythological lineage of Akka (Sámi) and Apache Pekko
 (itself the ASF fork of Akka) inside a single Python process:
 
 - **Actors**: isolated state, one mailbox, no locks
-- **Supervision**: restart with backoff, escalate, stop; failure policy as a
+- **Supervision**: restart with backoff, escalate, stop. Failure policy is a
   first-class thing rather than scattered `try`/`except`
 - **Death watch**: learn when a child dies, without polling
 - **Ask, timers, stash, routers**: the patterns you would otherwise hand-roll
+- **Remoting**: two systems on a TCP link, sending each other typed messages
 
 It is a **library, not infrastructure**. Pip-install it into the service you
-already have; there is no cluster to operate.
+already have. There is no cluster to operate.
 
 ## What it is not
 
 This is *inspired by* Pekko, not a port, and shares no code with it.
 Deliberately out of scope, permanently:
 
-- **Clustering, remoting, sharding, distributed data.** Reimplementing gossip
-  and split-brain resolution in Python is a multi-year project with a high
-  bug-severity floor. If you need distribution, use [Ray](https://www.ray.io/)
-  or put a broker between your nodes.
-- **Location transparency.** An `ActorRef` is local. Full stop.
+- **Clustering, sharding and distributed data.** Reimplementing gossip and
+  split-brain resolution in Python is a multi-year project with a high
+  bug-severity floor. Remoting here means one system dialling another it was
+  told about, and nothing more. If you need a cluster, use
+  [Ray](https://www.ray.io/) or put a broker between your nodes.
 - **Competing with the JVM on throughput.** See below.
+
+Remoting does give you location transparency in the narrow sense: an actor
+holding a ref just sends, and does not need to know which node the target is
+on. What it does not change is the failure model. A network is in the middle,
+delivery over a link is at-most-once, and a message that crossed one is equal
+to what was sent rather than the same object.
 
 ## Where it fits
 
@@ -62,7 +71,7 @@ Good fits:
 - A session actor per user, holding conversation state and calling an LLM API
 - Saga orchestration: payment, then inventory, then shipping, compensating on failure
 - One actor per websocket, with behavior-switching as the protocol state machine
-- Rate limiting and circuit breaking, where the mailbox *is* the mutex
+- Rate limiting and circuit breaking, where the mailbox is the mutex
 
 Bad fits, use something else:
 
@@ -71,10 +80,10 @@ Bad fits, use something else:
 - Anything CPU-heavy inside a handler. One blocking call stalls every actor
   sharing the event loop.
 
-Actors are not microservices. A microservice is a unit of *deployment*; an
-actor is a unit of *concurrency*. You will have tens of thousands of actors
-inside one service, each an `asyncio.Task`, so the ceiling is memory rather
-than a cluster. `tapio` structures the inside of that service: it competes with
+Actors are not microservices. A microservice is a unit of deployment. An actor
+is a unit of concurrency. You will have tens of thousands of actors inside one
+service, each an `asyncio.Task`, so the ceiling is memory rather than a
+cluster. `tapio` structures the inside of that service. It competes with
 `asyncio.Queue` + `TaskGroup` + a `dict` + hand-rolled retries, not with your
 API framework.
 
@@ -127,26 +136,26 @@ uv run python -m tapio_examples.hello_world
 ## Design notes
 
 **Sending never blocks.** `ref.tell(msg)` is synchronous and fire-and-forget,
-so it works from sync callbacks and signal handlers too. Backpressure is a
-property of the mailbox rather than the send call: bounded mailboxes take an
-overflow strategy (`fail`, `drop_new`, `drop_oldest`, all three of which
-publish what they shed as a dead letter), and
-`await ref.offer(msg)` waits for capacity when you want to be throttled.
+so it works from sync callbacks and signal handlers too. Backpressure belongs
+to the mailbox rather than the send call. Bounded mailboxes take an overflow
+strategy (`fail`, `drop_new`, `drop_oldest`), and all three publish what they
+drop as a dead letter. `await ref.offer(msg)` waits for capacity when you want
+to be throttled.
 
 **Every message is a validated Pydantic model.** Messages subclass
-`tapio.Message`, which is frozen and re-validated on delivery rather than only at
-construction. That costs roughly 3–10× the per-message overhead and caps local
-throughput around 10⁴–10⁵ msg/s. In an actor that spends 50 ms on an HTTP call,
-validation is ~0.02% of the message's life, which is invisible. In a tight per-record
-loop it dominates, which is why that workload is out of scope above. The check
-sits behind a single `validate_on_tell` setting, and real benchmarks ship with
-0.1.0.
+`tapio.Message`, which is frozen and re-validated on delivery rather than only
+at construction. That costs roughly 3–10× the per-message overhead and caps
+local throughput around 10⁴–10⁵ msg/s. In an actor that spends 50 ms on an
+HTTP call, validation is about 0.02% of the message's life, which is
+invisible. In a tight per-record loop it dominates, which is why that workload
+is out of scope above. The check sits behind a single `validate_on_tell`
+setting, and real benchmarks ship with 0.1.0.
 
 **Undeliverable messages go to dead letters.** An `ActorRef` stays valid after
-its actor dies, so `tell` never raises for a dead target: the message is
-published as a `DeadLetter` you can subscribe to and assert on. To *know* when
-something died, watch it (`ctx.watch`) rather than asking whether it is alive;
-a point-in-time liveness answer is stale the moment you have it.
+its actor dies, so `tell` never raises for a dead target. The message is
+published as a `DeadLetter` you can subscribe to and assert on. To know when
+something died, watch it with `ctx.watch` rather than asking whether it is
+alive. A liveness answer is out of date as soon as you have it.
 
 Requires Python 3.11+ (for `asyncio.timeout()` and `typing.Self`).
 

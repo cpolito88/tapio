@@ -54,8 +54,8 @@ async def test_repeated_waits_do_not_go_deaf():
 
 
 async def test_a_second_concurrent_consumer_is_refused():
-    # The single-waiter design is only sound with one reader at a time, so the
-    # mailbox asserts it rather than trusting it.
+    # The single-waiter design only works with one reader at a time, so the
+    # mailbox checks that rather than trusting it.
     mailbox = Mailbox()
     first = asyncio.create_task(mailbox.get())
     await asyncio.sleep(0)

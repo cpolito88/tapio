@@ -1,10 +1,4 @@
-"""Behaviors and message-type resolution.
-
-The combinators are exercised without an actor system, and the resolution
-tests cover the resolution rules: explicit wins, introspection is the
-fallback, and an unresolvable handler raises rather than spawning with the
-delivery-time type check quietly disabled.
-"""
+"""Tests for behaviors and message-type resolution, with no system running."""
 
 import pytest
 
@@ -23,8 +17,8 @@ from tests.messages import GetCount, Greet, Greeted, Increment, NotAMessage
 
 
 def test_same_is_a_singleton():
-    # The runtime interprets these by identity, so a new object each call would
-    # be a bug waiting for an `is` comparison.
+    # The runtime compares these by identity, so returning a new object each
+    # call would break every `is` check against them.
     assert Behaviors.same() is Behaviors.same()
 
 
@@ -82,7 +76,7 @@ def test_explicit_msg_type_wins():
 
 
 def test_explicit_msg_type_overrides_an_annotation():
-    # Not a conflict to resolve: the documented rule is that explicit wins.
+    # Not a conflict to resolve. The documented rule is that explicit wins.
     assert Behaviors.receive(handle, msg_type=Greeted).msg_type is Greeted
 
 
@@ -159,7 +153,7 @@ def test_a_handler_with_too_few_parameters_raises():
     async def on_message(msg: Greet) -> Behavior[Greet]:
         return Behaviors.same()
 
-    # receive expects (ctx, message); this is receive_message's shape.
+    # receive expects (ctx, message). This handler has receive_message's shape.
     with pytest.raises(BehaviorTypeError, match="no message parameter at position 1"):
         Behaviors.receive(on_message)  # type: ignore[arg-type]
 

@@ -1,22 +1,21 @@
 """An association: one link to one peer, and the actor that owns it.
 
-Two systems associate on demand. The first ref resolved or deserialized for an
-address creates the association; every ref for that address then uses it, which
-is what makes "FIFO per association" a guarantee worth having rather than a
-coincidence of how many connections happened to be open.
+Two systems associate on demand. The first message sent to an address creates
+the association, and every ref for that address then uses it. That is what
+makes "FIFO per association" a guarantee rather than a coincidence of how many
+connections happen to be open.
 
-An association is an actor, and that is not decoration. Its writer is the cell's
-own receive loop, its outbound buffer is the cell's bounded mailbox, its
-heartbeat is a cell timer, and its reader is one task the cell cancels when it
-stops. So remoting introduces no new rule about who owns a task, and the leak
-check that covers every other actor covers this one for free.
+An association is an actor. Its writer is the cell's receive loop, its
+outbound buffer is the cell's bounded mailbox, its heartbeat is a cell timer,
+and its reader is one task the cell cancels when it stops. Remoting therefore
+adds no new rule about who owns a task, and the existing leak check covers it.
 
-Delivery stays **at-most-once**. No acks, no retries, no resend buffer: a frame
+Delivery is **at-most-once**. No acks, no retries, no resend buffer: a frame
 written to a socket that then failed is lost, and it dead-letters here if the
 failure is visible from this side. Acks would make delivery at-least-once,
-which is not better, only different, and it would quietly oblige every
-receiving actor to be idempotent. That is a decision for the user's protocol,
-where they know what is safe to repeat.
+which is not better, only different, and would oblige every receiving actor to
+be idempotent. That belongs in the user's protocol, where they know what is
+safe to repeat.
 """
 
 import asyncio
@@ -65,10 +64,10 @@ _HEARTBEAT = "heartbeat"
 class Outbound(Carrier):
     """One frame queued for a peer, with the message it was made from.
 
-    The frame is what travels; the payload rides along so that a frame which
-    never leaves reports the message its sender actually sent rather than this
-    wrapper. Encoding happens at the send site, on the caller's thread, because
-    an error about the message belongs to whoever wrote it.
+    The frame is what travels. The payload comes along so that a frame which
+    never leaves can report the message its sender sent, rather than this
+    wrapper. Encoding happens at the send site, on the caller's thread,
+    because an error about the message belongs to whoever wrote it.
     """
 
     frame: bytes
@@ -133,9 +132,9 @@ class AssociationHost(Protocol):
 class Association:
     """One link to one peer: the actor's state, and the reader behind it.
 
-    Created in one of two ways, and the difference is only in how it starts.
-    Dialled, when something here resolved a ref for an address with no link to
-    it; or adopted, when the peer dialled in and the handshake said who it was.
+    It is created in one of two ways, and only the start differs. Dialled,
+    when this system sent to an address it has no link to. Adopted, when the
+    peer dialled in and the handshake said who it was.
     """
 
     __slots__ = (
@@ -185,8 +184,8 @@ class Association:
         # Held until the reader task starts and takes it over.
         self._accepted: FrameLink | None = link
         # Every link this association has opened, writable or not. `_link` is
-        # what the actor may write to and is set only once nothing is queued
-        # ahead of it; this one exists from the moment there is a socket, so a
+        # what the actor may write to, and is set only once nothing is queued
+        # ahead of it. This one exists as soon as there is a socket, so a
         # cancellation between the two still has something to close.
         self._socket: FrameLink | None = link
 
@@ -199,8 +198,8 @@ class Association:
     def initiator(self) -> Address:
         """Whose dial opened this link.
 
-        Both sides connecting at once is normal under load, and without a rule
-        the pair ends up with two connections and FIFO quietly stops meaning
+        Both sides connecting at once is normal under load. Without a rule the
+        pair keeps two connections, and FIFO per association stops meaning
         anything. The rule is address order, applied to this.
         """
         return self._initiator
@@ -219,9 +218,8 @@ class Association:
     def last_frame_at(self) -> float:
         """When something last arrived from the peer, on the loop's clock.
 
-        Read by nothing yet. It is recorded here because the reader is the only
-        place that knows, and a failure detector that has to be retrofitted
-        into a reader is a failure detector written twice.
+        Nothing reads it yet. It is recorded here because the reader is the
+        only place that knows, and the failure detector will need it.
         """
         return self._last_frame_at
 
@@ -245,10 +243,10 @@ class Association:
     def send(self, message: Message, frame: bytes, recipient: ActorPath) -> None:
         """Queue a frame for the peer, or account for why it cannot be.
 
-        Never raises about the peer, exactly as a local `tell` never raises
-        about a recipient: a full outbound buffer, a link that has failed and
-        an association that has stopped are all things the sender can do
-        nothing about, so they become dead letters naming the peer.
+        Never raises about the peer, just as a local `tell` never raises about
+        a recipient. A full outbound buffer, a failed link and a stopped
+        association are all things the sender can do nothing about, so they
+        become dead letters naming the peer.
 
         Args:
             message: The message the frame carries, for the dead letter.
@@ -272,10 +270,10 @@ class Association:
     async def offer(self, message: Message, frame: bytes, recipient: ActorPath) -> None:
         """Queue a frame, waiting for room in the outbound buffer.
 
-        Local backpressure against a socket that is not draining, and honestly
-        not more than that: it is not end-to-end backpressure from the actor on
-        the other side, and nothing in a fire-and-forget wire protocol could
-        be. A protocol that needs the latter builds it out of messages.
+        This is local backpressure against a socket that is not draining, and
+        nothing more. It is not end-to-end backpressure from the actor on the
+        other side, which no fire-and-forget wire protocol can give. Build
+        that out of messages if you need it.
 
         Args:
             message: The message the frame carries.
@@ -291,11 +289,11 @@ class Association:
     def adopt(self, link: FrameLink, uid: int) -> None:
         """Take over a link the peer opened, in place of the one in hand.
 
-        What resolving a simultaneous dial comes to on the losing side. The
-        association survives it: the queue, the mailbox and every ref pointing
+        This is how the losing side of a simultaneous dial is resolved. The
+        association survives. The queue, the mailbox and every ref pointing
         through it are unchanged, and only the socket underneath is swapped.
         Frames already written to the old link are at-most-once, like every
-        other frame that was on a link when it ended.
+        other frame on a link that ended.
 
         Args:
             link: The handshaken link to take over.
@@ -307,9 +305,9 @@ class Association:
             )
             return
         self._uid = uid
-        # The writer stops until the new link has caught up with what is
-        # queued, which is the same rule as a link coming up for the first
-        # time and is what keeps order across the swap.
+        # The writer waits until the new link has caught up with what is
+        # queued. That is the same rule as a link coming up for the first
+        # time, and it is what keeps the order across the swap.
         self._link = None
         self._accepted = link
         previous, self._socket = self._socket, link
@@ -434,18 +432,16 @@ class Association:
         except asyncio.CancelledError:
             raise
         except (FrameTooLargeError, MessageDecodingError) as error:
-            # A frame this end refused rather than a link that failed. It is
-            # accounted for before the link goes, because a peer that can make
-            # a system drop a connection is exactly the thing an operator needs
-            # to be able to see.
+            # A frame this end refused, rather than a link that failed. It is
+            # accounted for before the link goes, because an operator needs to
+            # see a peer that can make this system drop a connection.
             self._refused(error)
             self.close(str(error))
         except EOFError:
-            # The peer closed. Deliberately or not: a system shutting down and
-            # a process that died look identical from here, and deciding
-            # between them is a failure detector's job rather than a reader's.
-            # Not a warning for that reason, since the ordinary case is a peer
-            # that went away on purpose.
+            # The peer closed. A system shutting down and a process that died
+            # look the same from here, and telling them apart is the failure
+            # detector's job. Logged at info rather than warning, because the
+            # ordinary case is a peer that went away on purpose.
             _log.info("link to %s was closed by the peer", self._peer)
             self.close(f"{self._peer} closed the link")
         except (OSError, TapioError, TimeoutError) as error:
@@ -510,11 +506,11 @@ class Association:
     async def _open(self, link: FrameLink) -> None:
         """Flush what was waiting, then let the actor write for itself.
 
-        Order is the whole of it. Frames held while the link was coming up
-        arrived before anything still in the mailbox, so they go first, and the
-        link only becomes the actor's to write to once nothing is left waiting.
-        Nothing awaits between that check and the assignment, so no frame can
-        slip past the ones in front of it.
+        This is all about order. Frames held while the link was coming up
+        arrived before anything still in the mailbox, so they go first. The
+        link becomes the actor's to write to only once nothing is left
+        waiting. Nothing awaits between that check and the assignment, so no
+        frame can overtake the ones in front of it.
         """
         while self._pending:
             outbound = self._pending.popleft()
@@ -541,10 +537,10 @@ class Association:
     def _on_link_frame(self, frame: bytes) -> None:
         """Note one of the transport's own frames.
 
-        A heartbeat has already done its work by arriving: what is recorded is
-        the timestamp above, and everything else is logged rather than acted
-        on, since a frame kind this version does not know is a peer running
-        something newer and not a reason to drop a working link.
+        A heartbeat has done its work by arriving, and the timestamp above is
+        what records it. Anything else is logged rather than acted on. A frame
+        kind this version does not know means the peer is running something
+        newer, which is no reason to drop a working link.
         """
         kind = link_body(frame).get("link")
         if kind != _HEARTBEAT:

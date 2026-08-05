@@ -23,14 +23,14 @@ U = TypeVar("U", bound=Message)
 class ActorContext(ABC, Generic[T]):
     """The runtime handed to a behavior for the duration of a message.
 
-    Only the members the runtime can honour today are declared; `run_blocking`
-    arrives with the milestone that implements it. Timers and stashing are not
-    here on purpose: both are handed to a behavior by
-    `Behaviors.with_timers` and `Behaviors.with_stash`, because both outlive an
-    incarnation and belong to the cell rather than to whatever the actor is
-    doing when it reaches for one.
-    An abstract class rather than a Protocol, because the runtime hands out one
-    concrete implementation and users are never expected to write their own.
+    Only the members the runtime can honour today are declared. Timers and
+    stashing are deliberately not here. A behavior receives them from
+    `Behaviors.with_timers` and `Behaviors.with_stash`, because both outlive
+    an incarnation and belong to the cell rather than to whatever the actor
+    happens to be doing.
+
+    It is an abstract class rather than a Protocol, because the runtime hands
+    out one implementation and users are not expected to write their own.
     """
 
     __slots__ = ()
@@ -46,7 +46,7 @@ class ActorContext(ABC, Generic[T]):
         """A ref to this actor, to hand out in messages.
 
         Named `self_ref` rather than Pekko's `self`, because `self` is already
-        a parameter name in every method that would use it.
+        the first parameter of every method that would use it.
         """
 
     @property
@@ -87,8 +87,8 @@ class ActorContext(ABC, Generic[T]):
     ) -> ActorRef[U]:
         """Start a child under a generated name.
 
-        Generated names begin with `$`, which user-chosen names may not, so a
-        generated name can never collide with one someone picked.
+        Generated names begin with `$`, and user-chosen names may not, so a
+        generated name never collides with one someone picked.
 
         Args:
             behavior: What the child does.
@@ -106,9 +106,9 @@ class ActorContext(ABC, Generic[T]):
         """Hand out a ref that translates another protocol into this actor's.
 
         For talking to an actor whose reply type is not yours and should not
-        become yours. Widening a declared message type to admit a foreign reply
-        lets anyone send it and puts someone else's vocabulary inside your
-        handlers; an adapter keeps both out:
+        become yours. Widening your declared message type to admit a foreign
+        reply lets anyone send it, and puts someone else's vocabulary inside
+        your handlers. An adapter avoids both:
 
         ```python
         replies = ctx.message_adapter(
@@ -118,18 +118,18 @@ class ActorContext(ABC, Generic[T]):
         ```
 
         A translated message arrives on this actor's own user lane, so it is
-        ordinary traffic: it queues where it arrived, it never re-enters a
+        ordinary traffic. It queues where it arrived, it never re-enters a
         running handler, and it is validated against the declared type like
         anything else.
 
         The translation runs in this actor rather than in the sender, so a
-        failure in it is this actor's supervision decision. That is the whole
-        point of the design: a sender that has never heard of the adapter must
-        not have the owner's bug raised into it.
+        failure in it becomes this actor's supervision decision. A sender that
+        has never heard of the adapter must not have this actor's bug raised
+        into it.
 
-        Each call makes a new adapter, and one already handed out keeps working
-        across a restart: the ref addresses the actor, not the incarnation that
-        created it.
+        Each call makes a new adapter, and one already handed out keeps
+        working across a restart. The ref addresses the actor, not the
+        incarnation that created it.
 
         Args:
             adapt: Turns an accepted message into one of this actor's own. Its
@@ -159,21 +159,22 @@ class ActorContext(ABC, Generic[T]):
 
         The same call as
         [ActorSystem.resolve][tapio.actor.system.ActorSystem.resolve], from
-        inside an actor. An address this system owns resolves to the live local
-        ref, so resolving your own system never puts a socket in the middle of
-        a local send; another system's resolves to a ref that reaches it
-        through an association.
+        inside an actor. An address this system owns resolves to the live
+        local ref, so resolving your own system never puts a socket in the
+        middle of a local send. Another system's address resolves to a ref
+        that reaches it through an association.
 
-        Nothing waits on the peer: the association is created and dialled
-        behind the sends that follow, so a `tell` to a peer that never answers
-        dead-letters instead of hanging, and this call does not fail because a
-        node is down.
+        Nothing waits for the peer here. The association is created and
+        dialled behind the sends that follow, so this call does not fail
+        because a node is down, and a `tell` to a peer that never answers
+        dead-letters instead of hanging.
 
         Args:
             uri: The full string form, `tapio://sys@host:port/user/x#uid`.
-            expect: What the target accepts. A claim about the peer, checked at
-                this end; the receiving node checks it against the target's
-                real message type, which is the check that can be trusted.
+            expect: What the target accepts. This is a claim about the peer,
+                checked at this end. The receiving node checks it against the
+                target's real message type, and that is the check that
+                decides.
 
         Returns:
             A ref to the actor it names.
@@ -191,14 +192,14 @@ class ActorContext(ABC, Generic[T]):
         """Ask to be sent `Terminated` when another actor stops.
 
         The signal arrives on the system lane, so it is not queued behind
-        whatever user traffic is waiting, and it arrives exactly once however
-        many times the ref was watched. A restart produces none: the actor's
+        waiting user traffic, and it arrives exactly once however many times
+        the ref was watched. A restart produces no signal, because the actor's
         identity is unchanged and only its incarnation is new.
 
         Watching a ref that has already stopped delivers `Terminated` at once
-        rather than refusing, so the caller's code is the same however the race
-        came out. This is why there is no "is it alive?" predicate: any answer
-        one could give is stale before the caller reads it.
+        rather than refusing, so the caller's code is the same either way.
+        This is also why there is no "is it alive?" call: the answer would be
+        out of date before the caller could read it.
 
         Args:
             ref: The actor to watch. Watching an actor twice is harmless.
@@ -213,8 +214,8 @@ class ActorContext(ABC, Generic[T]):
         """Stop being told when another actor stops.
 
         Harmless if this actor was not watching it. It does not retract a
-        `Terminated` already on the system lane: by the time one is queued the
-        thing it reports has happened.
+        `Terminated` that is already on the system lane, because by then the
+        actor it reports on has stopped.
 
         Args:
             ref: The actor to stop watching.

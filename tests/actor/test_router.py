@@ -1,10 +1,4 @@
-"""Routers: one address in front of several identical actors.
-
-Three claims are worth asserting and the rest follows from them: work is spread
-round-robin and nothing is duplicated, the pool shrinks when a routee stops and
-empties into a stopped router, and a routee that cannot take a message costs
-that message rather than the pool.
-"""
+"""Tests for routers: one address in front of several identical actors."""
 
 import asyncio
 
@@ -50,9 +44,9 @@ def worker(
 ) -> Behavior[Job]:
     """A routee that writes down its own name against everything it handled.
 
-    It reports its own stop, so a test can wait for the pool to have shrunk
-    without reaching into the router to look. The router hears about the same
-    stop on its system lane, which outranks any work sent afterwards.
+    It reports its own stop, so a test can wait for the pool to shrink without
+    reaching into the router. The router hears about the same stop on its
+    system lane, which outranks any work sent afterwards.
     """
 
     def build(ctx: ActorContext[Job]) -> Behavior[Job]:
@@ -146,9 +140,9 @@ async def test_a_failing_routee_is_supervised_where_it_was_declared(
 ):
     """The router is the routees' parent, so the ordinary strategy applies.
 
-    A restarting routee keeps its place in the pool: its path and uid are
-    unchanged, and the router was told nothing, which is the whole point of a
-    restart being invisible to watchers.
+    A restarting routee keeps its place in the pool. Its path and uid are
+    unchanged, and the router is told nothing, because a restart is invisible
+    to watchers.
     """
     seen: list[tuple[str, int]] = []
     supervised = Behaviors.supervise(worker(seen)).on_failure(
@@ -171,8 +165,8 @@ async def test_a_routee_that_cannot_take_a_message_costs_the_message(
 ):
     """And not the pool. A router forwards work it did not write.
 
-    Failing here would take a whole pool down because one member of it was
-    busy, so a routee at capacity is a recipient error like any other.
+    Failing here would take a whole pool down because one member was busy, so
+    a routee at capacity is a recipient error like any other.
     """
     seen: list[tuple[str, int]] = []
     letters: list[DeadLetter] = []
@@ -189,9 +183,9 @@ async def test_a_routee_that_cannot_take_a_message_costs_the_message(
         name="workers",
     )
 
-    # The first is waited for rather than assumed: the routee has to be inside
-    # its handler before the next two land, or the queue depth below is a race
-    # against the scheduler rather than a statement about capacity.
+    # The first is waited for rather than assumed. The routee has to be inside
+    # its handler before the next two land, otherwise the queue depth below is
+    # a race against the scheduler rather than a fact about capacity.
     router.tell(Job(item=1))
     await entered.wait()
 
@@ -217,8 +211,8 @@ async def test_a_pool_needs_a_routee():
 def test_the_rotation_survives_the_pool_shrinking():
     """Removing a routee shifts the rotation rather than restarting it.
 
-    The counter is kept, not the position, so an actor that has just been given
-    work does not get more of it because the pool got smaller.
+    It keeps the counter, not the position, so an actor that has just been
+    given work does not get more because the pool got smaller.
     """
     strategy = RoundRobin()
     three: list[ActorRef[Job]] = [_ref(n) for n in (1, 2, 3)]
@@ -238,8 +232,8 @@ def _ref(n: int) -> ActorRef[Job]:
 def _alive(ref: ActorRef[Job]) -> bool:
     """Whether the cell behind a ref is still reading its mailbox.
 
-    Only a test asks this. Application code watches, because a liveness answer
-    is stale by the time the caller reads it.
+    Only a test asks this. Application code watches instead, because the
+    answer is out of date by the time the caller reads it.
     """
     return isinstance(ref, LocalActorRef) and ref.cell.is_alive
 
@@ -261,8 +255,8 @@ async def test_a_signal_the_router_has_nothing_to_say_about(system: ActorSystem)
     router = system.spawn(Routers.pool(1, worker(seen)), name="workers")
     other = system.spawn(worker(seen), name="loner")
 
-    # The router watches nothing but its routees, so this arrives as an
-    # ordinary unhandled signal rather than shrinking the pool.
+    # The router only watches its own routees, so this arrives as an ordinary
+    # unhandled signal and does not shrink the pool.
     assert isinstance(router, LocalActorRef)
     router.cell.watch(other)
     other.tell(Job(item=0, stop=True))

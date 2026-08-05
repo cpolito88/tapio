@@ -3,26 +3,24 @@
 Concepts: `Routers.pool`, round-robin fan-out, a bounded mailbox, and `offer`
 as the way a producer is made to wait.
 
-A pool router is the shape to reach for when the work is uniform and the answer
-to "too slow" is "more of the same actor". The router is an ordinary actor: it
-has a mailbox, it handles one message at a time, and all it does with each one
-is hand it to the next routee in turn. The routees are its children, so their
-failures are supervised the ordinary way, and their deaths shrink the pool it
-routes to.
+Reach for a pool router when the work is uniform and the answer to "too slow"
+is "more of the same actor". The router is an ordinary actor. It has a
+mailbox, it handles one message at a time, and all it does is hand each one to
+the next routee in turn. The routees are its children, so their failures are
+supervised the ordinary way, and when one stops the pool shrinks.
 
-Backpressure is the part worth being precise about, because a router creates
-none of it. Sending to a router never blocks, exactly as sending anywhere else
-never blocks, so a fast producer against slow workers simply fills something
-up. Which thing fills up is the mailbox's business, which is why the router
-here has a bounded one and the producer uses `await router.offer(...)`: the
-producer is throttled by the pool it is feeding rather than being allowed to
-pile an unbounded backlog in front of it.
+A router creates no backpressure of its own. Sending to a router never blocks,
+just as sending anywhere else never blocks, so a fast producer against slow
+workers fills something up. Which thing fills up is the mailbox's business.
+That is why the router here has a bounded mailbox and the producer uses
+`await router.offer(...)`: the producer is slowed by the pool it is feeding
+instead of piling up an unbounded backlog in front of it.
 
-What to watch in the output: six jobs land on three workers in strict rotation,
-never twice in a row on the same one. Then a worker is given a job it does not
-survive, and the pool carries on with two: the router was told its routee
-stopped and stopped routing to it, instead of sending work to an address nobody
-reads.
+What to watch in the output: six jobs land on three workers in strict
+rotation, never twice in a row on the same one. Then a worker is given a job
+it does not survive, and the pool carries on with two. The router was told its
+routee stopped and stopped routing to it, rather than sending work to an
+address nobody reads.
 
 Run it with:
 
@@ -80,15 +78,15 @@ class Job(Message):
 def worker() -> Behavior[Job]:
     """One member of the pool.
 
-    Wrapped in `Behaviors.setup` so that each routee gets its own. A pool built
-    out of one already-constructed stateful behavior would share that state
-    across every member, which is not a pool.
+    Wrapped in `Behaviors.setup` so each routee gets its own. A pool built
+    from one already-constructed stateful behavior would share that state
+    across every member.
     """
 
     def build(ctx: ActorContext[Job]) -> Behavior[Job]:
         name = ctx.path.name
-        # Where to report a stop of this worker's own choosing. An ordinary
-        # shutdown is nobody's news, so it stays empty for one of those.
+        # Where to report a stop this worker chose itself. An ordinary
+        # shutdown is not worth reporting, so it stays empty for those.
         dying: list[ActorRef[Report]] = []
 
         async def on_job(message: Job) -> Behavior[Job]:
@@ -114,9 +112,9 @@ def worker() -> Behavior[Job]:
 def collector(lines: list[str], marks: dict[int, asyncio.Event]) -> Behavior[Report]:
     """Writes down what every worker reported, so the run has one output.
 
-    It also signals the points the script below waits for. An actor is the
-    only thing that knows when it has handled something, so saying so beats
-    sleeping for a guessed interval and hoping.
+    It also signals the points the script below waits for. Only the actor
+    knows when it has handled something, so saying so is better than sleeping
+    for a guessed interval.
     """
 
     async def on_report(message: Report) -> Behavior[Report]:
@@ -163,12 +161,12 @@ async def main() -> list[str]:
         # the first six jobs left it, so this lands on the first worker.
         await workers.offer(Job(item=0, reply_to=reports, poison=True))
         # A worker reports its own stop before the runtime tells its watchers,
-        # and the router is one of them, so by the time this line is here the
-        # router's `Terminated` is already queued ahead of anything sent next.
+        # and the router is one of them. So by the time this line runs, the
+        # router's `Terminated` is queued ahead of anything sent next.
         await marks[7].wait()
 
-        # The pool is two now, and the rotation carries on across what is left
-        # rather than starting again.
+        # The pool is down to two, and the rotation carries on across what is
+        # left rather than starting again.
         for item in range(7, 11):
             await workers.offer(Job(item=item, reply_to=reports))
         await marks[11].wait()

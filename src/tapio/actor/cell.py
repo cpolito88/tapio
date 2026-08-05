@@ -4,13 +4,13 @@ The cell is the runtime object behind every ref. It owns the receive loop, the
 current behavior, the children, the watchers, the supervision decisions, and
 the termination sequence.
 
-There is deliberately no `TaskGroup` here. A group's defining behaviour is that
-one task raising cancels its siblings, which is the exact inverse of
-supervision, where a child failing must leave its siblings untouched. It would
-also never fire: the loop below converts every exception into a decision, so
-nothing escapes for a group to react to. Instead each cell creates one task and
-owns an explicit children map, and the absence of orphaned tasks is an invariant
-the runtime holds and the test suite asserts.
+There is deliberately no `TaskGroup` here. In a group, one task raising
+cancels its siblings, which is the inverse of supervision: a child failing
+must leave its siblings untouched. It would also never fire, since the loop
+below turns every exception into a decision and nothing escapes for a group to
+react to. Each cell creates one task and owns an explicit children map
+instead. The absence of orphaned tasks is an invariant the runtime holds and
+the test suite asserts.
 """
 
 import asyncio
@@ -110,7 +110,7 @@ class ActorRuntime:
     """The slice of an actor system that a cell needs.
 
     Passing this rather than the system itself keeps the dependency one-way,
-    and means a cell can be exercised in a test without standing up guardians.
+    and lets a test exercise a cell without starting the guardians.
     """
 
     name: str
@@ -167,9 +167,9 @@ class ActorRuntime:
     def next_uid(self) -> int:
         """Return the next incarnation uid.
 
-        Uid 0 means "no incarnation", so the counter starts at 1. The uid is
-        what stops a ref to a dead actor from silently addressing a new actor
-        spawned under the same name.
+        Uid 0 means "no incarnation", so the counter starts at 1. The uid
+        stops a ref to a dead actor from addressing a new actor spawned under
+        the same name.
         """
         return next(self._uids)
 
@@ -178,8 +178,8 @@ class LocalActorRef(ActorRef[T]):
     """A ref that delivers into a local cell's mailbox.
 
     It stays a valid handle after its actor dies. Sending to a dead actor is
-    not an error, it is a dead letter, because a point-in-time liveness check
-    is stale the moment you have it.
+    not an error, it is a dead letter, because a liveness check is out of date
+    as soon as you have the answer.
     """
 
     __slots__ = ("_cell",)
@@ -198,8 +198,8 @@ class LocalActorRef(ActorRef[T]):
     def cell(self) -> "ActorCell[T]":
         """The cell this ref delivers into.
 
-        For the runtime, which needs the object behind the handle to register a
-        death watch. Application code has a ref and needs nothing more.
+        For the runtime, which needs the object behind the handle to register
+        a death watch. Application code needs only the ref.
         """
         return self._cell
 
@@ -208,13 +208,13 @@ class LocalActorRef(ActorRef[T]):
 
         Safe to call from any thread. Validation runs on the calling thread,
         before any hop, so an error about the message reaches the code that
-        wrote it; delivery then happens on the system's loop.
+        wrote it. Delivery then happens on the system's loop.
 
-        The split is one line: **the message is yours, the recipient is not.**
-        Errors about the message raise here. Errors about the recipient, a
-        stopped actor or a full mailbox, are resolved on the target's loop
-        after this call has returned, where nothing can be raised into the
-        caller, so they become dead letters.
+        The rule is: the message is yours, the recipient is not. Errors about
+        the message raise here. Errors about the recipient, such as a stopped
+        actor or a full mailbox, are settled on the target's loop after this
+        call has returned. There is no caller left to raise into by then, so
+        they become dead letters.
 
         Args:
             message: The message to deliver. The recipient always receives this
@@ -249,9 +249,8 @@ class LocalActorRef(ActorRef[T]):
     async def offer(self, message: T) -> None:
         """Deliver a message, waiting for mailbox capacity if it is full.
 
-        Backpressure is a property of the mailbox rather than of the send, so
-        this is `tell` plus waiting, and on an unbounded mailbox the two are
-        the same thing.
+        Backpressure belongs to the mailbox, not to the send, so this is
+        `tell` plus waiting. On an unbounded mailbox they are the same thing.
 
         Args:
             message: The message to deliver.
@@ -260,8 +259,8 @@ class LocalActorRef(ActorRef[T]):
             MessageTypeError: If the message does not match the target's
                 declared message type.
             RuntimeError: If called from a thread that is not running the
-                system's loop. Awaiting capacity across a thread boundary is a
-                bridge too far; use `tell` from other threads.
+                system's loop. Waiting for capacity across a thread boundary
+                is not supported. Use `tell` from other threads.
             pydantic.ValidationError: If content validation is on and the
                 message does not satisfy its own model.
         """
@@ -293,8 +292,8 @@ class LocalActorRef(ActorRef[T]):
         ```
 
         Awaiting from inside a handler stops that actor reading its mailbox
-        until the reply lands, which is occasionally what you want and usually
-        not: an actor that asks and waits is one that cannot answer.
+        until the reply lands. That is sometimes what you want, but usually
+        not: an actor that asks and waits cannot answer anyone else.
 
         Args:
             make: Builds the request from the ref the reply should go to.
@@ -333,15 +332,15 @@ class ActorCell(Generic[T]):
         self._runtime = runtime
         self._path = path
         self._parent = parent
-        # The behavior as first given, not as it is now. A restart re-evaluates
-        # this one, so an actor that has switched behaviors several times still
-        # comes back as what it originally was.
+        # The behavior as first given, not as it is now. A restart evaluates
+        # this one again, so an actor that has switched behavior several times
+        # still comes back as what it started as.
         self._initial = behavior
         self._behavior: Behavior[T] = behavior
         self._supervisors: tuple[_Supervisor, ...] = ()
-        # Timestamps of recent restarts, for the window; the count is kept
-        # separately because the backoff exponent is about how many times this
-        # actor has failed, not about how many are still inside the window.
+        # Timestamps of recent restarts, for the window. The count is kept
+        # separately, because the backoff exponent is about how many times
+        # this actor has failed, not how many are still inside the window.
         self._restarts: deque[float] = deque()
         self._restart_count = 0
         self._mailbox = Mailbox(
@@ -352,14 +351,14 @@ class ActorCell(Generic[T]):
         self._adapters = itertools.count(1)
         self._adapter_paths: list[ActorPath] = []
         # Both sides of every watch, so that neither a watcher nor a watched
-        # actor leaves an entry behind in the other when it stops. The watchers
-        # are not all cells: an ask's promise watches its target too.
+        # actor leaves an entry behind in the other when it stops. Not every
+        # watcher is a cell: an ask's promise watches its target too.
         self._watchers: dict[ActorPath, Watcher] = {}
         self._watching: dict[ActorPath, ActorCell[Any]] = {}
         self._log = actor_logger(path)
         # Both are owned by the cell rather than by a behavior, and both
-        # outlive an incarnation: a restart empties them and hands the same
-        # objects to the behavior the re-run factory produces.
+        # outlive an incarnation. A restart empties them and hands the same
+        # objects to the behavior the factory produces.
         self._timers: TimerScheduler[T] = TimerScheduler(self)
         self._stash: StashBuffer[T] | None = None
         self._ctx: ActorContext[T] = _CellContext(self)
@@ -371,7 +370,7 @@ class ActorCell(Generic[T]):
         self._current: Message | None = None
         # Both are replaced in `start` once the behavior has declared its
         # message type. A cell that stops during setup never gets one, and
-        # there is no honest type check to make without it.
+        # there is no type check to make without it.
         self._msg_type: MessageType | None = None
         self._validate: MessageValidator = _accept_anything
 
@@ -399,9 +398,8 @@ class ActorCell(Generic[T]):
     def watchers(self) -> tuple[ActorPath, ...]:
         """Who has asked to be told when this actor stops.
 
-        Exposed so that "the watch was released" is a thing a test can assert
-        rather than infer: a registry that outlives what it names is exactly
-        the leak death watch exists to prevent.
+        Exposed so a test can assert that the watch was released. A map that
+        outlives the actor it names is the leak death watch exists to prevent.
         """
         return tuple(self._watchers)
 
@@ -409,8 +407,8 @@ class ActorCell(Generic[T]):
     def timers(self) -> TimerScheduler[T]:
         """The timers this actor has running.
 
-        Exposed for the same reason `watchers` is: "the restart cancelled the
-        timers" has to be something a test can assert rather than infer.
+        Exposed for the same reason as `watchers`: a test has to be able to
+        assert that a restart cancelled the timers.
         """
         return self._timers
 
@@ -418,10 +416,10 @@ class ActorCell(Generic[T]):
     def msg_type(self) -> MessageType | None:
         """What this actor accepts, fixed when it started.
 
-        `None` only for a cell that stopped during deferred construction and so
-        never declared one. Read by anything that has to accept exactly what
-        another actor does: a router's pool takes its own message type from the
-        routees it just spawned rather than being told it twice.
+        It is `None` only for a cell that stopped during deferred construction
+        and never declared one. Anything that has to accept exactly what
+        another actor accepts reads this. A router takes its own message type
+        from the routees it just spawned, rather than being told it twice.
         """
         return self._msg_type
 
@@ -429,8 +427,8 @@ class ActorCell(Generic[T]):
     def is_alive(self) -> bool:
         """Whether this actor is still accepting messages.
 
-        For the runtime's own use. Application code watches instead: a
-        liveness answer is stale by the time the caller reads it.
+        For the runtime's own use. Application code should watch the actor
+        instead, since a liveness answer is out of date once it is read.
         """
         return self._alive
 
@@ -438,9 +436,9 @@ class ActorCell(Generic[T]):
         """Evaluate the behavior, resolve validation, and start the loop.
 
         Deferred construction runs here, synchronously, rather than inside the
-        new task: the message type comes from the behavior it produces, and the
-        ref is usable the instant `spawn` returns, so the type has to be known
-        by then.
+        new task. The message type comes from the behavior it produces, and
+        the ref can be used as soon as `spawn` returns, so the type has to be
+        known by then.
         """
         behavior = self._evaluate(self._initial)
         self._behavior = behavior
@@ -466,9 +464,9 @@ class ActorCell(Generic[T]):
             settings=self._runtime.settings,
             target=self._path,
         )
-        # Registered here rather than in the constructor, so that a cell which
-        # never starts is never addressable, and deregistered in `_finish`, so
-        # that the registry holds exactly the live actors.
+        # Registered here rather than in the constructor, so a cell that never
+        # starts is never addressable. Deregistered in `_finish`, so the
+        # registry holds exactly the live actors.
         self._runtime.refs.register(self._ref)
         self._task = self._runtime.dispatcher.spawn_task(
             self._run(), name=f"tapio-cell:{self._path}"
@@ -478,7 +476,7 @@ class ActorCell(Generic[T]):
         """Check a message against this actor's declared type and model.
 
         Called on the sender's thread, before any hop onto the system's loop,
-        because an error about the message is the sender's bug to handle.
+        because an error about the message is the sender's to handle.
         """
         self._validate(message)
 
@@ -499,9 +497,9 @@ class ActorCell(Generic[T]):
     def deliver_offloop(self, message: Message) -> None:
         """Deliver a message that arrived from another thread.
 
-        Identical to `deliver` except that a `FAIL` mailbox at capacity cannot
-        raise: the sender is on another thread and has long since moved on, so
-        the overflow becomes a dead letter like every other recipient error.
+        The same as `deliver`, except that a full `FAIL` mailbox cannot raise.
+        The sender is on another thread and has moved on, so the overflow
+        becomes a dead letter like every other recipient error.
         """
         try:
             self.deliver(message)
@@ -511,9 +509,9 @@ class ActorCell(Generic[T]):
     async def offer(self, message: Message) -> None:
         """Put an already-validated message on the user lane, waiting if full.
 
-        Liveness is read through a call rather than the attribute so that the
-        second check is honest: the actor can stop while this sender is parked,
-        which is exactly the case the check below exists for.
+        Liveness is read through a call rather than the attribute, so the
+        second check is accurate. The actor can stop while this sender is
+        waiting, which is the case the check below exists for.
         """
         if not self._still_alive():
             self._dead_letter(message, self._unreachable_reason())
@@ -565,9 +563,9 @@ class ActorCell(Generic[T]):
         """Hand out a ref that translates another protocol into this one.
 
         Each call makes a new adapter with its own address, and refs already
-        handed out keep working: an adapter is bound to the actor rather than
-        to the incarnation that created it, so a restart does not turn replies
-        somebody is still holding a ref for into dead letters.
+        handed out keep working. An adapter is bound to the actor, not to the
+        incarnation that created it, so a restart does not turn replies into
+        dead letters for someone still holding a ref.
         """
         resolved = resolve_handler_msg_type(
             adapt, explicit=msg_type, message_param_index=0
@@ -619,8 +617,8 @@ class ActorCell(Generic[T]):
     def unwatch(self, ref: ActorRef[Any]) -> None:
         """Stop being told when another actor stops.
 
-        Harmless if this actor was not watching it, and it does not retract a
-        `Terminated` already queued: by then the fact is true.
+        Harmless if this actor was not watching it. It does not retract a
+        `Terminated` that is already queued, since by then it is true.
 
         Args:
             ref: The actor to stop watching.
@@ -643,10 +641,10 @@ class ActorCell(Generic[T]):
     def child_failed(self, child: ActorRef[Any], error: Exception) -> None:
         """Take a child's escalated failure as this actor's own.
 
-        On the system lane, so it outranks whatever user traffic is queued, and
-        as an ordinary signal rather than an exception injected across a task
-        boundary: there is no clean way to do the latter, and its ordering
-        against this actor's in-flight message would be undefined.
+        It travels on the system lane, so it outranks any queued user traffic.
+        It is an ordinary signal rather than an exception injected across a
+        task boundary. There is no clean way to do that, and its order against
+        this actor's in-flight message would be undefined.
         """
         if not self._alive or self._terminating:
             self._log.warning(
@@ -682,9 +680,9 @@ class ActorCell(Generic[T]):
     async def stop(self, deadline: float) -> None:
         """Stop this actor and everything under it, racing one deadline.
 
-        The deadline is the whole tree's, not this cell's. A per-cell timeout
-        would make worst-case shutdown depth times timeout, which is not what
-        anyone configuring "shut down within ten seconds" means.
+        The deadline belongs to the whole tree, not to this cell. A per-cell
+        timeout would make worst-case shutdown the depth times the timeout,
+        which is not what "shut down within ten seconds" is meant to mean.
 
         Args:
             deadline: A point on the loop's clock, shared by every cell in the
@@ -801,10 +799,10 @@ class ActorCell(Generic[T]):
         """Turn a message that arrived through an adapter into one of this actor's.
 
         The result is validated like anything else delivered here. It has to
-        be: an adapter is the one path onto this lane that did not go through
-        the declared type on the way in, and a translation that produces the
-        wrong message is a bug worth hearing about rather than a message the
-        handler has to be defensive about.
+        be, because an adapter is the one path onto this lane that did not
+        check the declared type on the way in. A translation that produces the
+        wrong message is a bug worth hearing about, not something the handler
+        should have to guard against.
         """
         self._current = envelope.payload
         try:
@@ -825,8 +823,8 @@ class ActorCell(Generic[T]):
         """Deliver `PostStop` or `PreRestart`, whose result cannot change anything.
 
         A failure here is logged rather than supervised. The actor is already
-        stopping or already restarting, and running a second decision over the
-        first would leave the sequence in a state with no name.
+        stopping or restarting, and taking a second decision on top of the
+        first would leave the sequence in an undefined state.
         """
         try:
             await self._deliver_signal(signal)
@@ -877,11 +875,11 @@ class ActorCell(Generic[T]):
     async def _restart(self, error: Exception, strategy: SupervisorStrategy) -> None:
         """Rebuild this actor from the behavior it was spawned with.
 
-        Everything here is observable, and every line of it is a decision:
-        children are stopped and respawned by the re-run setup, the mailbox
-        survives with both lanes intact, the failed message does not, and
-        watchers are told nothing, because the ref, the path and the uid are
-        unchanged and only the incarnation behind them is new.
+        Every part of this is a deliberate choice. Children are stopped, and
+        respawned by the setup that runs again. The mailbox survives with both
+        lanes intact. The failed message does not. Watchers are told nothing,
+        because the ref, the path and the uid are unchanged, and only the
+        incarnation behind them is new.
         """
         if not self._within_restart_limit(strategy):
             self._log.error(
@@ -925,8 +923,8 @@ class ActorCell(Generic[T]):
     def _within_restart_limit(self, strategy: SupervisorStrategy) -> bool:
         """Record this restart and say whether it is still inside the limit.
 
-        Timestamps are only kept when there is a limit to count them against,
-        so an actor restarting on an unlimited strategy for a month does not
+        Timestamps are kept only when there is a limit to count them against.
+        An actor restarting for a month under an unlimited strategy does not
         accumulate a month of them.
         """
         self._restart_count += 1
@@ -943,11 +941,11 @@ class ActorCell(Generic[T]):
     async def _backoff(self, seconds: float) -> bool:
         """Wait out a backoff window, staying responsive to a stop.
 
-        The cell stops dequeuing user messages and its mailbox keeps filling:
-        the actor is absent, not dead, and `tell` stays total. On an unbounded
-        mailbox a long window is therefore a memory risk proportional to
-        inbound rate times window, which is why the docs recommend a bounded
-        mailbox for actors that back off.
+        The cell stops taking user messages and its mailbox keeps filling. The
+        actor is absent, not dead, and `tell` stays total. On an unbounded
+        mailbox a long window therefore costs memory in proportion to the
+        inbound rate times the window, which is why the docs recommend a
+        bounded mailbox for actors that back off.
 
         Args:
             seconds: How long to wait.
@@ -976,9 +974,9 @@ class ActorCell(Generic[T]):
 
     async def _escalate(self, error: Exception) -> None:
         """Stop, and make this failure the parent's own."""
-        # A note rather than a wrapper exception: the chain reads in the
-        # traceback of the original error, which is the thing anyone debugging
-        # this actually wants, and nothing has to unwrap anything.
+        # A note rather than a wrapper exception. The chain then reads in the
+        # traceback of the original error, which is what anyone debugging this
+        # wants, and nothing has to be unwrapped.
         error.add_note(f"escalated from {self._path}")
         parent = self._parent
         if parent is not None:
@@ -988,11 +986,11 @@ class ActorCell(Generic[T]):
     async def _fail_the_system(self, error: Exception) -> None:
         """End the system, because a failure reached a guardian.
 
-        A guardian is the top of the tree, so an escalation that arrives here
+        A guardian is the top of the tree, so an escalation that reaches here
         has run out of actors willing to take responsibility for it. Carrying
-        on with a silently missing subtree is worse than stopping: the service
+        on with a subtree silently missing is worse than stopping. The service
         embedding tapio awaits `when_terminated`, sees the cause, and decides
-        whether to exit or rebuild, which is where that decision belongs.
+        whether to exit or rebuild. That decision belongs to it.
         """
         error.add_note(f"escalated to {self._path}")
         self._log.error(
@@ -1016,8 +1014,8 @@ class ActorCell(Generic[T]):
     async def _become(self, nxt: Behavior[T], envelope: Envelope) -> None:
         """Apply what a handler returned.
 
-        The cell's declared message type is fixed at spawn: it is the contract
-        every ref to this actor was validated against, so switching behaviors
+        The cell's declared message type is fixed at spawn. It is the contract
+        every ref to this actor was validated against, so switching behavior
         changes what the actor does, never what it accepts.
         """
         directive = directive_of(nxt)
@@ -1050,17 +1048,17 @@ class ActorCell(Generic[T]):
     ) -> Behavior[T]:
         """Unwrap supervision and run deferred construction until a real behavior.
 
-        Both wrappers are peeled in one loop because either can enclose the
-        other: `supervise(setup(...))` and `setup` returning a supervised
-        behavior are both things people write.
+        Both wrappers are unwrapped in one loop, because either can enclose
+        the other. People write `supervise(setup(...))`, and they also write a
+        `setup` that returns a supervised behavior.
 
         Args:
             behavior: What to evaluate.
-            keep_supervisors: Keep the strategies already in force when the new
-                behavior declares none. Set when a handler returned a behavior,
-                since supervision belongs to the actor rather than to whichever
-                behavior it currently holds; left off at start and at restart,
-                where the strategies are being established.
+            keep_supervisors: Keep the strategies already in force when the
+                new behavior declares none. Set when a handler returned a
+                behavior, because supervision belongs to the actor and not to
+                the behavior it currently holds. Left off at start and at
+                restart, where the strategies are being established.
 
         Returns:
             The behavior the actor will run.
@@ -1098,8 +1096,8 @@ class ActorCell(Generic[T]):
         """Run the stop hook, release children, and mark this cell terminated.
 
         Synchronous on purpose. It runs from the loop's `finally`, including
-        when the task is being cancelled, and awaiting anything there would
-        risk never completing the very sequence that releases the actor.
+        while the task is being cancelled, and awaiting anything there could
+        leave the sequence that releases the actor unfinished.
         """
         if self._terminated.done():
             return
@@ -1124,9 +1122,8 @@ class ActorCell(Generic[T]):
     def _deregister_refs(self) -> None:
         """Take this actor and its adapters out of the ref registry.
 
-        A registry that outlives what it names is the same leak death watch
-        exists to prevent, one layer down: an entry left behind would let a
-        stale ref address whoever occupies that path next.
+        An entry left behind would let a stale ref address whoever holds that
+        path next.
         """
         refs = self._runtime.refs
         refs.deregister(self._path)
@@ -1137,9 +1134,9 @@ class ActorCell(Generic[T]):
     def _release_watches(self) -> None:
         """Tell the watchers, and leave nothing behind in the watched.
 
-        Both directions matter for the same reason: a registry that outlives
-        the actor it names is the leak this feature exists to save users from
-        writing themselves.
+        Both directions matter for the same reason. A map that outlives the
+        actor it names is a leak, which is what death watch exists to save
+        users from writing themselves.
         """
         for watcher in list(self._watchers.values()):
             watcher.notify_terminated(self._ref)
@@ -1163,8 +1160,8 @@ class ActorCell(Generic[T]):
         """The buffer this actor stashes into, created once and then kept.
 
         Created on the first evaluation and reused by every incarnation after
-        it, so a restart cannot silently resize the buffer and the cell always
-        knows which one to empty.
+        it, so a restart cannot resize the buffer and the cell always knows
+        which one to empty.
         """
         if self._stash is None:
             self._stash = StashBuffer(capacity)
@@ -1173,10 +1170,10 @@ class ActorCell(Generic[T]):
     def _unstash(self, buffer: StashBuffer[T]) -> None:
         """Put everything held back at the head of the user lane.
 
-        In arrival order, ahead of whatever queued up while the actor was not
-        ready, and the actor stays an ordinary actor throughout: the messages
-        go through the receive loop one at a time, so signals still outrank
-        them and a stop arriving mid-replay is honoured.
+        They go back in arrival order, ahead of whatever queued up while the
+        actor was not ready. The actor stays an ordinary actor throughout: the
+        messages pass through the receive loop one at a time, so signals still
+        outrank them and a stop arriving mid-replay is honoured.
         """
         for message in reversed(buffer.take_all()):
             self._mailbox.put_front(message)
@@ -1184,26 +1181,26 @@ class ActorCell(Generic[T]):
     def _discard_stash(self) -> None:
         """Empty the stash, accounting for what it held.
 
-        A restart clears it because messages held by the state that just failed
-        are not the new state's to answer, and a stop clears it because there
-        is nobody left to replay them. Neither is a reason to lose them
+        A restart clears it, because messages held by the state that just
+        failed are not the new state's to answer. A stop clears it, because
+        there is nobody left to replay them. Neither is a reason to lose them
         silently.
         """
         if self._stash is None:
             return
         for message in self._stash.take_all():
-            # Its own reason rather than the mailbox's: a message that was
-            # accepted and then put aside by the actor is a different story
-            # from one that never got in, and the sender may care which.
+            # Its own reason rather than the mailbox's. A message the actor
+            # accepted and then put aside is a different case from one that
+            # never got in, and the sender may care which.
             self._dead_letter(message, DeadLetterReason.STASH_DISCARDED)
 
     def _dead_letter(self, message: Message, reason: str) -> None:
         """Account for a message that had nowhere to go.
 
-        A message that was travelling inside a wrapper, through an adapter or
-        out to a peer, is reported as what its sender sent. The wrapper is a
-        detail of how it travelled, and a subscriber matching on message types
-        should not have to know about one.
+        A message travelling inside a wrapper, through an adapter or out to a
+        peer, is reported as what its sender sent. The wrapper is only how it
+        travelled, and a subscriber matching on message types should not have
+        to know about it.
         """
         if isinstance(message, Carrier):
             message = message.payload
@@ -1216,9 +1213,9 @@ class ActorCell(Generic[T]):
     def _unreachable_reason(self) -> str:
         """Say why this actor could not take a message.
 
-        A stopped actor and a stopped system are different diagnoses, and the
-        sender usually cares which: one is an ordering bug in the application,
-        the other is a send that outlived its runtime.
+        A stopped actor and a stopped system are different problems, and the
+        sender usually cares which. One is an ordering bug in the application.
+        The other is a send that outlived its runtime.
         """
         if self._runtime.terminated:
             return DeadLetterReason.SYSTEM_TERMINATED

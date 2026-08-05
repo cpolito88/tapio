@@ -1,10 +1,4 @@
-"""Stash: holding messages an actor is not ready for, and replaying them.
-
-The lesson of the whole feature is in the ordering assertions: what was held
-comes back in arrival order and ahead of what queued up since, and the actor
-stays an ordinary actor for the whole replay, so a signal still outranks the
-backlog.
-"""
+"""Tests for the stash: holding messages aside, and replaying them."""
 
 import asyncio
 
@@ -50,9 +44,9 @@ def loader(
 ) -> Behavior[Traffic]:
     """An actor that stashes work until it is told it is ready.
 
-    The shape every "load state on startup" actor has: it cannot answer yet,
-    it will not drop what arrives, and it will not block its own receive loop
-    waiting.
+    This is the shape every "load state on startup" actor has. It cannot
+    answer yet, it will not drop what arrives, and it will not block its own
+    receive loop waiting.
     """
 
     def build(stash: StashBuffer[Traffic]) -> Behavior[Traffic]:
@@ -103,11 +97,11 @@ async def test_stashed_work_is_replayed_in_order(system: ActorSystem):
 
 
 async def test_replayed_work_goes_ahead_of_what_queued_since(system: ActorSystem):
-    """The reason it is the front of the mailbox and not the back.
+    """Why replay goes to the front of the mailbox and not the back.
 
     Messages held while the actor was not ready arrived first, so they are
-    handled first. Putting them behind newer traffic would reorder the very
-    work the stash exists to preserve.
+    handled first. Putting them behind newer traffic would reorder the work
+    the stash exists to preserve.
     """
     seen: list[str] = []
     ref = system.spawn(loader(seen), name="loader")
@@ -122,13 +116,13 @@ async def test_replayed_work_goes_ahead_of_what_queued_since(system: ActorSystem
 
 
 async def test_a_stop_arriving_mid_replay_is_honoured():
-    """The reason a replay goes through the mailbox instead of a loop.
+    """Why a replay goes through the mailbox instead of a loop.
 
     Handing the held messages to the behavior one after another inside the
-    unstash would make the replay uninterruptible: the actor would owe the
+    unstash would make the replay uninterruptible. The actor would owe the
     whole backlog before it could read its own system lane. Putting them on
-    the user lane instead leaves it an ordinary actor, so a stop still
-    outranks work it is no longer going to do.
+    the user lane leaves it an ordinary actor, so a stop still outranks work
+    it is no longer going to do.
     """
     seen: list[str] = []
     replaying = asyncio.Event()
@@ -159,8 +153,8 @@ async def test_a_stop_arriving_mid_replay_is_honoured():
     await replaying.wait()
     await running.terminate()
 
-    # It stopped rather than working through all twenty, and the ones it never
-    # got to are accounted for as undelivered.
+    # It stopped instead of working through all twenty, and the ones it never
+    # reached are reported as undelivered.
     assert 0 < len(seen) < 20
 
 
@@ -174,8 +168,8 @@ async def test_overflow_raises_in_the_stashing_actor(system: ActorSystem):
     for item in (1, 2, 3):
         ref.tell(Work(item=item))
 
-    # The third overflows, the actor has no strategy for it, so it stops. The
-    # two it was holding are accounted for rather than dropped.
+    # The third overflows and the actor has no strategy for it, so it stops.
+    # The two it was holding are reported rather than dropped.
     await eventually(lambda: len(letters) >= 2)
     reasons = {letter.reason for letter in letters}
 
@@ -214,11 +208,11 @@ def test_the_buffer_holds_the_object_it_was_given():
 
 
 async def test_a_restart_clears_the_stash(system: ActorSystem):
-    """The M4 restart table's stash row, which had no stash to assert on.
+    """The restart rule for the stash, asserted here beside the feature.
 
     Messages held by the state that just failed are not the new state's to
-    answer: it never saw them arrive and has no idea what it was about to do
-    with them. They are discarded, and published rather than dropped.
+    answer. It never saw them arrive. They are discarded, and published as
+    dead letters rather than dropped.
     """
     seen: list[str] = []
     letters: list[DeadLetter] = []

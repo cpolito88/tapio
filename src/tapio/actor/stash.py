@@ -1,22 +1,21 @@
 """Stash: holding messages an actor is not ready for yet.
 
 An actor that has to load something before it can work has two bad options and
-one good one. Dropping what arrives in the meantime loses work. Blocking the
-receive loop on the load makes the actor unable to answer anything, including
-a stop. The good one is to accept the messages, put them aside, and replay them
+one good one. Dropping what arrives meanwhile loses work. Blocking the receive
+loop on the load leaves the actor unable to answer anything, including a stop.
+The good option is to accept the messages, put them aside, and replay them
 once the state they need exists.
 
-Replay is the part with a decision in it. `unstash_all` puts the held messages
-back at the *front* of the user lane rather than handing them to the behavior
-one by one: the actor stays a normal actor for the whole replay, so signals
-still outrank the backlog and a stop arriving mid-replay is honoured rather
-than queued behind work the actor is no longer going to do.
+Replay is where the decision is. `unstash_all` puts the held messages back at
+the front of the user lane rather than handing them to the behavior one by
+one, so the actor stays a normal actor throughout: signals still outrank the
+backlog, and a stop arriving mid-replay is honoured rather than queued behind
+work the actor will no longer do.
 
-A stash is bounded, always. It is a buffer fed by traffic the actor is by
-definition not keeping up with, so an unbounded one is a slow memory leak with
-a plausible excuse. Overflow raises in the actor that stashed, which is the one
-place with the context to decide whether the right answer is to drop the
-message, reply with a rejection, or fail.
+A stash is always bounded. It is fed by traffic the actor is not keeping up
+with, so an unbounded one is a slow memory leak. Overflow raises in the actor
+that stashed, which is the only place with the context to decide whether to
+drop the message, reject it, or fail.
 """
 
 from typing import Generic, TypeVar
@@ -33,10 +32,10 @@ T = TypeVar("T", bound=Message)
 class StashBuffer(Generic[T]):
     """The handle `Behaviors.with_stash` gives a behavior.
 
-    One buffer serves every incarnation of its actor, and a restart empties it
-    rather than replacing it: messages stashed by the state that just failed
-    are not the new state's to answer, and what is discarded is published as a
-    dead letter rather than dropped.
+    One buffer serves every incarnation of its actor. A restart empties it
+    rather than replacing it, because messages stashed by the state that just
+    failed are not the new state's to answer. What is discarded is published
+    as a dead letter, not dropped.
     """
 
     __slots__ = ("_capacity", "_held")
@@ -84,9 +83,10 @@ class StashBuffer(Generic[T]):
                 replayed is the object the sender passed.
 
         Raises:
-            StashOverflowError: If the buffer is full. Raised in the actor that
-                stashed, since only it knows whether to shed the message,
-                reject it, or let the failure become a supervision decision.
+            StashOverflowError: If the buffer is full. It is raised in the
+                actor that stashed, because only that actor knows whether to
+                drop the message, reject it, or let the failure become a
+                supervision decision.
         """
         if self.is_full:
             msg = (
@@ -105,8 +105,8 @@ class StashBuffer(Generic[T]):
 
         Args:
             behavior: What the actor becomes for the replay and afterwards.
-                Usually the state that is now ready, which is the whole reason
-                the messages were held.
+                Usually the state that is now ready, which is why the messages
+                were held.
 
         Returns:
             A behavior to return from a handler.
@@ -131,8 +131,8 @@ class StashBuffer(Generic[T]):
 class UnstashBehavior(Behavior[T]):
     """What `unstash_all` returns: a behavior with a replay attached.
 
-    The cell unwraps it while evaluating, exactly as it unwraps `setup` and
-    `supervise`, so nothing that handles messages ever sees one.
+    The cell unwraps it while evaluating, as it does `setup` and `supervise`,
+    so nothing that handles messages ever sees one.
     """
 
     def __init__(self, buffer: StashBuffer[T], behavior: Behavior[T]) -> None:

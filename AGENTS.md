@@ -54,10 +54,14 @@ you are already editing.
   `[Name][tapio.module.Name]`.
 - **No blanket `from __future__ import annotations`.** The floor is Python
   3.11. Quote the few genuinely forward references instead.
-- **Plain sentences.** Subject, verb, object. No inverted clauses, no
-  aphorisms, no sentence written for its cadence. This applies hardest to
-  tests, where a module docstring is one line and a comment exists only where
-  the code is genuinely surprising. Say the fact and stop.
+- **Plain English, everywhere.** Docstrings, comments, `docs/`, the README,
+  commit messages and pull request bodies. Subject, verb, object. One idea per
+  sentence. No inverted clauses, no aphorisms, no sentence written for its
+  cadence, nothing a reader has to decode before they can use it. Say the fact
+  and stop. Keep the reasons: *why* a decision was made is worth a sentence,
+  it just has to be a plain one. In tests this is strictest, since a test is
+  usually read while it is failing: a one-line module docstring, and a comment
+  only where the code is genuinely surprising.
 - Google-style docstrings on every public module, class, and function. Ruff
   enforces the convention; mypy runs `--strict` over `src` and `examples`.
 - Explain *why* in comments, not *what*. The code says what it does.

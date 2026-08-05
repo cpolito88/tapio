@@ -1,28 +1,25 @@
 """Routers: one address in front of several identical actors.
 
 A pool router spawns its routees as children and forwards what it is told to
-one of them. That is all it is, and the reason it is worth having is that the
-alternative people write by hand gets three things wrong: it keeps the routee
-refs in a list that nothing prunes when one dies, it spreads work with a
-counter that nobody guards, and it has no story for what happens when the last
-routee stops.
+one of them. It is worth having because the version people write by hand gets
+three things wrong: it keeps the routee refs in a list that nothing prunes
+when one dies, it spreads work with an unguarded counter, and it has no answer
+for what happens when the last routee stops.
 
-Selection sits behind a protocol so that random, broadcast or a
-least-recently-used strategy are additive rather than a rewrite. Round-robin is
-the only one shipped: it is the one that needs no information the router does
-not already have, and a strategy that guesses at load without measuring it is
+Selection sits behind a protocol, so random, broadcast or least-recently-used
+strategies can be added without a rewrite. Round-robin is the only one
+shipped, because it is the only one that needs no information the router does
+not already have. A strategy that guesses at load without measuring it is
 worse than the obvious one.
 
-A router is a conduit, not an origin. Two consequences fall out of that and
-both are decisions:
+A router is a conduit, not an origin. Two decisions follow from that:
 
-* A routee that cannot take a message is a *recipient* error, so the message
+* A routee that cannot take a message is a recipient error, so the message
   becomes a dead letter rather than a failure. The router did not write the
-  message and has nothing to do with it, and failing would take down a whole
-  pool because one member of it was busy.
+  message, and failing would take down a whole pool because one member was
+  busy.
 * A routee that stops leaves the pool, and when the last one goes the router
-  stops too. A pool with nothing in it is an address that silently swallows
-  work, which is the failure mode this module exists to prevent.
+  stops too. An empty pool is an address that silently swallows work.
 """
 
 from collections.abc import Sequence
@@ -48,16 +45,17 @@ T = TypeVar("T", bound=Message)
 class RoutingStrategy(Protocol):
     """Chooses which routee a message goes to.
 
-    Called on the router's own receive loop, one message at a time, so an
-    implementation holding state needs no locking and must not block.
+    Called on the router's own receive loop, one message at a time. An
+    implementation holding state therefore needs no locking, and it must not
+    block.
     """
 
     def select(self, routees: Sequence[ActorRef[T]], message: Message) -> ActorRef[T]:
         """Pick a routee.
 
         Args:
-            routees: The live routees, never empty. The pool shrinks as routees
-                stop, so what is passed is only the pool as it is right now.
+            routees: The live routees, never empty. The pool shrinks as
+                routees stop, so this is the pool as it is right now.
             message: The message being routed, for a strategy that reads it.
 
         Returns:
@@ -69,9 +67,9 @@ class RoutingStrategy(Protocol):
 class RoundRobin:
     """Hand each message to the next routee in turn.
 
-    The counter is kept rather than the position, so removing a dead routee
-    shifts the rotation instead of restarting it: an actor that has just
-    received work does not immediately receive more because the pool shrank.
+    It keeps a counter rather than a position, so removing a dead routee
+    shifts the rotation instead of restarting it. An actor that has just
+    received work does not receive more straight away because the pool shrank.
     """
 
     __slots__ = ("_sent",)
@@ -114,8 +112,8 @@ class _PoolBehavior(ReceivingBehavior[T]):
             routee.tell(message)
         except MailboxFullError:
             # A `FAIL` routee at capacity. The router is a conduit, so this is
-            # a recipient error like any other and the message is accounted
-            # for; raising here would fail the whole pool over one busy member.
+            # a recipient error like any other. Raising here would fail the
+            # whole pool because one member was busy.
             ctx.log.warning("%s is full; the message could not be routed", routee.path)
             self._office.publish(message, routee.path, DeadLetterReason.MAILBOX_FULL)
         return Behaviors.same()
@@ -135,7 +133,7 @@ class _PoolBehavior(ReceivingBehavior[T]):
                 "routee %s stopped; %d left", signal.ref.path, len(self._routees)
             )
             return Behaviors.same()
-        # Info rather than a warning: an emptied pool is how every router ends,
+        # Info rather than a warning. An empty pool is how every router ends,
         # including in an ordinary shutdown where the children stop first.
         ctx.log.info("every routee has stopped; stopping the router with them")
         return Behaviors.stopped()
@@ -162,19 +160,18 @@ class Routers:
         workers = ctx.spawn(Routers.pool(8, worker()), name="workers")
         ```
 
-        The router accepts exactly what a routee accepts, read from the routees
-        it spawned rather than declared a second time, so the two cannot drift
-        apart.
+        The router accepts exactly what a routee accepts. It reads the type
+        from the routees it spawned rather than being told it again, so the
+        two cannot drift apart.
 
-        Give a stateful routee as `Behaviors.setup(...)` or another factory.
-        Every routee is started from the same object, so one already-built
-        behavior holding state would be shared by the whole pool, which is not
-        a pool at all.
+        Pass a stateful routee as `Behaviors.setup(...)` or another factory.
+        Every routee starts from the same object, so an already-built behavior
+        holding state would be shared by the whole pool.
 
         The router is the routees' parent, so their failures are supervised
-        the ordinary way: wrap `behavior` in `Behaviors.supervise(...)` and a
+        the ordinary way. Wrap `behavior` in `Behaviors.supervise(...)` and a
         routee that fails is restarted in place, with the pool unchanged.
-        Without one it stops and leaves the pool, and when the last routee
+        Without that it stops and leaves the pool, and when the last routee
         goes the router stops too.
 
         Args:
@@ -182,10 +179,10 @@ class Routers:
             behavior: What each routee does.
             strategy: How to choose between them. Round-robin when omitted.
             routee_mailbox: Capacity and overflow behaviour for each routee.
-                The system default when omitted. A bounded routee that fills up
-                dead-letters what it cannot take rather than failing the pool,
-                so backpressure worth having belongs on the router's own
-                mailbox, where a sender can `offer` into it and wait.
+                The system default when omitted. A bounded routee that fills
+                up dead-letters what it cannot take, rather than failing the
+                pool. Put backpressure on the router's own mailbox instead,
+                where a sender can `offer` into it and wait.
 
         Returns:
             A behavior to spawn.
@@ -215,9 +212,9 @@ class Routers:
 def _pool_msg_type(routees: Sequence[ActorRef[Any]]) -> MessageType:
     """Take the router's message type from the routees it just spawned.
 
-    Reading it off a started routee rather than off the behavior handles the
-    case that matters: a `Behaviors.setup` declares no type until it has run,
-    and by here it has.
+    It reads the type off a started routee rather than off the behavior,
+    because a `Behaviors.setup` declares no type until it has run. By this
+    point it has.
     """
     first = routees[0]
     msg_type = first.cell.msg_type if isinstance(first, LocalActorRef) else None
@@ -234,9 +231,9 @@ def _office(ctx: ActorContext[Any]) -> DeadLetterOffice:
     """Find the system's dead letter office from inside a behavior.
 
     A router forwards messages it did not write, so it needs somewhere to
-    account for the ones it could not hand on. Nothing else in the library
+    account for the ones it could not pass on. Nothing else in the library
     needs this, which is why it is a function here rather than a member of
-    `ActorContext`: a user's actor dead-letters by sending to an actor that has
-    stopped, not by publishing.
+    `ActorContext`. A user's actor produces dead letters by sending to an
+    actor that has stopped, not by publishing them.
     """
     return cast(LocalActorRef[Any], ctx.self_ref).cell.runtime.dead_letters

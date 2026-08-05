@@ -1,15 +1,15 @@
 """An actor that holds mutable state, written in the class-based style.
 
-Concepts: `AbstractBehavior` for an actor with fields, a union message type, and
-answering a query by sending to the `reply_to` address the query carried.
+Concepts: `AbstractBehavior` for an actor with fields, a union message type,
+and answering a query by sending to the `reply_to` address it carried.
 
-The count is an ordinary attribute, mutated in place with no lock anywhere. One
-actor processes one message at a time, so the mailbox already provides the
+The count is an ordinary attribute, changed in place with no lock anywhere.
+One actor handles one message at a time, so the mailbox already gives the
 mutual exclusion a lock would.
 
 What to watch in the output: the reply reports 3, not 1. Messages sent to one
 actor from one place arrive in order, so all three increments are applied
-before the query behind them is.
+before the query behind them.
 
 Run it with:
 
@@ -47,8 +47,8 @@ class GetCount(Message):
 class Counter(AbstractBehavior[Increment | GetCount]):
     """Counts, and reports the count when asked.
 
-    The message type is read off the type parameter, so nothing has to repeat
-    it, and a message of any other type is refused at the sender rather than
+    The message type is read from the type parameter, so nothing has to repeat
+    it. A message of any other type is refused at the sender rather than
     landing in this mailbox.
     """
 
@@ -84,8 +84,8 @@ async def main() -> int:
 
     async with ActorSystem("counter") as system:
         readout = system.spawn(Behaviors.receive_message(on_count), name="readout")
-        # Deferred construction: the factory runs when the actor starts, which
-        # is what gives the behavior its context, and what a restart re-runs.
+        # Deferred construction. The factory runs when the actor starts, which
+        # is what gives the behavior its context, and a restart runs it again.
         counter = system.spawn(Behaviors.setup(Counter), name="counter")
 
         counter.tell(Increment())

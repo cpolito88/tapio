@@ -89,8 +89,8 @@ async def test_a_name_is_free_again_once_its_actor_stops(system: ActorSystem):
 
     second = system.spawn(idle(), name="worker")
 
-    # Same name, new incarnation: the uid is what keeps a stale ref from
-    # silently addressing the newcomer.
+    # Same name, new incarnation. The uid is what stops a stale ref from
+    # addressing the new actor.
     assert second.path.name == "worker"
     assert second.path.uid != first.path.uid
     assert second != first
@@ -154,8 +154,8 @@ async def test_a_wedged_actor_is_cancelled_at_the_deadline(
                 await asyncio.sleep(30)
                 return Behaviors.same()
 
-            # Wedge every actor in the chain, not just the top one, so the
-            # measurement below is about the deadline rather than one slow
+            # Block every actor in the chain, not just the top one, so the
+            # measurement below is about the deadline and not one slow
             # handler.
             ctx.self_ref.tell(Increment())
             return Behaviors.receive_message(on_message)
@@ -173,7 +173,7 @@ async def test_a_wedged_actor_is_cancelled_at_the_deadline(
             await system.terminate()
         elapsed = loop.time() - started
 
-    # One deadline for the tree, not one per cell: depth must not multiply it.
+    # One deadline for the tree, not one per cell. Depth must not multiply it.
     assert elapsed < depth * 0.2
     assert "did not stop within the shutdown deadline" in caplog.text
     assert str(root.path) in caplog.text

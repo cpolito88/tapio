@@ -1,11 +1,4 @@
-"""Ask: the reply that arrives, and the four ways one does not.
-
-Most of this file is about the failures rather than the happy path, because the
-happy path is one line of sugar over a `reply_to` field and the failures are
-where an ask earns its keep. Three of them exist so that a caller never waits
-out a timeout for an answer that provably is not coming, and the fourth is what
-happens to a reply that arrives once nobody is listening.
-"""
+"""Tests for ask: the reply that arrives, and the four ways one does not."""
 
 import asyncio
 from datetime import timedelta
@@ -84,9 +77,9 @@ def wrong_replier() -> Behavior[Query]:
     """Replies with a `Surprise`, which is not what the asker declared."""
 
     async def on_message(message: Query) -> Behavior[Query]:
-        # The ref is typed ActorRef[Answer], so this is a type error a checker
-        # catches at the call site. The runtime has to catch it too, since a
-        # responder can always be wrong at runtime.
+        # The ref is typed ActorRef[Answer], so a type checker catches this at
+        # the call site. The runtime has to catch it too, because a responder
+        # can always be wrong at runtime.
         message.reply_to.tell(Surprise())  # type: ignore[arg-type]
         return Behaviors.same()
 
@@ -123,8 +116,8 @@ def cell_of(ref: ActorRef[object]) -> object:
 async def test_ask_returns_the_reply_object(system: ActorSystem):
     ref = system.spawn(responder(), name="responder")
 
-    # The cells belong to the fixture, which stops them; what this block is
-    # asserting is that the ask itself adds nothing to them.
+    # The cells belong to the fixture, which stops them. What this asserts is
+    # that the ask itself leaves nothing behind on them.
     with assert_no_leaked_tasks():
         reply = await ref.ask(
             lambda reply_to: Query(value=7, reply_to=reply_to), expect=Answer
@@ -188,11 +181,11 @@ async def test_the_default_timeout_comes_from_settings():
 
 
 async def test_timed_out_asks_leak_no_tasks_or_futures(system: ActorSystem):
-    """The stress case: a hundred asks that all time out, and nothing left over.
+    """A hundred asks that all time out, leaving nothing behind.
 
-    Futures are the half that a task check cannot see, so the target's watcher
-    set is asserted too: one entry left behind per ask would be a leak that
-    grows with traffic and never shows up as a pending task.
+    A task check cannot see futures, so the target's watcher set is asserted
+    too. One entry left behind per ask would be a leak that grows with traffic
+    and never shows up as a pending task.
     """
     ref = system.spawn(responder(), name="quiet")
     cell = cell_of(ref)
@@ -217,9 +210,9 @@ async def test_timed_out_asks_leak_no_tasks_or_futures(system: ActorSystem):
 async def test_a_late_reply_dead_letters(system: ActorSystem):
     """The reply that arrives after the ask gave up resolves nothing.
 
-    This is the case the promise has to be settled for: without it a future
-    nobody is awaiting would be completed, and the reply would vanish instead
-    of being accounted for.
+    This is why the promise is settled. Without it, a future nobody is
+    awaiting would be completed, and the reply would vanish instead of being
+    recorded.
     """
     seen: list[DeadLetter] = []
     system.dead_letters.subscribe(seen.append)
@@ -320,7 +313,7 @@ async def test_a_reply_of_the_wrong_type_raises_in_the_asker(system: ActorSystem
 async def test_a_wrong_reply_does_not_fail_the_responder(system: ActorSystem):
     """The responder's mistake is the asker's error, not the responder's death.
 
-    Raising into the responder would turn a caller's disappointment into a
+    Raising into the responder would turn the caller's problem into a
     supervision decision about an actor that did its job as far as it knew.
     """
     ref = system.spawn(wrong_replier(), name="confused")
@@ -349,9 +342,9 @@ async def test_a_tampered_reply_is_rejected_on_arrival(system: ActorSystem):
 async def test_a_reply_from_another_thread_resolves_the_ask(system: ActorSystem):
     """Replying is thread-safe, like every other `tell`.
 
-    An actor that offloads work to a thread and answers from there is the case
-    this exists for: the future is resolved on the system's loop even though
-    nothing about the reply happened there.
+    This exists for an actor that offloads work to a thread and answers from
+    there. The future is resolved on the system's loop even though nothing
+    about the reply happened there.
     """
 
     async def on_message(message: Query) -> Behavior[Query]:
