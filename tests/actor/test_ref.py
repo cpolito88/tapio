@@ -1,9 +1,4 @@
-"""`ActorRef` as a Pydantic field.
-
-A model with an `ActorRef` field must validate from a live ref and dump to the
-ref's full string form. The dump-then-validate direction needs a system to
-resolve against, and says so when there is none.
-"""
+"""Tests for `ActorRef` as a Pydantic field."""
 
 import pytest
 from pydantic import ValidationError
@@ -36,9 +31,9 @@ def test_a_ref_serializes_to_a_path_string_in_json_mode(ref):
 
 
 def test_a_model_holding_a_ref_does_not_round_trip_outside_a_system(ref):
-    # The documented asymmetry: a dump succeeds anywhere, and validating it
-    # back needs the system that would resolve the ref. Worth an explicit test
-    # because it reads as a bug otherwise.
+    # A dump works anywhere, and validating it back needs the system that
+    # would resolve the ref. Worth its own test, because it looks like a bug
+    # otherwise.
     dumped = Greet(whom="world", count=1, reply_to=ref).model_dump()
     with pytest.raises(RefResolutionError, match="without a system"):
         Greet.model_validate(dumped)
@@ -56,16 +51,16 @@ def test_a_non_ref_non_string_is_an_ordinary_validation_error():
 
 
 def test_validation_does_not_check_liveness(ref):
-    # Deliberate: whether the target is alive is a race, and a dead target is
-    # not a schema error. There is nothing to assert but the absence of a
-    # check, so this pins the intent.
+    # Deliberate. Checking whether the target is alive would be a race, and a
+    # dead target is not a schema error. There is nothing to assert but the
+    # absence of a check, so this records the intent.
     assert Greet(whom="w", count=1, reply_to=ref).reply_to is ref
 
 
 def test_the_type_parameter_is_not_checked_at_runtime():
-    # The documented consequence of erasure: ActorRef[Greeted] and
-    # ActorRef[Increment] validate identically. A type checker catches the
-    # mismatch statically; the runtime check lives on the receiving actor.
+    # Generics are erased, so ActorRef[Greeted] and ActorRef[Increment]
+    # validate the same. A type checker catches the mismatch statically, and
+    # the runtime check lives on the receiving actor.
     wrong: ActorRef[Message] = ActorRef(ActorPath.root("sys").child("elsewhere"))
     msg = Greet(whom="w", count=1, reply_to=wrong)  # type: ignore[arg-type]
     assert msg.reply_to is wrong

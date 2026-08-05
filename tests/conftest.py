@@ -1,8 +1,8 @@
-"""Shared fixtures and fakes.
+"""Fixtures and fakes shared by every test package.
 
-`FakeContext` exists for the tests that exercise behaviors without a runtime.
-Anything that needs a live tree uses the `system` fixture instead, which
-terminates whatever the test left running.
+`FakeContext` is for tests that exercise behaviors with no runtime. A test
+that needs a live tree uses the `system` fixture, which terminates whatever
+the test leaves running.
 """
 
 from collections.abc import AsyncIterator, Callable

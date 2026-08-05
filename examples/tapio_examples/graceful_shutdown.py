@@ -3,22 +3,20 @@
 Concepts: a real signal handler on the event loop, `system.terminate()`, the
 bottom-up drain, and `PostStop` as the place a resource is released.
 
-The signal is genuine: the handler is installed with `add_signal_handler` and
-the process sends itself SIGINT, so the wiring exercised here is the wiring a
-deployed service uses. Nothing about it is simulated, which is the point, since
-"we handle SIGINT" is exactly the claim that turns out to be false the first
-time a container is stopped.
+The signal is real. The handler is installed with `add_signal_handler` and the
+process sends itself SIGINT, so this exercises the same wiring a deployed
+service uses. Nothing is simulated, which matters, because "we handle SIGINT"
+is the claim that turns out to be false the first time a container is stopped.
 
-Shutdown is bottom-up and races one deadline for the whole tree rather than one
-per actor: worst-case shutdown tracks `shutdown_timeout` instead of multiplying
-by the depth of the tree. Each actor sees `PostStop` after its children have
-already seen theirs, so a connection pool held by a parent outlives the
+Shutdown is bottom-up, and the whole tree races one deadline rather than one
+per actor. Worst-case shutdown therefore follows `shutdown_timeout` instead of
+multiplying by the depth of the tree. Each actor sees `PostStop` after its
+children have seen theirs, so a connection pool held by a parent outlives the
 children still handing work back to it.
 
-`PostStop` is best effort, and the honest word is "usually": an actor still
-wedged in a handler when the deadline passes is cancelled, and may never see
-it. Release what must be released there, and do not make correctness depend on
-it running.
+`PostStop` is best effort. An actor still stuck in a handler when the deadline
+passes is cancelled and may never see it. Release what must be released there,
+but do not make correctness depend on it running.
 
 What to watch in the output: the two connections stop before the pool that
 owns them, and the pool's own line is last.
@@ -96,9 +94,9 @@ async def main() -> list[str]:
     loop = asyncio.get_running_loop()
 
     def on_sigint() -> None:
-        # Deliberately does no work beyond waking the shutdown: a signal
-        # handler runs outside every actor, and anything it touched directly
-        # would be state nobody is holding the mailbox for.
+        # It does nothing but wake the shutdown. A signal handler runs outside
+        # every actor, so anything it touched directly would be state no
+        # mailbox is protecting.
         lines.append("signal: SIGINT, shutting down")
         interrupted.set()
 

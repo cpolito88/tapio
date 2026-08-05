@@ -9,9 +9,9 @@ __all__ = ["ActorPath"]
 SCHEME: Final = "tapio"
 
 # Deliberately narrow. A path element appears in log lines and in the string
-# form below, so characters that would make either ambiguous are out: "/" and
-# "#" are structural, whitespace is unreadable, and a leading "$" is reserved
-# for generated names (spawn_anonymous).
+# form below, so anything that would make either ambiguous is excluded. "/"
+# and "#" are structural, whitespace is unreadable, and a leading "$" is
+# reserved for generated names (spawn_anonymous).
 _ELEMENT_RE: Final = re.compile(r"\A\$?[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 
@@ -21,10 +21,9 @@ class ActorPath:
     """An immutable position in one actor system's tree.
 
     The string form is `tapio://system/user/greeter#42`, where the fragment is
-    the incarnation uid. That uid distinguishes a restarted actor's ref from a
-    differently spawned one at the same path: a restart keeps both path and
-    uid, while a stop-then-respawn under the same name gets a new uid, so a
-    stale ref cannot silently address the newcomer.
+    the incarnation uid. A restart keeps both the path and the uid. Stopping
+    and respawning under the same name gets a new uid, so a stale ref cannot
+    address the new actor.
     """
 
     system: str
@@ -67,7 +66,7 @@ class ActorPath:
     def parent(self) -> Self:
         """The enclosing path. The root is its own parent.
 
-        The uid is dropped, since it identifies an incarnation of *this* actor
+        The uid is dropped, because it identifies an incarnation of this actor
         and says nothing about the parent's.
         """
         if self.is_root:

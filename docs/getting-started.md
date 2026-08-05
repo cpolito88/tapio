@@ -35,8 +35,8 @@ message it receives, and `Behaviors.same()` means "keep going, unchanged".
 ## An actor with state
 
 State is an ordinary attribute on a class-based behavior. There is no lock
-anywhere: one actor handles one message at a time, which is the mutual
-exclusion a lock would have given you.
+anywhere. One actor handles one message at a time, which gives the mutual
+exclusion a lock would have.
 
 ```python
 --8<-- "examples/tapio_examples/counter.py"
@@ -45,30 +45,30 @@ exclusion a lock would have given you.
 ## When an actor fails
 
 A failing handler does not raise into the sender. The exception never leaves
-the actor's own receive loop; it becomes a decision taken by whoever declared
-one, and the default decision is to stop. Restarting is what you ask for when
-you know a failure is transient:
+the actor's own receive loop. It becomes a decision, taken by whoever declared
+one, and the default is to stop. Ask for a restart when you know a failure is
+transient:
 
 ```python
 --8<-- "examples/tapio_examples/supervision_backoff.py"
 ```
 
 Three things about a restart are worth knowing before you rely on it. The
-behavior the actor was *spawned* with is re-evaluated, so children spawned in
-`setup` come back and children spawned in a message handler do not. The mailbox
-survives, both lanes, so work queued behind the failure is still there
-afterwards. And watchers hear nothing: the ref, path and uid are unchanged, and
-only the incarnation behind them is new.
+behavior the actor was spawned with is evaluated again, so children spawned in
+`setup` come back and children spawned in a message handler do not. The
+mailbox survives, both lanes, so work queued behind the failure is still there
+afterwards. And watchers hear nothing, because the ref, path and uid are
+unchanged and only the incarnation behind them is new.
 
 While an actor backs off it is absent rather than dead. `tell` stays total and
-its mailbox keeps filling, which on an unbounded mailbox is a memory risk
-proportional to inbound rate times window, so an actor that backs off usually
-wants a bounded one.
+its mailbox keeps filling. On an unbounded mailbox that costs memory in
+proportion to the inbound rate times the window, so an actor that backs off
+usually wants a bounded one.
 
 ## Knowing that an actor has stopped
 
-There is no "is it alive?" predicate, because every answer one could give is
-stale before the caller reads it. You are told instead:
+There is no "is it alive?" call, because the answer would be out of date
+before the caller could read it. You are told instead:
 
 ```python
 --8<-- "examples/tapio_examples/death_watch.py"
@@ -77,7 +77,7 @@ stale before the caller reads it. You are told instead:
 ## Escalating, and shutting down
 
 An actor that cannot fix a failure hands it to its parent, which can. If it
-reaches a guardian, nobody has taken responsibility for it: the system
+reaches a guardian, nobody has taken responsibility for it, so the system
 terminates and re-raises the cause from `when_terminated`.
 
 ```python
@@ -85,8 +85,8 @@ terminates and re-raises the cause from `when_terminated`.
 ```
 
 Ordinary shutdown drains the tree bottom-up against one deadline for the whole
-tree, so the worst case tracks `shutdown_timeout` rather than the depth of the
-tree:
+tree, so the worst case follows `shutdown_timeout` rather than the depth of
+the tree:
 
 ```python
 --8<-- "examples/tapio_examples/graceful_shutdown.py"
@@ -95,44 +95,44 @@ tree:
 ## Asking for an answer
 
 `ask` sends one message and awaits one reply. The request still carries a ref
-for the answer to come back to, exactly as it does above; what `ask` adds is
-that the ref is a promise rather than an actor, so the reply can be awaited
-instead of arranged for.
+for the answer to come back to, as it does above. What `ask` adds is that the
+ref is a promise rather than an actor, so the reply can be awaited instead of
+arranged for.
 
-`expect` is required, and it is not ceremony. A promise has no cell and so no
-declared message type of its own, and without one the request/response path
-would be the only delivery in the library with no type check on it. A reply of
-the wrong type raises `AskTypeError` in the caller rather than handing back a
-value whose static type is a lie.
+`expect` is required, and it matters. A promise has no cell and so no declared
+message type of its own. Without `expect`, request/response would be the only
+delivery in the library with no type check on it. A reply of the wrong type
+raises `AskTypeError` in the caller rather than handing back a value whose
+static type is a lie.
 
 The failures are the reason to read the example. A timeout is the expensive
-answer, so it is the last resort: an ask watches its target, and a target that
+answer, so it is the last resort. An ask watches its target, and a target that
 stops fails the ask at once instead of spending the deadline on an answer that
-provably is not coming.
+is never coming.
 
 ```python
 --8<-- "examples/tapio_examples/ask_timeout.py"
 ```
 
-Awaiting an ask inside a handler stops that actor reading its mailbox until the
-reply lands. That is occasionally what you want and usually not: an actor that
-asks and waits is an actor that cannot answer.
+Awaiting an ask inside a handler stops that actor reading its mailbox until
+the reply lands. That is sometimes what you want, but usually not: an actor
+that asks and waits cannot answer anyone else.
 
 ## Doing something later, and holding what you cannot do yet
 
 A timer sends the actor a message on its own user lane. That is the whole
-design: a tick is ordinary traffic, so it queues behind what is already there
+design. A tick is ordinary traffic, so it queues behind what is already there
 and can never re-enter a handler that is still running. Timers belong to the
-cell, not to the behavior, which is why they come from
-`Behaviors.with_timers` and why a restart cancels them: a tick scheduled by
-the incarnation that just failed must not arrive at the one replacing it.
+cell, not to the behavior, which is why they come from `Behaviors.with_timers`
+and why a restart cancels them. A tick scheduled by the incarnation that just
+failed must not reach the one replacing it.
 
 `start_fixed_delay` measures the gap from one send to the next, so an actor
 that falls behind simply gets fewer ticks. `start_fixed_rate` counts ticks off
-a fixed schedule and sends the missed ones back to back once a stall is over.
-The second is the one to think twice about, since the catch-up burst arrives
-at an actor that has just proved it is not keeping up, and it is the right
-choice when the promise really is a rate:
+a fixed schedule and sends the missed ones one after another once a stall is
+over. Think twice about the second, because the catch-up burst arrives at an
+actor that has just shown it is not keeping up. It is the right choice when
+what you promised really is a rate:
 
 ```python
 --8<-- "examples/tapio_examples/rate_limiter.py"
@@ -140,13 +140,12 @@ choice when the promise really is a rate:
 
 An actor that cannot answer yet has one good option: accept what arrives, put
 it aside, and replay it once it can. `Behaviors.with_stash` gives it a bounded
-buffer to do that with, and `stash.
-(next_behavior)` switches state
+buffer to do that with, and `stash.unstash_all(next_behavior)` switches state
 and replays the backlog in one call.
 
-The replay goes to the *front* of the mailbox, ahead of anything that queued
-up in the meantime, so nothing is reordered. The actor also stays an ordinary
-actor throughout, which is why the replay is not a loop inside the unstash: a
+The replay goes to the front of the mailbox, ahead of anything that queued up
+in the meantime, so nothing is reordered. The actor also stays an ordinary
+actor throughout, which is why the replay is not a loop inside the unstash. A
 stop arriving mid-replay is honoured rather than queued behind work nobody
 wants any more.
 
@@ -154,32 +153,33 @@ wants any more.
 --8<-- "examples/tapio_examples/stash_on_startup.py"
 ```
 
-The capacity is required. A stash holds traffic the actor is by definition not
-keeping up with, so an unbounded one is a memory leak with a good excuse.
-Overflow raises `StashOverflowError` in the actor that stashed, where the
-decision about what to shed belongs, and a restart empties the buffer:
-messages held by the state that just failed are not the new state's to answer,
-and what is discarded is published as a dead letter rather than dropped.
+The capacity is required. A stash holds traffic the actor is not keeping up
+with, so an unbounded one is a memory leak. Overflow raises
+`StashOverflowError` in the actor that stashed, where the decision about what
+to drop belongs. A restart empties the buffer, because messages held by the
+state that just failed are not the new state's to answer, and what is
+discarded is published as a dead letter rather than dropped.
 
 ## Talking to someone else's protocol
 
 An actor's declared message type is a contract, which raises a question the
-first time two actors written by different people have to talk: the service you
-called replies with *its* reply type, and that type has no business in your
-protocol. Widening yours to admit it is wrong twice over, since it lets anyone
-send you that message and it puts a foreign vocabulary inside your handlers.
+first time two actors written by different people have to talk. The service
+you called replies with its own reply type, and that type does not belong in
+your protocol. Widening yours to admit it is wrong twice over: it lets anyone
+send you that message, and it puts a foreign vocabulary inside your handlers.
 
-`ctx.message_adapter` gives you a ref to hand out instead. It accepts the other
-protocol's message, translates it into one of yours, and delivers the result
-onto your own user lane, where it is ordinary traffic: it queues where it
-arrived, it cannot re-enter a running handler, and it is validated against your
-declared type like anything else.
+`ctx.message_adapter` gives you a ref to hand out instead. It accepts the
+other protocol's message, translates it into one of yours, and delivers the
+result onto your own user lane. There it is ordinary traffic: it queues where
+it arrived, it cannot re-enter a running handler, and it is validated against
+your declared type like anything else.
 
-The translation runs in *your* actor rather than in the sender. That is the
-reason to prefer this over translating at the call site: the function is your
-code, so a mistake in it is your supervision decision, and a sender that has
-never heard of the adapter does not have your bug raised into it. An adapter is
-not an actor, so it cannot be watched or asked; watch the actor that owns it.
+The translation runs in your actor rather than in the sender, which is the
+reason to prefer this over translating at the call site. The function is your
+code, so a mistake in it becomes your supervision decision, and a sender that
+has never heard of the adapter does not have your bug raised into it. An
+adapter is not an actor, so it cannot be watched or asked. Watch the actor
+that owns it.
 
 ## One address, several actors
 
@@ -190,28 +190,55 @@ actor", a pool router puts one address in front of several of them:
 --8<-- "examples/tapio_examples/worker_pool.py"
 ```
 
-The router is an ordinary actor whose routees are its children, which decides
-most of its behaviour. Their failures are supervised where they were declared,
-so wrapping the routee behavior in `Behaviors.supervise(...)` restarts a failed
-routee in place. A routee that stops leaves the pool, and when the last one
-goes the router stops with it, because a pool with nothing in it is an address
-that silently swallows work.
+The router is an ordinary actor whose routees are its children, and that
+decides most of its behaviour. Their failures are supervised where they were
+declared, so wrapping the routee behavior in `Behaviors.supervise(...)`
+restarts a failed routee in place. A routee that stops leaves the pool, and
+when the last one goes the router stops too, because an empty pool is an
+address that silently swallows work.
 
-A router creates no backpressure of its own: sending to one never blocks, as
-sending anywhere never blocks. What it does with a routee that cannot take a
-message is dead-letter it, since the router did not write that message and
-failing would take a whole pool down over one busy member. Backpressure worth
-having therefore belongs on the router's own mailbox, where a producer can
-`offer` into it and wait.
+A router creates no backpressure of its own. Sending to one never blocks, just
+as sending anywhere never blocks. A routee that cannot take a message gets it
+dead-lettered, because the router did not write that message and failing would
+take a whole pool down over one busy member. Put backpressure on the router's
+own mailbox instead, where a producer can `offer` into it and wait.
 
 ## Behaviors as the states of a protocol
 
-The state *is* the behavior, which is what makes the illegal transitions
-unwritable rather than merely checked for:
+The state is the behavior, which is what makes the illegal transitions
+impossible to write rather than merely checked for:
 
 ```python
 --8<-- "examples/tapio_examples/state_machine.py"
 ```
+
+## Two systems on a link
+
+Switch remoting on, turn another system's address into a ref, and send. The
+actors do not change at all. Compare this with `hello_world` above: what is
+different is the settings and the one `resolve`.
+
+```python
+--8<-- "examples/tapio_examples/two_nodes.py"
+```
+
+The port is bound while the system is being constructed, so the address a ref
+writes down is settled before any ref is handed out, and a configuration that
+would listen beyond loopback with no shared secret fails to start rather than
+failing to be secure.
+
+`resolve` dials nothing. The first send through the ref creates the
+association, and the dial happens behind it, so the call does not wait for a
+peer that may be down and a `tell` to one that never answers dead-letters
+instead of hanging. The ref is bound to the peer and not to a link, so it
+keeps working after a link fails.
+
+What crosses a link is not quite what crosses a mailbox. Delivery is
+at-most-once and FIFO per association, with no acks and no retries. A message
+rebuilt from JSON is equal to what was sent and never the same object. And a
+type key on a frame is a registry key, so both ends have to
+`@register_message()` what they exchange. An unknown key is a dead letter
+naming the key, and nothing is imported to find out what it meant.
 
 ## What the runtime gives you today
 
@@ -247,9 +274,14 @@ unwritable rather than merely checked for:
   `with system.as_deserialization_context():`.
 - `system.deliver_frame(...)`, the receiving half of remoting. Everything a
   peer can get wrong is decided here and becomes a dead letter naming the
-  peer: an unreadable frame, a type key this system does not know, a payload
-  that will not validate, an actor that has stopped, a stale incarnation, a
-  message the recipient does not accept.
+  peer: an unreadable frame, an unknown type key, a payload that will not
+  validate, an actor that has stopped, a stale incarnation, and a message the
+  recipient does not accept.
+- `RemoteSettings`, a TCP link with a version check and a shared-secret
+  handshake, optional TLS, and one association per peer with its own bounded
+  outbound buffer.
+- `await system.resolve(uri, expect=...)` and `ctx.resolve(...)`, which turn
+  another system's address into an ordinary ref.
 
-The transport is next: TCP associations, a handshake, and frames that travel
-between processes rather than being handed over by hand.
+Remote death watch, a failure detector and quarantine are next, and with them
+an `ask` that works across a link.

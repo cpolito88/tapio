@@ -1,10 +1,4 @@
-"""Death watch: how one actor learns that another has stopped.
-
-The alternative tapio does not offer is a liveness predicate, and these tests
-are also why: every answer such a predicate could give is stale before the
-caller reads it, while a `Terminated` on the system lane is a fact about
-something that already happened.
-"""
+"""Tests for death watch: how one actor learns that another has stopped."""
 
 import asyncio
 
@@ -62,8 +56,8 @@ async def test_a_failure_is_a_stop_like_any_other(system: ActorSystem):
     target = system.spawn(recording([]), name="target")
     system.spawn(watching(target, seen), name="watcher")
 
-    # An unsupervised failure stops the actor, and a watcher hears about the
-    # stop rather than about the failure: what it can act on is the absence.
+    # An unsupervised failure stops the actor. A watcher hears about the stop,
+    # not the failure, because the absence is what it can act on.
     target.tell(Job(fail=True))
     await eventually(lambda: seen == ["Terminated"])
 
@@ -104,8 +98,8 @@ async def test_watching_an_actor_that_has_already_stopped_fires_at_once(
     target.tell(Job(item=-1))
     await eventually(lambda: not target.cell.is_alive)
 
-    # The race is real and unavoidable, so watching answers the same way
-    # whichever side of it the caller landed on.
+    # The race cannot be avoided, so watching answers the same way whichever
+    # side of it the caller lands on.
     system.spawn(watching(target, seen), name="watcher")
     await eventually(lambda: seen == ["Terminated"])
 
@@ -146,8 +140,8 @@ async def test_a_stopped_watcher_leaves_nothing_behind(system: ActorSystem):
     watcher.tell(Job(item=-1))
     await eventually(lambda: not watcher.cell.is_alive)
 
-    # The registry a watch lives in is the one users would otherwise write
-    # themselves, and forget to clean up. Both directions are released.
+    # This is the map users would otherwise write themselves and forget to
+    # clean up. Both directions are released.
     assert target.cell.watchers == ()
 
 
@@ -211,9 +205,9 @@ async def test_a_signal_overtakes_a_deep_user_backlog(system: ActorSystem):
     gate.set()
     await eventually(lambda: "job 50" in seen)
 
-    # Signals drain before user messages, so death-watch latency is bounded by
-    # the current handler rather than by mailbox depth. It is also the one
-    # place tapio's ordering surprises people, which is why it is asserted.
+    # Signals drain before user messages, so a death watch fires within the
+    # current handler rather than after the whole mailbox. This is the
+    # ordering rule that most often surprises people, so it is asserted.
     assert seen[:3] == ["job 0", "Terminated", "job 1"]
 
 

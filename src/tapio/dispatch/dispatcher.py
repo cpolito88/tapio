@@ -1,10 +1,10 @@
 """The dispatcher: the one place that knows which loop a system runs on.
 
 Every actor in a system runs on a single event loop, and several parts of the
-runtime need to agree on which one: cells create their receive-loop task on it,
-shutdown reads its clock for the deadline every cell races, and sending from
-another thread has to hop back onto it. Keeping that in one object means those
-answers cannot drift apart.
+runtime have to agree on which one: cells create their receive-loop task on
+it, shutdown reads its clock for the deadline every cell races, and sending
+from another thread has to hop back onto it. Keeping it in one object means
+those answers cannot drift apart.
 """
 
 import asyncio

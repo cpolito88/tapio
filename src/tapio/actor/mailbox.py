@@ -1,14 +1,14 @@
 """The two-lane mailbox: signals outrank user messages.
 
-One mailbox object with two deques and a *single* waiter, not two queues. The
-obvious alternative, two `asyncio.Queue`s selected with
-`wait(FIRST_COMPLETED)`, is the trap this design exists to avoid: the losing
-`get()` task has to survive across iterations, because cancelling it discards a
-message it has already dequeued. With one waiter that race cannot be expressed.
+One mailbox object with two deques and a single waiter, not two queues. The
+obvious alternative is two `asyncio.Queue`s selected with
+`wait(FIRST_COMPLETED)`, and it has a race this design avoids: the losing
+`get()` task has to survive across iterations, because cancelling it discards
+a message it has already dequeued. With one waiter that race cannot happen.
 
 The user lane can be bounded. The system lane never is: a capacity that could
-refuse a stop signal would make shutdown unreliable, so backpressure applies to
-application traffic only.
+refuse a stop signal would make shutdown unreliable, so backpressure applies
+to application traffic only.
 """
 
 import asyncio
@@ -66,8 +66,8 @@ class OverflowStrategy(StrEnum):
 class MailboxConfig:
     """How one actor's mailbox behaves.
 
-    The default is unbounded, so the common case needs no configuration, and
-    `capacity=None` means the strategy is never consulted.
+    The default is unbounded, so the common case needs no configuration. With
+    `capacity=None` the strategy is never consulted.
     """
 
     capacity: int | None = None
@@ -123,9 +123,9 @@ class Mailbox:
     def is_full(self) -> bool:
         """Whether the user lane is at capacity.
 
-        A closed mailbox is never full: senders parked in `offer` have to be
-        able to finish, and what they enqueue is discarded by the cell rather
-        than left to strand them.
+        A closed mailbox is never full. Senders waiting in `offer` have to be
+        able to finish, and the cell discards what they enqueue rather than
+        leaving them stuck.
         """
         capacity = self._config.capacity
         if self._closed or capacity is None:
@@ -140,8 +140,8 @@ class Mailbox:
 
         Returns:
             The message that was displaced and should go to dead letters, or
-            `None` when nothing was displaced. The caller owns the sink, so the
-            mailbox decides *what* is dropped and never *where* it goes.
+            `None` when nothing was displaced. The caller owns the sink, so
+            the mailbox decides what is dropped and never where it goes.
 
         Raises:
             MailboxFullError: If the lane is full under `OverflowStrategy.FAIL`.
@@ -167,11 +167,11 @@ class Mailbox:
     def put_front(self, message: Message) -> None:
         """Put a message back at the head of the user lane.
 
-        For unstashing, which is a replay rather than a send: these messages
-        were accepted once already and are going back where they would have
+        For unstashing, which is a replay rather than a send. These messages
+        were accepted once already, and they go back where they would have
         been, ahead of everything that queued up while the actor was not ready
-        for them. Capacity is deliberately not consulted, for the same reason
-        the system lane has none: a replay that could be refused would make
+        for them. Capacity is not consulted, for the same reason the system
+        lane has none. A replay that could be refused would make
         `unstash_all` a request rather than a guarantee, and the messages have
         nowhere else to go.
         """
@@ -181,7 +181,7 @@ class Mailbox:
     def put_system(self, signal: Signal) -> None:
         """Append to the system lane.
 
-        The system lane is unbounded whatever the user lane's capacity is: a
+        The system lane is unbounded whatever the user lane's capacity is. A
         limit that could refuse a stop signal would make shutdown unreliable.
         """
         self._system.append(signal)
@@ -190,11 +190,11 @@ class Mailbox:
     async def offer(self, message: Message) -> None:
         """Append to the user lane, waiting for capacity instead of dropping.
 
-        Senders park on individual futures and are woken one per freed slot, in
-        arrival order. Deliberately not symmetric with `get`: there is one
-        consumer but there can be many senders, so an `Event` would wake all of
-        them for one slot and hand it to whoever the scheduler happened to
-        favour.
+        Senders wait on individual futures and are woken one per freed slot,
+        in arrival order. This is not symmetric with `get`, on purpose. There
+        is one consumer but there can be many senders, so an `Event` would
+        wake all of them for one slot and give it to whichever the scheduler
+        happened to pick.
 
         Args:
             message: The message to enqueue.
@@ -205,9 +205,9 @@ class Mailbox:
         """
         loop = asyncio.get_running_loop()
         # Set once this sender has been woken at least once. A `tell` can take
-        # the freed slot before the woken sender runs; re-parking at the front
-        # keeps the place it had already earned, where going to the back would
-        # lose it to senders that arrived later.
+        # the freed slot before the woken sender runs. Going back to the front
+        # of the queue keeps the place it had already earned, where going to
+        # the back would lose it to senders that arrived later.
         served = False
         while self.is_full:
             waiter = loop.create_future()
@@ -232,8 +232,8 @@ class Mailbox:
 
         Raises:
             RuntimeError: If a second reader is already waiting. One waiter is
-                what makes the wakeup above safe, and a mailbox has exactly one
-                consumer, its own cell, so that is asserted rather than assumed.
+                what makes the wakeup above safe. A mailbox has exactly one
+                consumer, its own cell, so this is checked and not assumed.
         """
         if self._consuming:
             msg = (
@@ -251,10 +251,10 @@ class Mailbox:
                     self._release_slot()
                     return message
                 await self._nonempty.wait()
-                # Clear *after* waking and *before* re-examining the deques. In
-                # this order a concurrent append either happened before the
-                # clear, and the checks above see it, or it sets the event
-                # again after. Clearing any later would drop that wakeup.
+                # Clear after waking and before checking the deques again. In
+                # this order, a concurrent append either happened before the
+                # clear and the checks above see it, or it sets the event
+                # again afterwards. Clearing later would drop that wakeup.
                 self._nonempty.clear()
         finally:
             self._consuming = False
@@ -262,8 +262,8 @@ class Mailbox:
     async def get_system(self) -> Signal:
         """Take the next signal, ignoring the user lane entirely.
 
-        For the one state where an actor is absent rather than idle: a cell
-        backing off before a restart stops dequeuing user messages, so its
+        For the one state where an actor is absent rather than idle. A cell
+        backing off before a restart stops taking user messages, so its
         mailbox keeps filling, but a stop must still reach it inside the
         shutdown deadline.
 
@@ -285,10 +285,9 @@ class Mailbox:
                 if self._system:
                     return self._system.popleft()
                 await self._nonempty.wait()
-                # A user message wakes this loop and is deliberately left
-                # where it is. Clearing the event costs nothing, since `get`
-                # examines both deques before it waits again, so no arrival is
-                # lost by being slept through here.
+                # A user message wakes this loop and is left where it is.
+                # Clearing the event is safe, because `get` checks both deques
+                # before it waits again, so no arrival is lost here.
                 self._nonempty.clear()
         finally:
             self._consuming = False
@@ -297,7 +296,7 @@ class Mailbox:
         """Pop one queued user message, or `None` when the lane is empty.
 
         For the cell's termination sequence, which accounts for undelivered
-        messages rather than discarding them with the mailbox.
+        messages instead of discarding them with the mailbox.
         """
         return self._user.popleft() if self._user else None
 
@@ -317,9 +316,9 @@ class Mailbox:
     def close(self) -> None:
         """Wake every blocked sender, so a stopped actor strands nobody.
 
-        Their `offer` resumes, enqueues into a mailbox nobody is reading, and
-        the cell dead-letters what is left. Called from the termination
-        sequence, so no sender is left awaiting a slot that will never come.
+        Their `offer` resumes and enqueues into a mailbox nobody is reading,
+        and the cell dead-letters what is left. Called from the termination
+        sequence, so no sender waits for a slot that will never come.
         """
         self._closed = True
         while self._space:

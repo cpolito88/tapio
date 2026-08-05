@@ -1,21 +1,19 @@
-"""Ask: one request, one reply, and every way that can fail to happen.
+"""Ask: one request, one reply, and every way that can fail.
 
 `ask` is sugar over the `reply_to` field the examples start with. The sugar is
-a `PromiseRef`, a ref with no mailbox and no cell whose `tell` resolves an
+a `PromiseRef`: a ref with no mailbox and no cell, whose `tell` resolves an
 `asyncio.Future` instead of enqueuing anything. The caller awaits that future.
 
-Three things fail an ask, and the reason they are all here is that the caller
-should never have to wait out a timeout for an answer that provably is not
-coming:
+Three things fail an ask. All three are here so that the caller never waits
+out a timeout for an answer that is not coming:
 
-* The timeout elapses, which is the only one that costs the full wait.
-* The target stops. The promise watches it, so this fails immediately.
-* The reply is not of the expected type, which is a bug in the responder and
-  surfaces in the caller rather than as a value whose static type is a lie.
+* The timeout elapses. This is the only one that costs the full wait.
+* The target stops. The promise watches it, so this fails at once.
+* The reply is not of the expected type. That is a bug in the responder, and
+  it surfaces in the caller rather than as a value whose static type is a lie.
 
-Once any of those has happened the promise is settled, and a reply arriving
-afterwards becomes a dead letter rather than resolving a future nobody is
-awaiting.
+After any of those the promise is settled, and a reply arriving later becomes
+a dead letter rather than resolving a future nobody is awaiting.
 """
 
 import asyncio
@@ -56,11 +54,11 @@ _PROMISES = "promises"
 class PromiseRef(ActorRef[R]):
     """A ref with no actor behind it, whose `tell` completes one ask.
 
-    It is addressable rather than anonymous because a reply may come back
-    across a wire and has to find its way: every promise has a path under
-    `/system/promises` and is registered there for as long as the ask is
-    running, which is what lets a `reply_to` that crossed a link resolve back
-    to the future somebody is awaiting.
+    It is addressable rather than anonymous because a reply may come back over
+    a link and has to find its way. Every promise has a path under
+    `/system/promises` and stays registered there while the ask is running, so
+    a `reply_to` that crossed a link resolves back to the future being
+    awaited.
     """
 
     __slots__ = ("_expected", "_future", "_runtime", "_settled", "_target", "_validate")
@@ -104,15 +102,15 @@ class PromiseRef(ActorRef[R]):
     def tell(self, message: R) -> None:
         """Reply to the ask this promise stands for.
 
-        Safe to call from any thread, like every other `tell`. Unlike every
-        other `tell`, validation does not run here: a reply of the wrong type
-        is the asker's problem to hear about, not an exception to raise into
-        whoever answered, so the check happens on the loop and its failure goes
-        to the awaiting caller.
+        Safe to call from any thread, like every other `tell`. Validation does
+        not run here, unlike every other `tell`. A reply of the wrong type is
+        the asker's problem, not an exception to raise into whoever answered,
+        so the check runs on the loop and its failure goes to the awaiting
+        caller.
 
         Args:
-            message: The reply. The first one wins; a later one is a dead
-                letter, as is any reply to an ask that has already timed out.
+            message: The reply. The first one wins. A later one is a dead
+                letter, and so is any reply to an ask that has timed out.
         """
         dispatcher = self._runtime.dispatcher
         if dispatcher.is_current():
@@ -143,9 +141,9 @@ class PromiseRef(ActorRef[R]):
     def notify_terminated(self, ref: ActorRef[Any]) -> None:
         """Fail the ask because the actor it was waiting on stopped.
 
-        This is the whole reason an ask watches its target. Without it a caller
-        asking an actor that has already stopped waits out the full timeout for
-        a reply that cannot arrive.
+        This is why an ask watches its target. Without it, a caller asking an
+        actor that has already stopped waits out the full timeout for a reply
+        that cannot arrive.
 
         Args:
             ref: A ref to the actor that stopped.
@@ -158,14 +156,13 @@ class PromiseRef(ActorRef[R]):
     def settle(self) -> None:
         """Close this promise, whatever became of the ask.
 
-        After this a reply is a dead letter. The future is dealt with rather
-        than abandoned: a pending one is cancelled, and an exception that
-        arrived in the same breath as the caller giving up is retrieved here,
-        since an unretrieved one is reported by asyncio at collection time as
-        if something had gone unhandled.
+        After this a reply is a dead letter. The future is not abandoned: a
+        pending one is cancelled, and an exception that arrived just as the
+        caller gave up is retrieved here. An unretrieved one would be reported
+        by asyncio at collection time as if something had gone unhandled.
 
-        The promise also stops being addressable, so an ask leaves nothing
-        behind in the ref registry however it ended.
+        The promise also stops being addressable, so an ask leaves nothing in
+        the ref registry however it ended.
         """
         self._settled = True
         self._runtime.refs.deregister(self.path)
@@ -209,10 +206,9 @@ async def ask(
         make: Builds the request from the ref the reply should go to. It is a
             factory rather than a message because the promise does not exist
             until the ask begins.
-        expect: The reply type. Required, and not ceremony: a promise has no
-            cell and therefore no declared message type of its own, so without
-            this the one delivery path in the library with no type check would
-            be the request/response one.
+        expect: The reply type. Required, because a promise has no cell and so
+            no declared message type of its own. Without it, request/response
+            would be the one delivery path with no type check.
         timeout: How long to wait. The system's `ask_timeout` when omitted.
 
     Returns:
@@ -225,7 +221,7 @@ async def ask(
         AskTypeError: If a reply arrived that was not an `expect`.
         MessageTypeError: If the request does not match the target's declared
             message type. That is an error about the message, so it belongs to
-            the sender exactly as it does for `tell`.
+            the sender, as it does for `tell`.
         RuntimeError: If called from a thread that is not running the system's
             loop.
         pydantic.ValidationError: If content validation is on and either the
@@ -253,8 +249,8 @@ async def ask(
     )
 
     if not cell.is_alive:
-        # Nothing between here and the watch below awaits, so the target
-        # cannot slip through the gap: a cell stops on this same loop.
+        # Nothing between here and the watch below awaits, and a cell stops on
+        # this same loop, so the target cannot slip through the gap.
         msg = (
             f"{cell.path} had already stopped when an ask expecting "
             f"{expect.__name__} was made"
@@ -281,9 +277,8 @@ async def ask(
             )
             raise AskTimeoutError(msg) from None
     finally:
-        # Both halves matter, and both have to run however this ended: the
-        # promise stops accepting replies, and the target stops holding a
-        # watcher for an ask that is over.
+        # Both have to run however this ended. The promise stops accepting
+        # replies, and the target stops holding a watcher for a finished ask.
         promise.settle()
         cell.remove_watcher(promise)
 
@@ -292,7 +287,7 @@ def _promise_path(runtime: "ActorRuntime") -> ActorPath:
     """Address one promise under `/system/promises`.
 
     The uid comes from the system's incarnation counter, so no two asks in a
-    system ever share a path, including across a restart of whatever made them.
+    system share a path, even across a restart of whatever made them.
     """
     uid = runtime.next_uid()
     promises = ActorPath.root(runtime.name).child("system").child(_PROMISES)

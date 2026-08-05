@@ -4,19 +4,19 @@ Concepts: the dead letter stream, subscribing to it, and the three ways a
 message fails to arrive: a stopped actor, a full bounded mailbox, and a system
 that has already shut down.
 
-An `ActorRef` stays a valid handle after its actor dies, so `tell` never raises
-about the recipient: a point-in-time "is it alive?" check is stale the moment
-you have it. The price of that is messages with nowhere to go, and the whole
-point of this example is that tapio accounts for every one of them rather than
-dropping them quietly.
+An `ActorRef` stays a valid handle after its actor dies, so `tell` never
+raises about the recipient. An "is it alive?" check would be out of date as
+soon as you had it. The price is messages with nowhere to go, and the point of
+this example is that tapio accounts for every one of them instead of dropping
+them quietly.
 
-This is also the one example that teaches an *absence*. Subscribing is what
-makes it teachable: without the stream, "the message was dropped" and "this
-example is broken" would look exactly the same from outside.
+This example teaches an absence, and subscribing is what makes that possible.
+Without the stream, "the message was dropped" and "this example is broken"
+would look the same from outside.
 
 What to watch in the output: three dead letters, each naming the message, the
 actor it was addressed to, and why it did not arrive. The reasons differ, and
-the difference is the useful part.
+that difference is the useful part.
 
 Run it with:
 
@@ -67,15 +67,15 @@ async def main() -> list[str]:
     system = ActorSystem("dead-letters")
     system.dead_letters.subscribe(record)
 
-    # 1. A stopped actor. The ref is still a perfectly good handle, and the
-    #    send is still legal; there is simply nobody home.
+    # 1. A stopped actor. The ref is still a good handle and the send is still
+    #    legal. There is simply nobody there to receive it.
     departed: ActorRef[Work] = system.spawn(Behaviors.stopped(), name="departed")
     departed.tell(Work(item=1))
     await asyncio.sleep(0)
 
     # 2. A bounded mailbox that overflows. DROP_OLDEST keeps the newest work
-    #    and sheds the stalest, which is what you want when only the latest
-    #    reading matters. Whichever message it sheds is accounted for.
+    #    and drops the oldest, which is what you want when only the latest
+    #    reading matters. Whichever message it drops is accounted for.
     started, release = asyncio.Event(), asyncio.Event()
     worker = system.spawn(
         busy(started, release),
@@ -92,8 +92,8 @@ async def main() -> list[str]:
     release.set()
     await system.terminate()
 
-    # 3. A send after the system has gone. Still not an error, still not
-    #    silent: the reason says the system rather than the actor.
+    # 3. A send after the system has gone. Still not an error, and still not
+    #    silent. The reason names the system rather than the actor.
     worker.tell(Work(item=6))
     await asyncio.sleep(0)
 

@@ -74,11 +74,11 @@ def _canonical_address(
 ) -> Address:
     """Work out the address this system's refs write down.
 
-    Canonical falls back to bind, which is right for the ordinary case of a
-    process whose peers dial the interface it listens on, and overridable for
-    the ones where they cannot: containers, NAT and port mapping. The port
-    comes from the socket rather than from the setting, so that `bind_port=0`
-    advertises the port the OS actually handed out.
+    The canonical address falls back to the bind address, which is right when
+    peers dial the interface the process listens on. It can be overridden for
+    containers, NAT and port mapping, where they cannot. The port comes from
+    the socket rather than the setting, so `bind_port=0` advertises the port
+    the OS handed out.
     """
     if remote is None or listener is None:
         return Address(system=name)
@@ -124,15 +124,14 @@ class ActorSystem:
         self._root = ActorPath.root(name)
         self._refs = RefRegistry()
         self._peer_resolver: PeerResolver | None = None
-        # Minted per incarnation, so that a system restarted at the same host
-        # and port is a *different* peer rather than a slow one. Without it
-        # neither a link nor anything built on one can tell a restart from a
-        # pause, and every ref held against the previous incarnation would
-        # resolve to a stranger.
+        # Minted per incarnation, so a system restarted on the same host and
+        # port is a different peer rather than a slow one. Without it, nothing
+        # built on a link could tell a restart from a pause, and every ref
+        # held against the previous incarnation would resolve to a stranger.
         self._uid = secrets.randbits(_UID_BITS)
         # Bound before anything else, so the canonical address is settled
-        # before a single ref can write itself down, and so a configuration
-        # that would listen to the world fails here rather than at the first
+        # before any ref can write itself down, and so a configuration that
+        # would listen to the world fails here rather than at the first
         # connection.
         self._listener = (
             open_listener(self._settings.remote)
@@ -174,8 +173,8 @@ class ActorSystem:
         """Hang the endpoint under `/system` and start accepting on its socket.
 
         The endpoint is an actor and the associations are its children, so the
-        port and every link under it are released by the ordinary stop sweep
-        rather than by a shutdown step that could be forgotten.
+        ordinary stop sweep releases the port and every link under it. No
+        separate shutdown step is needed, and none can be forgotten.
         """
         endpoint = RemoteEndpoint(
             address=self._address,
@@ -220,8 +219,8 @@ class ActorSystem:
     def dead_letters(self) -> DeadLetterOffice:
         """Where undeliverable messages go, and what to subscribe to.
 
-        Subscribing is what makes an absence testable: without it, "the message
-        was dropped" and "the code never ran" look identical.
+        Subscribing is what makes an absence testable. Without it, "the
+        message was dropped" and "the code never ran" look the same.
         """
         return self._dead_letters
 
@@ -229,10 +228,10 @@ class ActorSystem:
     def address(self) -> Address:
         """How peers address this system, and what its refs write down.
 
-        The canonical address when remoting is configured, which is what a peer
-        dials and not necessarily what a socket is bound to. Otherwise the
-        system name alone: a ref from a system with remoting off says which
-        system it belongs to and offers nowhere to dial.
+        With remoting configured this is the canonical address, which is what
+        a peer dials and not always what the socket is bound to. Otherwise it
+        is the system name alone. A ref from a system with remoting off says
+        which system it belongs to and gives nowhere to dial.
         """
         return self._address
 
@@ -240,9 +239,9 @@ class ActorSystem:
     def uid(self) -> int:
         """This incarnation's uid, presented to every peer in the handshake.
 
-        A system restarted at the same host and port is a *different* peer, and
-        this is what says so. Without it a node that restarts inside a failure
-        detector's window is indistinguishable from one that was merely slow.
+        A system restarted on the same host and port is a different peer, and
+        the uid is what says so. Without it, a node that restarts inside a
+        failure detector's window looks the same as one that was slow.
         """
         return self._uid
 
@@ -250,9 +249,9 @@ class ActorSystem:
     def remote(self) -> RemoteEndpoint | None:
         """This system's remoting, or `None` when it is switched off.
 
-        The port, the associations, and the resolver behind every foreign ref.
-        Exposed so a test or an operator can see which peers are associated
-        rather than infer it from traffic.
+        It holds the port, the associations, and the resolver behind every
+        foreign ref. Exposed so a test or an operator can see which peers are
+        associated, instead of inferring it from traffic.
         """
         return self._remote
 
@@ -260,10 +259,9 @@ class ActorSystem:
     def refs(self) -> RefRegistry:
         """The live refs of this system, by path and incarnation uid.
 
-        Exposed for the same reason `watchers` is on a cell: "the registry was
-        emptied" has to be something a test can assert rather than infer, and
-        an entry outliving its actor is a leak of exactly the kind the runtime
-        promises not to have.
+        Exposed for the same reason as `watchers` on a cell: a test has to be
+        able to assert that the registry was emptied. An entry that outlives
+        its actor is a leak.
         """
         return self._refs
 
@@ -288,12 +286,12 @@ class ActorSystem:
     def as_deserialization_context(self) -> AbstractContextManager[None]:
         """Make this system the one refs deserialize against inside the block.
 
-        A ref's string form only means something relative to a system: the
+        A ref's string form only means something relative to a system. The
         reading system has to know whether the address is its own, so it can
         hand back the live local ref rather than a proxy to itself. The
-        receiving end of a link enters this for the duration of a decode, and
-        it is exported so that `Greet.model_validate_json(blob)` is a thing a
-        test or a debugging session can do deliberately.
+        receiving end of a link enters this for the duration of a decode. It
+        is public so that a test or a debugging session can run
+        `Greet.model_validate_json(blob)` on purpose.
 
         Returns:
             A context manager. Refs resolve against this system inside it, and
@@ -304,18 +302,18 @@ class ActorSystem:
     def resolve_path(self, address: Address, path: ActorPath) -> ActorRef[Any]:
         """Turn an address and a path into something that can be told messages.
 
-        This is the whole of ref resolution, and it never raises about the
-        target. There are three answers:
+        This is all of ref resolution, and it never raises about the target.
+        There are three answers:
 
-        * The address is this system's own, and a live actor answers to that
-          path and uid: the live local ref, so a reply to a `reply_to` that
-          crossed a link is an ordinary local `tell` on the way back.
-        * The address is this system's own and nothing answers: a dead-letter
-          target. The uid is what makes this safe. A path on its own is
-          reusable, so without it a stale ref would address whoever occupies
+        * The address is this system's own and a live actor holds that path
+          and uid. The answer is the live local ref, so replying to a
+          `reply_to` that crossed a link is an ordinary local `tell`.
+        * The address is this system's own and nothing holds it. The answer is
+          a dead-letter target. The uid is what makes this safe: a path on its
+          own is reusable, so without it a stale ref would reach whoever holds
           that path now.
-        * The address is another system's: the peer resolver's answer, or a
-          dead-letter target when there is no link to that address.
+        * The address is another system's. The answer is what the peer
+          resolver returns, or a dead-letter target if there is no link.
 
         Args:
             address: The system the ref names.
@@ -357,16 +355,16 @@ class ActorSystem:
         ```
 
         That is the whole user-facing surface of remote messaging: one
-        resolve, and then an ordinary ref. Nothing is dialled here: the
-        association is created by the first send through the ref, and dialling
-        happens behind it, so this call does not wait on a peer that may be
-        down and a `tell` to one that never answers dead-letters rather than
-        hanging. The ref is bound to the peer rather than to a link, so it
-        keeps working across one that failed.
+        resolve, then an ordinary ref. Nothing is dialled here. The first send
+        through the ref creates the association, and the dial happens behind
+        it. So this call does not wait for a peer that may be down, and a
+        `tell` to one that never answers dead-letters rather than hanging. The
+        ref is bound to the peer and not to a link, so it keeps working after
+        a link fails.
 
         `expect` declares what the actor over there accepts. It is a claim
         about the peer rather than knowledge of it, so it catches a mistake at
-        this end; the authoritative check runs on the receiving node against
+        this end. The check that decides runs on the receiving node, against
         the target's real message type.
 
         Args:
@@ -417,15 +415,15 @@ class ActorSystem:
     def deliver_frame(self, data: bytes, *, peer: Address | None = None) -> None:
         """Take one frame off a link and deliver what is in it.
 
-        The receiving half of remoting, and the reason it is a plain method:
-        every failure a peer can inflict is decided here, with no socket in
-        sight, so all of it is testable by handing one system the bytes another
-        one produced.
+        This is the receiving half of remoting. It is a plain method because
+        every failure a peer can cause is decided here, with no socket
+        involved, so a test can cover all of it by handing one system the
+        bytes another produced.
 
-        It never raises. A size, a version, a type key this system does not
-        know, a payload that will not validate, a recipient that has stopped
-        and a message the recipient does not accept all become dead letters on
-        this system's stream, carrying the peer address when there is one.
+        It never raises. A bad size, a bad version, an unknown type key, a
+        payload that will not validate, a recipient that has stopped, and a
+        message the recipient does not accept all become dead letters on this
+        system's stream, carrying the peer address when there is one.
 
         Args:
             data: One complete frame, length prefix included.
@@ -496,14 +494,14 @@ class ActorSystem:
     def _on_guardian_failure(self, path: ActorPath, error: BaseException) -> None:
         """Bring the system down, because a failure escalated past a guardian.
 
-        Keeping the cause and terminating are two halves of one answer: a
-        system with a silently missing subtree is worse than one that stopped,
+        Keeping the cause and terminating are two halves of one answer. A
+        system with a subtree silently missing is worse than one that stopped,
         and a service embedding tapio awaits `when_terminated` to decide
         whether to exit or rebuild.
 
-        Termination runs as its own task rather than inline, because the caller
-        is the guardian's own receive loop and shutdown waits for that loop to
-        finish.
+        Termination runs as its own task rather than inline, because the
+        caller is the guardian's receive loop and shutdown waits for that loop
+        to finish.
         """
         if self._failure is None:
             self._failure = error
@@ -517,11 +515,11 @@ class ActorSystem:
         """Stop every actor, bottom-up, and wait for the tree to drain.
 
         Every cell races one deadline taken from `shutdown_timeout`, so the
-        worst case tracks that setting rather than the depth of the tree. An
-        actor still wedged in a handler when the deadline passes is cancelled,
+        worst case follows that setting and not the depth of the tree. An
+        actor still stuck in a handler when the deadline passes is cancelled,
         and the warning names it.
 
-        Calling this more than once is safe: later callers wait for the first.
+        Calling this more than once is safe. Later callers wait for the first.
         """
         if self._terminating:
             await self._terminated.wait()
@@ -532,13 +530,13 @@ class ActorSystem:
             self._runtime.dispatcher.now()
             + self._settings.shutdown_timeout.total_seconds()
         )
-        # Application actors first: the system guardian holds runtime
-        # facilities that theirs may still be using on the way out.
+        # Application actors first. The system guardian holds runtime
+        # facilities that they may still be using on the way out.
         await self._user.stop(deadline)
         await self._system.stop(deadline)
-        # Set before the event: a send racing shutdown should be told the
-        # system is gone, which is a different diagnosis from one actor having
-        # stopped while the rest of the tree runs on.
+        # Set before the event. A send racing shutdown should be told that the
+        # system is gone, which is a different problem from one actor stopping
+        # while the rest of the tree runs on.
         self._runtime.terminated = True
         self._terminated.set()
         self._log.debug("terminated")
@@ -546,11 +544,11 @@ class ActorSystem:
     async def when_terminated(self) -> None:
         """Wait until the system has finished shutting down.
 
-        This is where an escalation that reached a guardian surfaces. Nothing
-        else in the runtime can raise it: the failing actor's exception never
-        leaves its own receive loop, and its supervisors all declined to take
-        responsibility, so the last place to report it is the one the embedding
-        service is already waiting on.
+        This is where an escalation that reached a guardian surfaces. Nowhere
+        else can raise it. The failing actor's exception never leaves its own
+        receive loop, and every supervisor above it declined to take
+        responsibility, so the last place to report it is the one the
+        embedding service is already waiting on.
 
         Raises:
             BaseException: The original failure, if the system terminated

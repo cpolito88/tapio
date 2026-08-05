@@ -1,8 +1,8 @@
-"""Bounded mailboxes: what happens to a message that arrives at a full one.
+"""Tests for bounded mailboxes: what a message meets when one is full.
 
-The four cases the plan promises are: raise in the sender, drop the arriving
-message, drop the oldest queued one, and wait for room. Every drop is accounted
-for as a dead letter, so none of these strategies loses a message silently.
+There are four strategies: raise in the sender, drop the arriving message,
+drop the oldest queued one, and wait for room. Every drop becomes a dead
+letter, so none of them loses a message silently.
 """
 
 import asyncio
@@ -62,7 +62,7 @@ def test_drop_oldest_returns_the_head_and_enqueues_the_arrival():
 
 async def test_the_system_lane_ignores_capacity_entirely():
     # A limit that could refuse a stop signal would make shutdown unreliable,
-    # so backpressure is a property of the user lane only.
+    # so backpressure applies to the user lane only.
     from tapio.actor.signals import PostStop
 
     mailbox = bounded(1, OverflowStrategy.FAIL)
@@ -124,7 +124,7 @@ async def test_a_cancelled_offer_leaves_no_future_behind():
         await sender
 
     assert mailbox.waiting_senders == 0
-    # And the slot it would have taken goes to the next sender, not nowhere.
+    # The slot it would have taken goes to the next sender, not nowhere.
     await mailbox.get()
     await mailbox.offer(Ping(n=3))
     assert mailbox.user_size == 1

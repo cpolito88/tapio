@@ -1,10 +1,8 @@
-"""Failure semantics: what a restart does, and what escalation costs.
+"""Tests for supervision: what a restart does, and what escalation costs.
 
-Every row of the restart table is asserted here rather than described, because
-a supervision library whose restart semantics are implicit is one nobody can
-reason about. Two rows are asserted elsewhere, next to the feature they are
-about: restart-cancels-timers in `tests/test_timers.py` and
-restart-clears-stash in `tests/test_stash.py`.
+Two parts of the restart behaviour are asserted elsewhere, next to the feature
+they belong to: timers are cancelled in `test_timers.py`, and the stash is
+cleared in `test_stash.py`.
 """
 
 import asyncio
@@ -50,7 +48,7 @@ async def test_resume_keeps_the_actor_and_its_state(system: ActorSystem):
     actor.tell(Job(item=1))
     await eventually(lambda: "job 1" in seen)
 
-    # No second setup: the same incarnation carried on with the message after
+    # No second setup. The same incarnation carried on with the message after
     # the one that failed.
     assert seen == ["setup", "job 1"]
 
@@ -96,8 +94,8 @@ async def test_restart_re_evaluates_the_original_behavior(system: ActorSystem):
     actor.tell(Job(item=2))
     await eventually(lambda: "job 2" in seen)
 
-    # A cell keeps the behavior it was spawned with, not the one it has now:
-    # an actor that switched several times still restarts to its original.
+    # A cell keeps the behavior it was spawned with, not the one it has now.
+    # An actor that switched several times still restarts to its original.
     assert seen == ["setup", "job 1", "setup", "job 2"]
 
 
@@ -116,9 +114,9 @@ async def test_restart_stops_children_and_respawns_the_ones_setup_made(
     actor.tell(Job(fail=True))
     await eventually(lambda: len(children) == 2)
 
-    # Same name, new incarnation: the old child was stopped and the re-run
-    # setup made a new one. A child spawned from a message handler instead
-    # would simply be gone, which is the rule that surprises people.
+    # Same name, new incarnation. The old child was stopped, and the setup
+    # running again made a new one. A child spawned from a message handler
+    # would just be gone, which is the part that surprises people.
     assert children[0].path.name == children[1].path.name == "child"
     assert children[0].path.uid != children[1].path.uid
 
@@ -145,12 +143,12 @@ async def test_restart_tells_watchers_nothing(system: ActorSystem):
     actor.tell(Job(item=1))
     await eventually(lambda: "job 1" in seen)
 
-    # The ref, path and uid are unchanged; only the incarnation is new, and a
-    # watcher has no business hearing about that.
+    # The ref, path and uid are unchanged, and only the incarnation is new. A
+    # watcher has no reason to hear about that.
     assert watcher_saw == []
 
-    # A real stop still fires, so the silence above is about restarts rather
-    # than about a watch that was never registered.
+    # A real stop still fires, so the silence above is about restarts and not
+    # about a watch that was never registered.
     actor.tell(Job(item=-1))
     await eventually(lambda: watcher_saw == ["Terminated"])
 
@@ -169,8 +167,8 @@ async def test_a_sibling_of_a_failed_child_keeps_running(system: ActorSystem):
     healthy[0].tell(Job(item=1))
     await eventually(lambda: "job 1" in healthy_seen)
 
-    # Supervision is the exact inverse of a task group: one child failing must
-    # leave its siblings untouched, which is why the runtime has no TaskGroup.
+    # Supervision is the inverse of a task group. One child failing must leave
+    # its siblings untouched, which is why the runtime has no TaskGroup.
     healthy[0].tell(Job(item=2))
     await eventually(lambda: "job 2" in healthy_seen)
 
@@ -186,8 +184,8 @@ async def test_the_restart_window_is_exhausted_and_the_actor_stops(
         actor.tell(Job(fail=True))
     await eventually(lambda: "PostStop" in seen)
 
-    # Two restarts allowed, so the third failure inside the window is the one
-    # that says this is not transient after all.
+    # Two restarts are allowed, so a third failure inside the window says the
+    # fault is not transient after all.
     assert seen.count("setup") == 3
     assert seen[-1] == "PostStop"
 
@@ -205,8 +203,8 @@ async def test_restarts_outside_the_window_do_not_count(system: ActorSystem):
     actor.tell(Job(fail=True))
     await eventually(lambda: seen.count("setup") == 3)
 
-    # The window is a rate, not a total: a failure an hour apart is not the
-    # same thing as two in a row.
+    # The window measures a rate, not a total. Two failures an hour apart are
+    # not the same as two in a row.
     assert "PostStop" not in seen
 
 
@@ -226,8 +224,9 @@ async def test_messages_arriving_during_backoff_are_buffered_not_dropped(
     actor.tell(Job(fail=True))
     await eventually(lambda: "PreRestart" in seen)
 
-    # The actor is absent, not dead: `tell` stays total and the mailbox keeps
-    # filling, which is the memory risk the docs flag for unbounded mailboxes.
+    # The actor is absent, not dead. `tell` stays total and the mailbox keeps
+    # filling, which is the memory risk the docs warn about for unbounded
+    # mailboxes.
     actor.tell(Job(item=1))
     actor.tell(Job(item=2))
     assert "setup" not in seen[2:]
@@ -321,8 +320,8 @@ async def test_supervision_survives_a_behavior_change(system: ActorSystem):
     actor.tell(Job(fail=True))
     await eventually(lambda: seen.count("setup") == 2)
 
-    # Supervision belongs to the actor, not to whichever behavior it happens
-    # to hold, so returning an unwrapped behavior does not shed the strategy.
+    # Supervision belongs to the actor, not to the behavior it happens to
+    # hold, so returning an unwrapped behavior does not drop the strategy.
     assert seen == ["setup", "switched", "setup"]
 
 
@@ -365,8 +364,8 @@ async def test_escalation_to_the_guardian_terminates_the_system():
             await system.when_terminated()
 
     # Nobody took responsibility, so the system came down and said why. The
-    # chain is on the exception rather than in a wrapper, so the original
-    # traceback is the one the reader gets.
+    # chain is a note on the exception rather than a wrapper, so the reader
+    # gets the original traceback.
     assert system.is_terminating
     notes = getattr(failure.value, "__notes__", [])
     assert any("escalated from" in note for note in notes)
@@ -413,8 +412,9 @@ def test_backoff_jitter_only_ever_lengthens_the_wait():
         random_factor=0.5,
     )
 
-    # Jitter matters when a shared dependency fails: without it, every actor
-    # that noticed at the same moment retries at the same moment, forever.
+    # Jitter matters when a shared dependency fails. Without it, every actor
+    # that noticed at the same moment retries at the same moment, over and
+    # over.
     assert backoff.delay(1, jitter=0.0) == 1.0
     assert backoff.delay(1, jitter=1.0) == 1.5
 

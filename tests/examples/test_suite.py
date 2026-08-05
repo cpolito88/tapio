@@ -1,8 +1,8 @@
-"""Runs every example and asserts what it produced.
+"""Runs every example and asserts what it printed.
 
-An example that breaks fails the build, which is the whole reason they are a
-package rather than a folder of scripts. The last test here keeps the two in
-step: a new example with no assertion is itself a failure.
+A broken example fails the build, which is why the examples are a package
+rather than a folder of scripts. The last test keeps this file in step with
+them: a new example with no assertion here fails on purpose.
 """
 
 import pkgutil
@@ -58,9 +58,9 @@ async def test_two_nodes():
     with assert_no_leaked_tasks():
         lines = await two_nodes.main()
 
-    # The same three beats as hello_world, with a link between the first and
-    # the second: the request crosses, the greeting happens on the other node,
-    # and the reply comes back to a ref that crossed with it.
+    # The same three steps as hello_world, with a link in between. The request
+    # crosses, the greeting happens on the other node, and the reply comes
+    # back to a ref that crossed with it.
     assert lines[0].startswith("home: resolving tapio://away@127.0.0.1:")
     assert lines[1:] == [
         "away: hello, world!",
@@ -72,7 +72,7 @@ async def test_ask_timeout():
     with assert_no_leaked_tasks():
         lines = await ask_timeout.main()
 
-    # One reply, one deadline, one answer that arrived too late to be one, and
+    # One reply, one deadline, one answer that arrived too late to count, and
     # one failure that did not wait for the deadline it was given.
     assert lines == [
         "reader: 'Dune' is on shelf 3",
@@ -108,9 +108,9 @@ async def test_dead_letters():
     with assert_no_leaked_tasks():
         lines = await dead_letters.main()
 
-    # Three sends that did not arrive, and three different diagnoses. The
-    # reasons are the lesson: a stopped actor, a mailbox that shed the stalest
-    # work it was holding, and a send that outlived its system.
+    # Three sends that did not arrive, for three different reasons: a stopped
+    # actor, a mailbox that dropped the oldest work it held, and a send that
+    # outlived its system.
     assert len(lines) == 3
     assert "Work(item=1)" in lines[0]
     assert lines[0].endswith("(recipient-terminated)")
@@ -134,8 +134,8 @@ async def test_supervision_backoff():
         "uploader: incarnation 3 ready",
         "uploader: item 3 uploaded",
     ]
-    # And the other half of the bargain: a failure that never clears stops the
-    # actor rather than restarting it forever.
+    # The other half: a failure that never clears stops the actor rather than
+    # restarting it forever.
     assert lines[-1] == "doomed: restart window exhausted, stopped"
 
 
@@ -165,8 +165,8 @@ async def test_escalation():
         "pipeline: building, incarnation 2",
         "worker: ready",
     ]
-    # The ticker sits outside the restarted subtree and never noticed: a child
-    # failing cancels nothing but itself and its supervisor's subtree.
+    # The ticker sits outside the restarted subtree and never noticed. A child
+    # failing stops only itself and its supervisor's subtree.
     assert "ticker: tick 1" in lines
     assert "ticker: tick 2" in lines
     assert "worker: parsed 'ok'" in lines
@@ -183,7 +183,7 @@ async def test_graceful_shutdown():
     with assert_no_leaked_tasks():
         lines = await graceful_shutdown.main()
 
-    # A real SIGINT, and then the drain: children before the parent that owns
+    # A real SIGINT, then the drain: children before the parent that owns
     # them, and the pool's own close last.
     assert lines == [
         "conn-1: ran 'select 1'",
@@ -199,9 +199,9 @@ async def test_stash_on_startup():
     with assert_no_leaked_tasks():
         lines = await stash_on_startup.main()
 
-    # The two that arrived before the template are answered first and in the
-    # order they were sent, and the one that arrived after does not overtake
-    # them despite the actor being ready by the time it landed.
+    # The two that arrived before the template are answered first, in the
+    # order they were sent. The one that arrived after does not overtake them,
+    # even though the actor was ready when it landed.
     assert lines == [
         "greeter: loading, holding what arrives",
         "greeter: not ready, stashed ada",
@@ -218,7 +218,7 @@ async def test_rate_limiter():
         lines = await rate_limiter.main()
 
     # A bucket of two against a burst of five, then one refilled permit. The
-    # burst is sent in a single go, so no refill can land inside it.
+    # burst is sent in one go, so no refill can land inside it.
     assert lines == [
         "req-1: allowed",
         "req-2: allowed",
@@ -234,7 +234,7 @@ async def test_worker_pool():
         lines = await worker_pool.main()
 
     # Six jobs over three workers in strict rotation, never twice in a row on
-    # the same one. Then the first worker goes, and the rotation carries on
+    # the same one. Then the first worker stops, and the rotation carries on
     # across the two that are left rather than starting again.
     assert lines == [
         "routee-1: job 1",
@@ -255,9 +255,9 @@ async def test_state_machine():
     with assert_no_leaked_tasks():
         lines = await state_machine.main()
 
-    # The same Send is refused twice and then goes through: the state is the
-    # behavior, so what is legal is whatever the current one mentions. The
-    # token reaches the connection translated, in its own vocabulary.
+    # The same Send is refused twice and then goes through. The state is the
+    # behavior, so what is legal is whatever the current one handles. The
+    # token reaches the connection already translated.
     assert lines == [
         "conn: refused Send, not open",
         "conn: connecting, asking for a token",

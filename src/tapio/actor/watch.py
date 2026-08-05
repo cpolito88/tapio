@@ -1,11 +1,11 @@
 """What the runtime needs of something that can be told an actor stopped.
 
-Death watch started as a relationship between two cells, and the cell map that
-holds it was typed that way. Ask broke that assumption: a promise ref watches
+Death watch started as a relationship between two cells, and the map that
+holds it was typed that way. Ask broke that assumption. A promise ref watches
 the actor it is waiting on, so that a target which stops fails the caller at
-once instead of making it wait out the full timeout, and a promise ref has no
-cell to be. This protocol is the two things a watched cell actually uses, so
-both kinds of watcher can sit in the same map.
+once rather than after the full timeout, and a promise ref has no cell. This
+protocol is the two things a watched cell actually uses, so both kinds of
+watcher fit in the same map.
 """
 
 from typing import Any, Protocol, runtime_checkable

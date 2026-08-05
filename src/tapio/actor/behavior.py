@@ -4,16 +4,14 @@ Two styles sit over the same runtime, functional (`Behaviors.receive`) and
 class-based ([AbstractBehavior][tapio.actor.behavior.AbstractBehavior]). Both
 produce a `Behavior`.
 
-Every behavior that handles messages carries its message type as *data*, in
-`msg_type`. This is the one place Python's type erasure costs something a
-compiled actor library gets for free: `Behavior[T]`'s parameter does not
-survive to runtime, so the delivery-time type check has to be re-derived from
-something that does.
+Every behavior that handles messages carries its message type as data, in
+`msg_type`. `Behavior[T]`'s parameter does not survive to runtime, so the
+delivery-time type check has to read it from something that does.
 
 Lifecycle signals arrive through a second, optional handler. Most behaviors
-never declare one, which is why it is a keyword argument rather than a second
-required function: an actor that does not care when a watched peer stops
-should not have to say so.
+never declare one, so it is a keyword argument rather than a second required
+function: an actor that does not care when a watched peer stops should not
+have to say so.
 """
 
 import enum
@@ -79,8 +77,8 @@ class Directive(enum.Enum):
 
     These are returned as behaviors, `Behaviors.same()` and friends, so a
     handler has one return type. The runtime reads the directive back off the
-    sentinel with [directive_of][tapio.actor.behavior.directive_of] rather than
-    comparing against private module constants.
+    sentinel with [directive_of][tapio.actor.behavior.directive_of], instead
+    of comparing against private module constants.
     """
 
     SAME = "same"
@@ -135,10 +133,9 @@ class ReceivingBehavior(Behavior[T], ABC):
     async def receive_signal(self, ctx: ActorContext[T], signal: Signal) -> Behavior[T]:
         """Handle one lifecycle signal and return what the actor does next.
 
-        The default reports the signal as unhandled, which is not a failure: a
-        behavior that never watches anything has nothing to say about a
-        `Terminated`, and `PostStop` matters only to an actor holding a
-        resource.
+        The default reports the signal as unhandled, which is not a failure. A
+        behavior that watches nothing has nothing to say about a `Terminated`,
+        and `PostStop` only matters to an actor holding a resource.
 
         Args:
             ctx: This actor's context.
@@ -201,8 +198,8 @@ class _ReceiveMessageBehavior(ReceivingBehavior[T]):
         """Delegate to the signal handler, if this behavior declared one.
 
         The signal handler takes the context even here, where the message
-        handler does not: an actor reacting to a `Terminated` almost always
-        wants to spawn a replacement or log against its own path.
+        handler does not. An actor reacting to a `Terminated` usually wants to
+        spawn a replacement or log against its own path.
         """
         if self._on_signal is None:
             return typing.cast(Behavior[T], _UNHANDLED)
@@ -251,9 +248,9 @@ class SuperviseBehavior(Behavior[T]):
 class Supervise(Generic[T]):
     """The half-built result of `Behaviors.supervise`, awaiting a strategy.
 
-    Two calls rather than one because the failures being governed and the
-    decision taken about them are separate choices, and reading them apart is
-    what makes a nested supervision stack legible.
+    It takes two calls rather than one because which failures are governed and
+    what to do about them are separate choices. Keeping them apart is what
+    makes a nested supervision stack readable.
     """
 
     __slots__ = ("_behavior",)
@@ -288,8 +285,8 @@ class Supervise(Generic[T]):
 class SetupBehavior(Behavior[T]):
     """Deferred construction: the factory runs when the actor starts.
 
-    This is also what a restart re-runs, which is why children spawned in
-    `setup` come back after one and children spawned in a message handler do
+    A restart re-runs the factory. That is why children spawned in `setup`
+    come back after a restart and children spawned in a message handler do
     not.
     """
 
@@ -310,8 +307,8 @@ class WithTimersBehavior(Behavior[T]):
     """Deferred construction that also hands over a timer scheduler.
 
     Like `setup`, and for the same reason: the scheduler belongs to the cell,
-    so it cannot exist until there is one. A restart re-runs the factory
-    against the same scheduler, whose timers the cell has just cancelled.
+    so it cannot exist until there is a cell. A restart re-runs the factory
+    with the same scheduler, whose timers the cell has just cancelled.
     """
 
     def __init__(self, factory: "Callable[[TimerScheduler[T]], Behavior[T]]") -> None:
@@ -330,9 +327,9 @@ class WithTimersBehavior(Behavior[T]):
 class WithStashBehavior(Behavior[T]):
     """Deferred construction that also hands over a stash buffer.
 
-    The capacity is declared here rather than on the buffer the factory
-    receives, because the cell owns the buffer across incarnations and a
-    restart must not be able to quietly resize it.
+    The capacity is declared here rather than on the buffer the factory gets,
+    because the cell owns the buffer across incarnations and a restart must
+    not be able to resize it.
     """
 
     def __init__(
@@ -363,9 +360,9 @@ class AbstractBehavior(ReceivingBehavior[T], ABC):
             self._count = 0
     ```
 
-    Set `msg_type` as a class attribute to override that, which is needed when
-    the parameter is a string forward reference and so cannot be resolved at
-    class creation. Either way an unresolvable type raises
+    Set `msg_type` as a class attribute to override that. It is needed when
+    the parameter is a string forward reference, which cannot be resolved at
+    class creation. Either way, a type that cannot be resolved raises
     [BehaviorTypeError][tapio.errors.BehaviorTypeError] at class definition
     rather than at spawn.
 
@@ -389,9 +386,9 @@ class AbstractBehavior(ReceivingBehavior[T], ABC):
     async def on_signal(self, signal: Signal) -> Behavior[T]:
         """Handle one lifecycle signal, if this actor cares about any.
 
-        Override to react to `PostStop`, `PreRestart` or a `Terminated` from a
-        watched actor. The default reports the signal as unhandled, which is
-        not a failure.
+        Override this to react to `PostStop`, `PreRestart` or a `Terminated`
+        from a watched actor. The default reports the signal as unhandled,
+        which is not a failure.
 
         Args:
             signal: The signal that arrived.
@@ -444,9 +441,9 @@ def _msg_type_from_type_parameter(cls: type) -> object | None:
         if not args:
             continue
         candidate = args[0]
-        # A TypeVar means a still-generic intermediate class. A ForwardRef or a
-        # bare string means the name was not resolvable here. Both fall through
-        # to the explicit-override path rather than being guessed at.
+        # A TypeVar means a still-generic intermediate class. A ForwardRef or
+        # a bare string means the name could not be resolved here. Both fall
+        # through to the explicit override rather than being guessed at.
         if isinstance(candidate, TypeVar | str | typing.ForwardRef):
             continue
         return typing.cast(object, candidate)
@@ -461,10 +458,10 @@ def resolve_handler_msg_type(
 ) -> MessageType:
     """Work out which message type a handler declares.
 
-    Explicit wins, always: when `msg_type` is passed it is used verbatim, and
-    that is the documented form. Otherwise the handler's message parameter
-    annotation is read. Failure is loud, never a silent fallback to an
-    unchecked delivery path.
+    An explicit `msg_type` always wins, and that is the documented form.
+    Otherwise the handler's message parameter annotation is read. If neither
+    works it raises. There is no silent fallback to an unchecked delivery
+    path.
 
     Args:
         handler: The function whose annotation to read.
@@ -541,9 +538,8 @@ def _name_of_type(on: type[Exception] | tuple[type[Exception], ...]) -> str:
 class Behaviors:
     """Factories for the functional style.
 
-    A namespace rather than a module of loose functions, so that
-    `Behaviors.same()` reads the way it does in the actor libraries this
-    borrows from.
+    A namespace rather than loose functions, so that `Behaviors.same()` reads
+    the way it does in the actor libraries this borrows from.
     """
 
     @staticmethod
@@ -605,13 +601,13 @@ class Behaviors:
         )
         ```
 
-        Wrappers nest, and the outermost is consulted first, so a specific
-        exception governed by an inner wrapper must be wrapped again outside it
-        to win. A failure matching nothing stops the actor, which is what an
-        unsupervised actor already does.
+        Wrappers nest, and the outermost is consulted first. A specific
+        exception governed by an inner wrapper must be wrapped again outside
+        it to win. A failure that matches nothing stops the actor, which is
+        what an unsupervised actor already does.
 
-        Supervision belongs to the actor rather than to the behavior it
-        currently holds: switching behavior keeps the strategies, and a restart
+        Supervision belongs to the actor, not to the behavior it currently
+        holds. Switching behavior keeps the strategies, and a restart
         reinstates the ones the actor was spawned with.
 
         Args:
@@ -647,14 +643,13 @@ class Behaviors:
         ```
 
         A timer sends the actor a message on its own user lane, so a tick is
-        ordinary traffic: it queues behind whatever is already there and never
+        ordinary traffic. It queues behind whatever is already there and never
         re-enters a busy handler.
 
         The scheduler belongs to the cell, and the cell cancels every timer it
-        holds when the actor restarts or stops. A tick from an incarnation that
-        has gone away therefore cannot arrive at the one that replaced it, and
-        the factory below runs again on restart to schedule what the new
-        incarnation needs.
+        holds when the actor restarts or stops. A tick from an incarnation
+        that is gone cannot reach the one that replaced it. The factory runs
+        again on restart, to schedule what the new incarnation needs.
 
         Args:
             factory: Called with the scheduler to produce the real behavior.
@@ -675,18 +670,18 @@ class Behaviors:
         Behaviors.with_stash(100, lambda stash: loading(stash))
         ```
 
-        For an actor that cannot answer yet: put what arrives aside, and
+        For an actor that cannot answer yet. Put what arrives aside, then
         `return stash.unstash_all(ready_behavior)` once it can. The held
         messages go back to the front of the mailbox, ahead of anything that
         queued up since, and the buffer is left empty.
 
-        The capacity is required. A stash holds traffic the actor is by
-        definition not keeping up with, so an unbounded one is a memory leak
-        with an excuse; overflow raises `StashOverflowError` in the actor that
-        stashed, where the decision about what to do belongs.
+        The capacity is required. A stash holds traffic the actor is not
+        keeping up with, so an unbounded one is a memory leak. Overflow raises
+        `StashOverflowError` in the actor that stashed, which is where the
+        decision about what to do belongs.
 
-        A restart empties the buffer, since messages held by the state that
-        just failed are not the new state's to answer, and what is discarded is
+        A restart empties the buffer, because messages held by the state that
+        just failed are not the new state's to answer. What is discarded is
         published as a dead letter rather than dropped.
 
         Args:

@@ -10,21 +10,19 @@ client -> server   client-hello   name, address, uid, version, nonce, proof
 server -> client   welcome        proof
 ```
 
-Both proofs are HMACs of the *other* side's nonce, so neither end can be
-replayed at the other and a peer that holds no secret cannot pass for one that
-does. Three things get established here, and each of them is load-bearing:
+Both proofs are HMACs of the other side's nonce, so neither end can be
+replayed at the other, and a peer holding no secret cannot pass for one that
+does. Three things are established here:
 
-* **Version equality.** Both ends must run the same tapio version. An
-  incompatible wire format that half works is worse than one that refuses, and
-  a version is a cheap thing to check before anything harder to diagnose goes
-  wrong.
-* **The canonical address**, which is what this system will use to address the
-  peer and to key the association. It is what the peer advertises rather than
-  the socket it dialled from, since those differ routinely: containers, NAT,
-  port mapping.
-* **The system uid**, minted per incarnation. It is what makes a restarted peer
-  a *different* peer rather than a slow one, which is the distinction every
-  later judgement about reachability rests on.
+* **Version equality.** Both ends must run the same tapio version. A wire
+  format that half works is worse than one that refuses, and a version is
+  cheap to check before something harder to diagnose goes wrong.
+* **The canonical address**, used to address the peer and to key the
+  association. It is what the peer advertises, not the socket it dialled from,
+  since containers, NAT and port mapping routinely make those differ.
+* **The system uid**, minted per incarnation. It makes a restarted peer a
+  different peer rather than a slow one, which every later judgement about
+  reachability rests on.
 """
 
 import hmac
@@ -132,9 +130,9 @@ async def accept(
     hello = _read(_ClientHello, await link.read_link(timeout), "client-hello")
     _check_version(hello.version)
     _check_proof(secret, nonce, hello.proof, who="the peer that dialled in")
-    # Everything a peer can be refused for is settled before it is welcomed:
-    # a welcome the sender then closes on reads as a peer that vanished, and
-    # what happened was a refusal with a reason.
+    # Every reason to refuse a peer is checked before the welcome is sent. A
+    # welcome followed by a close would look like a peer that vanished, when
+    # what really happened was a refusal with a reason.
     identity = _identify(hello.system, hello.address, hello.uid, hello.version)
     await link.write_link(_Welcome(proof=_proof(secret, hello.nonce)))
     return identity
@@ -199,9 +197,8 @@ def _check_proof(secret: SecretStr | None, nonce: str, proof: str, *, who: str) 
     """Check an answer to this side's challenge.
 
     A system with no secret checks nothing, which is the loopback default. A
-    system with one refuses a peer that answered without: the empty proof a
-    secretless peer sends cannot match, and saying so plainly is better than
-    letting the mismatch read as a bad password.
+    system with a secret refuses a peer that has none, because the empty proof
+    such a peer sends cannot match.
 
     Raises:
         HandshakeError: If the proof does not match.
@@ -238,9 +235,9 @@ def _identify(system: str, address: str, uid: int, version: str) -> PeerIdentity
     """Turn what a peer said about itself into an identity, or refuse it.
 
     Raises:
-        HandshakeError: If the advertised address is unusable, which includes
-            a peer with remoting off: it has nothing to be dialled by, so
-            there is nothing to associate with.
+        HandshakeError: If the advertised address is unusable. That includes
+            a peer with remoting off, which has no address to be dialled at
+            and so nothing to associate with.
     """
     try:
         parsed = Address.parse(address)

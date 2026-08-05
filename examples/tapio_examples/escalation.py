@@ -5,21 +5,21 @@ rebuilt by its supervisor, and what happens when an escalation runs out of
 supervisors.
 
 A worker that cannot parse its input has no way to repair the pipeline it is
-part of; its parent, which built the pipeline in the first place, does.
-Escalating says exactly that: stop me, and make this your decision. The parent
-then takes its own, and here that is a restart, so the re-run setup rebuilds
-every child rather than the one that broke.
+part of. Its parent, which built the pipeline, does. Escalating says that:
+stop me, and make this your decision. The parent then takes its own decision,
+which here is a restart, so the setup runs again and rebuilds every child
+rather than only the one that broke.
 
-Escalation is ordinary message flow rather than an exception thrown across a
-task boundary: the child stops itself and puts a signal on the parent's system
-lane. That is why it can be ordered, observed and tested like everything else.
+Escalation is ordinary message flow, not an exception thrown across a task
+boundary. The child stops itself and puts a signal on the parent's system
+lane, which is why it can be ordered, observed and tested like anything else.
 
-Two things this example is careful to show. An actor outside the restarted
-subtree is untouched: a child failing must never cancel its siblings, which is
-the reason the runtime uses no task group. And an escalation that reaches the
-guardian has run out of actors willing to take responsibility, so the system
-terminates and re-raises the cause from `when_terminated`, where the service
-embedding tapio can decide whether to exit or rebuild.
+This example shows two more things. An actor outside the restarted subtree is
+untouched, because a child failing must never cancel its siblings. That is why
+the runtime uses no task group. And an escalation that reaches the guardian
+has run out of actors willing to take responsibility, so the system terminates
+and re-raises the cause from `when_terminated`. The service embedding tapio
+then decides whether to exit or rebuild.
 
 What to watch in the output: the ticker keeps counting across the restart, and
 the second scenario ends with the original error, carrying the path it climbed
@@ -146,8 +146,8 @@ async def subtree_restarted_by_its_supervisor(lines: list[str]) -> None:
         workers[0].tell(Parse(line=""))
         await rebuilt.wait()
 
-        # The sibling never noticed. A failing actor cancels nothing but
-        # itself, and its supervisor's subtree.
+        # The sibling never noticed. A failing actor stops only itself and,
+        # through its supervisor's decision, that supervisor's subtree.
         beat.tell(Tick())
         workers[1].tell(Parse(line="ok"))
         await parsed.wait()

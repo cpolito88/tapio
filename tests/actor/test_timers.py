@@ -1,9 +1,8 @@
-"""Timers: an actor sending itself a message later, or repeatedly.
+"""Tests for timers: an actor sending itself a message later.
 
-The property that matters most here is not the timing, which these tests keep
-deliberately coarse, but the ownership: a timer belongs to the cell that
-scheduled it, so a tick can never arrive at an actor that has stopped or at the
-incarnation that replaced the one which scheduled it.
+The timings are deliberately coarse. What these tests are really about is
+ownership: a timer belongs to the cell that scheduled it, so a tick can never
+reach a stopped actor or a later incarnation.
 """
 
 import asyncio
@@ -121,10 +120,10 @@ async def test_a_repeating_timer_keeps_firing(system: ActorSystem):
 
 
 async def test_a_fixed_rate_timer_catches_up_after_a_stall():
-    """The distinguishing property: missed ticks are sent, not skipped.
+    """Missed ticks are sent, not skipped, which is what makes it a rate.
 
-    A slow handler is the stall, and what makes this a rate rather than a
-    delay is that the schedule keeps advancing while the actor is busy.
+    The slow handler is the stall. The schedule keeps advancing while the
+    actor is busy, so the ticks it missed go out afterwards.
     """
     seen: list[str] = []
     released = asyncio.Event()
@@ -192,10 +191,10 @@ async def test_starting_a_timer_under_a_live_key_replaces_it(system: ActorSystem
 
 
 async def test_a_restart_cancels_the_timers(system: ActorSystem):
-    """The M4 restart table's timer row, which had no timers to assert on.
+    """The restart rule for timers, asserted here beside the feature.
 
-    A tick scheduled by the incarnation that failed must not arrive at the one
-    that replaced it: it was scheduled by state that no longer exists.
+    A tick scheduled by the incarnation that failed must not reach the one
+    that replaced it. It was scheduled by state that no longer exists.
     """
     seen: list[str] = []
     ref = system.spawn(
@@ -230,11 +229,11 @@ async def test_stopping_cancels_the_timers(system: ActorSystem):
 async def test_a_tick_that_does_not_fit_dead_letters(system: ActorSystem):
     """A tick is an ordinary message, so it meets the mailbox like one.
 
-    There is no sender to raise `MailboxFullError` into, which is exactly the
-    situation a send from another thread is in, so a tick that arrives at a
-    full `FAIL` mailbox is accounted for as a dead letter rather than becoming
-    an exception in a task nobody is watching. A fixed-rate timer against a
-    slow handler is the way to produce that on purpose.
+    There is no sender to raise `MailboxFullError` into, the same situation a
+    send from another thread is in. So a tick arriving at a full `FAIL`
+    mailbox becomes a dead letter rather than an exception in a task nobody is
+    watching. A fixed-rate timer against a slow handler produces that on
+    purpose.
     """
     letters: list[DeadLetter] = []
     system.dead_letters.subscribe(letters.append)

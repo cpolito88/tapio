@@ -21,32 +21,29 @@ R = TypeVar("R", bound=Message)
 class ActorRef(Generic[T]):
     """A handle for sending messages to one actor.
 
-    A ref stays a valid handle after its actor dies, so sending to it never
-    raises on account of the target being gone; the message goes to dead
-    letters instead. A point-in-time "is it alive?" answer is stale the moment
-    you have it, which is why death watch, not a predicate, is the supported
-    way to ask.
+    A ref stays a valid handle after its actor dies. Sending to it never
+    raises because the target is gone: the message becomes a dead letter
+    instead. An "is it alive?" answer would be out of date as soon as you had
+    it, which is why death watch is the supported way to ask.
 
-    The type parameter is static only. Nothing checks it at runtime, so
-    `ActorRef[Greeted]` and `ActorRef[Foo]` validate identically, because
-    generics are erased. A type checker catches the mismatch at the call site,
-    and the runtime check that catches it otherwise lives on the receiving
-    actor, keyed by its declared message type.
+    The type parameter is static only. Generics are erased, so nothing checks
+    it at runtime and `ActorRef[Greeted]` and `ActorRef[Foo]` validate the
+    same. A type checker catches the mismatch at the call site. At runtime the
+    check lives on the receiving actor, against its declared message type.
 
     Using one as a Pydantic field:
 
-    * Validation of a live ref is an is-instance check and nothing else. It
-      deliberately does not check that the target is still alive: that is a
-      race, since the target can die between the check and the send, and a dead
+    * Validation of a live ref is an is-instance check and nothing more. It
+      does not check that the target is still alive. That would be a race,
+      since the target can die between the check and the send, and a dead
       target is not a schema error.
-    * Serialization is the ref's full string form, address and incarnation uid
-      included, which is what a peer needs to send back to it.
-    * Validation of that string resolves it against the system that is reading
-      it, so `model_dump()` succeeds anywhere and `model_validate()` on the
-      result succeeds only inside a system's decode path or an explicit
-      `with system.as_deserialization_context():` block. The asymmetry is
-      deliberate: a ref is a handle into a live runtime, and there is no
-      meaningful ref outside of one.
+    * Serialization gives the ref's full string form, including the address
+      and the incarnation uid, which is what a peer needs to reply to it.
+    * Validation of that string resolves it against the system reading it. So
+      `model_dump()` works anywhere, while `model_validate()` on the result
+      works only inside a system's decode path or an explicit
+      `with system.as_deserialization_context():` block. A ref is a handle
+      into a live runtime, and there is no meaningful ref without one.
     """
 
     __slots__ = ("_path",)
@@ -64,11 +61,11 @@ class ActorRef(Generic[T]):
     def address(self) -> Address:
         """The address this ref writes itself down with.
 
-        The system name and nothing else on this base class, which is what a
-        ref belonging to a system with remoting switched off is: a peer reading
-        it can tell which system it names and that it has nowhere to dial. The
-        refs a running system hands out override this with the canonical
-        address that system advertises.
+        On this base class it is the system name and nothing else, which is
+        what a ref from a system with remoting switched off looks like. A peer
+        reading it can tell which system it names, and that there is nowhere
+        to dial. The refs a running system hands out override this with the
+        canonical address that system advertises.
         """
         return Address(system=self._path.system)
 
@@ -87,7 +84,7 @@ class ActorRef(Generic[T]):
     async def offer(self, message: T) -> None:
         """Send a message, waiting for the recipient's mailbox to have room.
 
-        Backpressure belongs to the mailbox rather than to the send, so on an
+        Backpressure belongs to the mailbox, not to the send, so on an
         unbounded mailbox this is `tell` with an `await` in front of it.
 
         Args:
@@ -169,7 +166,7 @@ def _validate_ref(value: object) -> ActorRef[Any]:
         return value
     if isinstance(value, str):
         return resolve_ref(value)
-    # A ValueError here is the right shape: Pydantic folds it into the
+    # A ValueError is what Pydantic wants here. It folds one into the
     # enclosing ValidationError alongside any other field errors.
     msg = f"expected an ActorRef, got {type(value).__name__}"
     raise ValueError(msg)

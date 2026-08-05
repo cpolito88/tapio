@@ -1,18 +1,16 @@
 """Two registries: message types by key, and live refs by path.
 
-**Message types.** A frame names its payload's type with a key, and that key is
-looked up in a dict. It is never an import path. Resolving a dotted name that
-arrived on a socket into an importable object is remote code execution, and it
-is how this goes wrong in libraries that treat the wire's type name as a
-Python name. An unregistered key is a dead letter naming the key, and nothing
-is imported to find out what it might have meant.
+**Message types.** A frame names its payload's type with a key, and that key
+is looked up in a dict. It is never an import path. Turning a dotted name that
+arrived on a socket into an importable object is remote code execution. An
+unregistered key becomes a dead letter naming the key, and nothing is imported
+to find out what it might have meant.
 
 **Live refs.** A path and an incarnation uid look up the ref to deliver into.
-Cells register when they start and deregister in their termination sequence, so
-the registry holds exactly the live actors: a uid that no longer matches
-resolves to nothing rather than to whoever occupies that path now. That
-symmetry makes registry cleanliness part of the same invariant as leaked tasks,
-and a system that has terminated leaves an empty one behind.
+Cells register when they start and deregister when they stop, so the registry
+holds exactly the live actors. A uid that no longer matches resolves to
+nothing rather than to whoever holds that path now. A system that has
+terminated leaves an empty registry behind, which the tests check.
 """
 
 from collections.abc import Callable
@@ -41,8 +39,8 @@ def register_message(key: str | None = None) -> Callable[[M], M]:
     """Register a message type under the key that names it on the wire.
 
     The default key is `module.qualname`, so the decorator usually takes no
-    argument. The explicit form is what lets a class be renamed or moved
-    without breaking a peer still running the previous version.
+    argument. Use the explicit form to rename or move a class without breaking
+    a peer still running the previous version.
 
     ```python
     @register_message()
@@ -59,15 +57,15 @@ def register_message(key: str | None = None) -> Callable[[M], M]:
         The decorator, which returns the class unchanged.
 
     Raises:
-        MessageRegistrationError: If the key is already taken, at import time
-            rather than letting the later class quietly win.
+        MessageRegistrationError: If the key is already taken. It is raised at
+            import time, rather than letting the later class win silently.
     """
 
     def decorate(cls: M) -> M:
         wire_key = key if key is not None else f"{cls.__module__}.{cls.__qualname__}"
-        # Checked at runtime as well as statically: the decorator is applied
-        # by user code that a type checker may never have seen, and a registry
-        # entry that is not a Message would fail on the far side of a wire.
+        # Checked at runtime as well as statically. The decorator is applied
+        # by user code a type checker may never have seen, and an entry that
+        # is not a Message would fail on the far side of a link.
         if not issubclass(cast(type, cls), Message):
             msg = (
                 f"cannot register {cls!r} under {wire_key!r}: only tapio.Message "
@@ -128,8 +126,8 @@ def registered_key(msg_type: type[Message]) -> str:
 class RefRegistry:
     """The live refs of one system, by path and incarnation uid.
 
-    Not process-wide, unlike the message-type registry: two systems in one
-    process share nothing, so each keeps its own.
+    Unlike the message-type registry, this is not process-wide. Two systems in
+    one process share nothing, so each keeps its own.
     """
 
     __slots__ = ("_refs",)
@@ -149,9 +147,8 @@ class RefRegistry:
     def lookup(self, path: ActorPath) -> ActorRef[Any] | None:
         """Return the live ref at a path and uid, or `None`.
 
-        `None` covers both halves of the incarnation rule: nothing was ever
-        there, or what was there has stopped and its uid will never be minted
-        again.
+        `None` covers both cases: nothing was ever there, or what was there
+        has stopped and its uid will never be used again.
         """
         return self._refs.get(path)
 

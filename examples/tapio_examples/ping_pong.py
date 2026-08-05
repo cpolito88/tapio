@@ -5,11 +5,11 @@ as "keep going, unchanged", and stopping an actor from inside its own handler
 with `Behaviors.stopped()`.
 
 Each message carries the address of its sender, so neither actor needs to know
-the other in advance: `ping` learns about `pong` from the message it receives.
+the other in advance. `ping` learns about `pong` from the message it receives.
 Neither actor holds any state. The hop count travels in the message instead,
-which is the cheapest form of "state" an actor system has.
+which is the cheapest kind of state an actor system has.
 
-What to watch in the output: hops strictly alternate, ping then pong, and the
+What to watch in the output: hops alternate strictly, ping then pong, and the
 last line is ping stopping itself once the rally is over.
 
 Run it with:

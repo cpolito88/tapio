@@ -1,12 +1,4 @@
-"""Message adapters: taking delivery of someone else's protocol.
-
-The assertions worth reading are the ones about *where* things happen. The
-translation runs in the owning actor, so a failure in it is that actor's
-supervision decision and never the sender's exception; the type check on the
-way in belongs to the sender, like every other send; and a message that never
-arrives is reported as what its sender sent rather than as the wrapper it
-travelled in.
-"""
+"""Tests for message adapters."""
 
 import asyncio
 
@@ -89,8 +81,8 @@ def shop(
                     raise BoomError("the translation itself failed")
                 case "wrong-type":
                     # A translation that produces something this actor never
-                    # declared. The cell has to catch it: an adapter is the one
-                    # way onto the lane that skipped the declared type.
+                    # declared. The cell has to catch it, because an adapter
+                    # is the one path onto the lane that skipped that check.
                     return Price(cents=price.cents)  # type: ignore[return-value]
                 case _:
                     return Quoted(cents=price.cents)
@@ -140,9 +132,9 @@ async def test_the_adapter_refuses_what_it_does_not_accept(system: ActorSystem):
 async def test_a_failing_translation_is_the_owners_failure(system: ActorSystem):
     """And never the sender's, which has not heard of the adapter.
 
-    The whole reason the translation travels with the message instead of being
-    applied at the send site: it is the owner's code, so it fails where the
-    owner's code fails, and a strategy the owner declared governs it.
+    This is why the translation travels with the message instead of running at
+    the send site. It is the owner's code, so it fails where the owner's code
+    fails, and the owner's strategy governs it.
     """
     seen: list[str] = []
     service = system.spawn(pricing(), name="pricing")
@@ -339,8 +331,8 @@ async def _ignore(message: Shop) -> Behavior[Shop]:
 def _alive(ref: ActorRef[Shop]) -> bool:
     """Whether the cell behind a ref is still reading its mailbox.
 
-    Only a test asks this. Application code watches, because a liveness answer
-    is stale by the time the caller reads it.
+    Only a test asks this. Application code watches instead, because the
+    answer is out of date by the time the caller reads it.
     """
     return isinstance(ref, LocalActorRef) and ref.cell.is_alive
 
@@ -400,6 +392,6 @@ def test_the_wrapper_and_the_adapter_render_what_they_are():
 
     assert "as_quoted" in repr(wrapper)
     assert "Price(cents=1)" in repr(wrapper)
-    # And a dump renders the function by name rather than raising, which is all
-    # anyone would want from one.
+    # A dump renders the function by name rather than raising, which is all
+    # anyone needs from one.
     assert wrapper.model_dump()["adapt"].endswith("as_quoted")

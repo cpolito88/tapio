@@ -1,20 +1,18 @@
 """Timers: an actor sending itself a message later, or repeatedly.
 
 The message goes onto the actor's own user lane, so a timer is not a callback
-running beside the receive loop: it is ordinary traffic that happens to have
-been scheduled. Everything an actor already relies on therefore still holds.
-One message is handled at a time, a tick queues behind whatever is in front of
-it, and a tick that fires while the actor is busy waits its turn rather than
-re-entering it.
+running beside the receive loop. It is ordinary traffic that happens to have
+been scheduled, and everything an actor relies on still holds: one message is
+handled at a time, a tick queues behind whatever is in front of it, and a tick
+that fires while the actor is busy waits its turn instead of re-entering it.
 
-Each timer is one task, and every one of them belongs to the cell that
-scheduled it. That is the whole of the ownership rule: a cell cancels its
-timers when it stops and when it restarts, so a tick from an incarnation that
-no longer exists can never arrive at the one that replaced it.
+Each timer is one task, owned by the cell that scheduled it. A cell cancels
+its timers when it stops and when it restarts, so a tick from an incarnation
+that no longer exists can never reach the one that replaced it.
 
 Keys are how a timer is referred to afterwards. Starting a timer under a key
-that is already running replaces it, which is what makes "restart the idle
-timeout" a single call rather than a cancel and a start.
+that is already running replaces it, which makes "restart the idle timeout" a
+single call rather than a cancel and a start.
 """
 
 import asyncio
@@ -35,9 +33,10 @@ T = TypeVar("T", bound=Message)
 class TimerScheduler(Generic[T]):
     """The handle `Behaviors.with_timers` gives a behavior.
 
-    One scheduler serves every incarnation of its actor. A restart cancels
-    what it holds rather than replacing it, so the behavior built by the re-run
-    factory schedules against the same object and nothing from before survives.
+    One scheduler serves every incarnation of its actor. A restart cancels the
+    timers it holds rather than replacing the scheduler, so the behavior built
+    by the factory schedules against the same object and nothing from the
+    previous incarnation survives.
     """
 
     __slots__ = ("_cell", "_tasks")
@@ -96,9 +95,9 @@ class TimerScheduler(Generic[T]):
         """Send a message repeatedly, waiting `interval` between sends.
 
         The gap is measured from one send to the next, so an actor that falls
-        behind does not accumulate a backlog of ticks: the timer simply sends
-        less often. This is the one to reach for by default, and the only one
-        that is safe on a bounded mailbox under load.
+        behind does not build up a backlog of ticks. The timer just sends less
+        often. Use this one by default. It is the only one that is safe on a
+        bounded mailbox under load.
 
         Args:
             key: What to call this timer.
@@ -130,11 +129,11 @@ class TimerScheduler(Generic[T]):
         """Send a message on a schedule, keeping the long-run average rate.
 
         Ticks are counted off a fixed schedule rather than from the last send,
-        so time lost to a slow handler is made up: after a stall the missed
-        ticks are sent immediately, one after another. That is the point of it,
-        and it is also the hazard, since a burst arrives at an actor that has
-        just proved it is not keeping up. Prefer `start_fixed_delay` unless
-        something downstream really is counting the ticks.
+        so time lost to a slow handler is made up. After a stall the missed
+        ticks are sent one after another. That is the point of it, and also
+        the risk: the burst arrives at an actor that has just shown it is not
+        keeping up. Prefer `start_fixed_delay` unless something downstream is
+        really counting the ticks.
 
         Args:
             key: What to call this timer.
@@ -158,9 +157,9 @@ class TimerScheduler(Generic[T]):
     def cancel(self, key: str) -> None:
         """Stop a timer. Cancelling one that is not running is harmless.
 
-        A tick already on the mailbox is not retracted: by then it is a message
-        like any other, and pulling one back out of a queue the actor is
-        reading would be a different guarantee than this one.
+        A tick already on the mailbox is not retracted. By then it is a
+        message like any other, and pulling one back out of a queue the actor
+        is reading would be a different guarantee.
 
         Args:
             key: The timer to stop.
@@ -172,9 +171,8 @@ class TimerScheduler(Generic[T]):
     def cancel_all(self) -> None:
         """Stop every timer this actor has running.
 
-        Called by the cell on restart and on termination, which is what keeps
-        a tick from an incarnation that has gone away out of the one that
-        replaced it.
+        Called by the cell on restart and on termination. This is what keeps a
+        tick from an old incarnation from reaching the one that replaced it.
         """
         for task in list(self._tasks.values()):
             if not task.done():
@@ -200,8 +198,8 @@ class TimerScheduler(Generic[T]):
             self._fire(message)
         finally:
             # The timer is over whether it fired or was cancelled, so the key
-            # must stop reading as active. Guarded because a replacement may
-            # already own the key by the time this runs.
+            # must stop counting as active. Guarded, because a replacement may
+            # already hold the key by the time this runs.
             if self._tasks.get(key) is asyncio.current_task():
                 del self._tasks[key]
 
@@ -222,17 +220,17 @@ class TimerScheduler(Generic[T]):
                 await asyncio.sleep(delay)
             self._fire(message)
             # Advancing the schedule rather than the clock is what makes this
-            # a rate: after a stall the next delay is negative and the missed
-            # ticks go out back to back.
+            # a rate. After a stall the next delay is negative, and the missed
+            # ticks go out one after another.
             next_at += interval
 
     def _fire(self, message: T) -> None:
         """Put one tick on the actor's own user lane.
 
-        Validation happened when the timer was scheduled, so what is left is
-        the enqueue, and it uses the off-loop path for the same reason a send
-        from another thread does: there is no sender to raise into. A tick that
-        meets a full mailbox or a stopped actor is a dead letter rather than an
+        Validation happened when the timer was scheduled, so only the enqueue
+        is left. It uses the off-loop path for the same reason a send from
+        another thread does: there is no sender to raise into. A tick that
+        meets a full mailbox or a stopped actor becomes a dead letter, not an
         exception in a task nobody is watching.
         """
         self._cell.deliver_offloop(message)

@@ -1,16 +1,16 @@
 """Signals: what the runtime tells an actor about its own lifecycle.
 
-Signals travel on the mailbox's system lane, which drains before the user lane,
-so a stop can never be stuck behind a backlog of user messages, and a death
-watch fires in bounded time however deep the queue is.
+Signals travel on the mailbox's system lane, which drains before the user
+lane. A stop is therefore never stuck behind a backlog of user messages, and a
+death watch fires in bounded time however deep the queue is.
 
 They are frozen dataclasses rather than `Message` subclasses. A signal is
-produced by the runtime and never crosses a `tell`, so the delivery-time
-guarantee `Message` exists to provide has nothing to check here.
+produced by the runtime and never crosses a `tell`, so there is nothing for
+the delivery-time guarantee to check.
 
 A behavior sees them through its signal handler, `Behaviors.receive(...,
-on_signal=...)` or `AbstractBehavior.on_signal`. `ChildFailed` is the one
-exception: it is the runtime's own escalation path, handled by the parent's
+on_signal=...)` or `AbstractBehavior.on_signal`. `ChildFailed` is the
+exception: it is the runtime's escalation path, handled by the parent's
 supervision rather than by its code.
 """
 
@@ -32,10 +32,9 @@ class Signal:
 class PostStop(Signal):
     """The actor has stopped and will handle no further message.
 
-    Best effort: an actor cancelled at the shutdown deadline while wedged in a
-    handler may never observe it. This is where resources get released, so
-    "usually runs" is the honest description and it is documented rather than
-    promised.
+    Best effort. An actor cancelled at the shutdown deadline while stuck in a
+    handler may never see it. Resources are released here, so treat it as
+    "usually runs" rather than a guarantee.
     """
 
 
@@ -44,9 +43,9 @@ class PreRestart(Signal):
     """The actor is about to be restarted, and this incarnation is ending.
 
     Delivered to the incarnation that failed, before its children are stopped
-    and before the original behavior is re-evaluated. `PostStop` does *not*
-    follow: a restart is not a stop, and an actor that released its resources
-    twice would be as surprised as one that never released them.
+    and before the original behavior is evaluated again. `PostStop` does not
+    follow, because a restart is not a stop. Releasing resources twice would
+    be as wrong as never releasing them.
     """
 
 
@@ -55,8 +54,8 @@ class Terminated(Signal):
     """A watched actor has stopped, for any reason including failure.
 
     Delivered to everyone who called `ctx.watch` on it, exactly once, on the
-    system lane. A restart does not produce one: the ref, path and uid are
-    unchanged, and only the incarnation behind them is new.
+    system lane. A restart does not produce one, because the ref, path and uid
+    are unchanged and only the incarnation behind them is new.
     """
 
     ref: "ActorRef[Any]"
@@ -67,11 +66,11 @@ class Terminated(Signal):
 class ChildFailed(Signal):
     """A child failed and its supervision decision was to escalate.
 
-    The parent's cell treats this as its own failure and runs its own decision,
-    which is what makes escalation ordinary message flow: orderable, observable
-    and testable, rather than an exception injected across a task boundary
-    where its ordering against the parent's in-flight message would be
-    undefined.
+    The parent's cell treats this as its own failure and takes its own
+    decision. Escalation is therefore ordinary message flow, which makes it
+    ordered, observable and testable. An exception injected across a task
+    boundary would have no defined order against the parent's in-flight
+    message.
 
     Handled by the runtime, never by a behavior's signal handler.
     """

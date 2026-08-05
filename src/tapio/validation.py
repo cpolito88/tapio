@@ -1,23 +1,23 @@
 """Delivery-time message validation.
 
-Three things are meant when tapio says every message is validated:
+"Every message is validated" means three separate things:
 
-1. Construction: ordinary Pydantic `__init__` validation. Free, and it already
-   happens.
+1. Construction: ordinary Pydantic `__init__` validation. It already happens
+   and costs nothing extra.
 2. On send, the type: an `isinstance` against the recipient's declared message
-   type. Unconditional, because it is what keeps a mailbox's type contract
-   honest when step 3 is switched off.
-3. On send, the contents: a full re-validation whose result is *discarded*.
-   Behind the `validate_on_tell` setting.
+   type. Always on, because it is what keeps a mailbox's type contract honest
+   when step 3 is switched off.
+3. On send, the contents: a full re-validation whose result is discarded.
+   Controlled by the `validate_on_tell` setting.
 
-Step 3 discarding its result is the point, not an oversight. With
+Discarding the result in step 3 is deliberate. With
 `revalidate_instances="always"` the call returns a new instance, and the
-mailbox always receives the original object. Validation is a pure check, so
-message identity does not depend on a settings flag: flipping
-`validate_on_tell` changes cost and nothing else.
+mailbox must receive the original object. Validation is a pure check, so
+message identity never depends on a setting: `validate_on_tell` changes the
+cost and nothing else.
 
 Both checks are resolved once, into a single bound function, so no call site
-ever branches on a setting.
+branches on a setting.
 """
 
 import functools
@@ -46,8 +46,8 @@ MessageValidator: TypeAlias = Callable[[Any], None]
 def normalize_msg_type(msg_type: object, *, origin: str) -> MessageType:
     """Check a declared message type and put it in a form `isinstance` accepts.
 
-    `typing.Union[A, B]` is rewritten to `A | B`. The two spell the same type,
-    but only the latter works as the second argument to `isinstance`.
+    `typing.Union[A, B]` is rewritten to `A | B`. They mean the same type, but
+    only the second works as an argument to `isinstance`.
 
     Args:
         msg_type: The declared type to check.
@@ -84,9 +84,9 @@ def normalize_msg_type(msg_type: object, *, origin: str) -> MessageType:
 def _reject_member(member: object, *, origin: str) -> None:
     """Explain why a declared type member cannot be used, then raise."""
     if isinstance(member, type) and issubclass(member, BaseModel):
-        # The failure this exists to prevent: re-validating a plain BaseModel
+        # This is what the check prevents. Re-validating a plain BaseModel
         # instance returns it untouched, so the delivery-time guarantee would
-        # be a silent no-op that also costs nothing.
+        # be a silent no-op.
         msg = (
             f"{origin} declares {member.__name__}, which subclasses BaseModel "
             "rather than tapio.Message. Pydantic defaults revalidate_instances "
@@ -135,14 +135,14 @@ def resolve_validator(
     if not settings.validate_on_tell:
         return check_type
 
-    # Built once. Constructing a TypeAdapter per send would cost considerably
-    # more than the validation it performs.
+    # Built once. Building a TypeAdapter per send would cost far more than the
+    # validation itself.
     adapter: TypeAdapter[Any] = TypeAdapter(msg_type)
 
     def check_type_and_contents(message: Any) -> None:
         check_type(message)
-        # Strict, and the result is deliberately dropped. See the module
-        # docstring: the recipient gets the original object either way.
+        # Strict, and the result is dropped on purpose. The recipient gets the
+        # original object either way. See the module docstring.
         adapter.validate_python(message, strict=True)
 
     return check_type_and_contents

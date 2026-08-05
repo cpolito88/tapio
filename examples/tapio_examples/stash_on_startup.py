@@ -3,25 +3,23 @@
 Concepts: `Behaviors.with_stash`, `stash.unstash_all`, and behavior-switching
 as the way an actor says "I am ready now".
 
-An actor that has to load something before it can work has three options and
-only one of them is good. Dropping what arrives loses work. Blocking the
-receive loop on the load makes the actor unable to answer anything at all,
-including a stop, which is worse than it sounds: the actor is not slow, it is
-absent. The third is to accept the messages, put them aside, and replay them
-once the state exists.
+An actor that has to load something before it can work has three options, and
+only one is good. Dropping what arrives loses work. Blocking the receive loop
+on the load leaves the actor unable to answer anything, including a stop: the
+actor is not slow, it is absent. The third option is to accept the messages,
+put them aside, and replay them once the state exists.
 
-Replay puts the held messages back at the *front* of the mailbox rather than
-handing them to the behavior one at a time. Two things follow, and both are
-the point. The held messages keep their arrival order and stay ahead of
-anything that queued up while the actor was loading, so nothing is reordered.
-And the actor stays an ordinary actor for the whole replay: a signal still
-outranks the backlog, so a stop arriving mid-replay is honoured rather than
-queued behind work nobody is going to want.
+Replay puts the held messages back at the front of the mailbox, rather than
+handing them to the behavior one at a time. Two things follow. The held
+messages keep their arrival order and stay ahead of anything that queued up
+while the actor was loading, so nothing is reordered. And the actor stays an
+ordinary actor throughout: a signal still outranks the backlog, so a stop
+arriving mid-replay is honoured instead of queued behind work nobody wants.
 
-What to watch in the output: greetings 1 and 2 arrived before the template
-did and 3 arrived after, and all three are answered in the order they were
-sent. The stash is what makes that true; without it the first two would have
-been answered wrongly, or not at all.
+What to watch in the output: greetings 1 and 2 arrived before the template and
+3 arrived after, and all three are answered in the order they were sent. The
+stash is what makes that true. Without it the first two would have been
+answered wrongly, or not at all.
 
 Run it with:
 
@@ -60,10 +58,10 @@ Traffic = Greet | Loaded
 def greeter(lines: list[str], done: asyncio.Event) -> Behavior[Traffic]:
     """A greeter that cannot greet until its template has loaded.
 
-    The stash capacity is required and it is not a formality: a stash holds
-    traffic the actor is by definition not keeping up with, so an unbounded
-    one is a memory leak with a good excuse. Overflow raises in this actor,
-    where the decision about what to shed belongs.
+    The stash capacity is required, and it matters. A stash holds traffic the
+    actor is not keeping up with, so an unbounded one is a memory leak.
+    Overflow raises in this actor, where the decision about what to drop
+    belongs.
     """
 
     def ready(template: str) -> Behavior[Traffic]:
@@ -82,8 +80,8 @@ def greeter(lines: list[str], done: asyncio.Event) -> Behavior[Traffic]:
         def with_buffer(stash: StashBuffer[Traffic]) -> Behavior[Traffic]:
             def build(ctx: ActorContext[Traffic]) -> Behavior[Traffic]:
                 # Stands in for the ask or the child actor a real load would
-                # use. What matters here is only that the answer arrives as a
-                # message, later, like everything else an actor learns.
+                # use. All that matters here is that the answer arrives later,
+                # as a message, like everything else an actor learns.
                 timers.start_single("load", Loaded(template="hello, {}!"), LOAD_TIME)
                 lines.append("greeter: loading, holding what arrives")
 

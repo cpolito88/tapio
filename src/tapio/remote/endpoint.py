@@ -8,9 +8,9 @@ closes the port and every link under it through the ordinary stop sweep.
 
 The socket is bound **synchronously, at system construction**. That is what
 makes `bind_port=0` usable: the canonical address is settled before the first
-ref is handed out, rather than changing under a ref that has already been
-written down. It is also what makes a misconfigured deployment fail to start
-instead of failing to be reachable.
+ref is handed out, instead of changing under a ref already written down. It is
+also what makes a misconfigured deployment fail to start rather than fail to
+be secure.
 """
 
 import asyncio
@@ -62,8 +62,8 @@ class _EndpointMessage(Message):
 class RemoteEndpoint:
     """This system's remoting: the port, the associations, and the resolver.
 
-    Constructed with an already-bound socket, so that the canonical address is
-    known before anything can serialize a ref, and started once the system's
+    It is constructed with an already-bound socket, so the canonical address
+    is known before anything can serialize a ref. It starts once the system's
     guardians exist to hang its actors from.
     """
 
@@ -83,9 +83,9 @@ class RemoteEndpoint:
         Args:
             address: This system's canonical address.
             uid: This system's incarnation uid.
-            settings: The system's tunables, whose `remote` half is required
-                here and whose `validate_on_tell` decides how much a ref
-                resolved with an expected type checks before it encodes.
+            settings: The system's tunables. The `remote` half is required
+                here. `validate_on_tell` decides how much a ref resolved with
+                an expected type checks before it encodes.
             dispatcher: The loop everything here runs on.
             dead_letters: Where a frame that never left is accounted for.
             deliver: Hands an inbound message frame to the system.
@@ -139,8 +139,8 @@ class RemoteEndpoint:
     def associations(self) -> tuple[Address, ...]:
         """The peers this system currently holds a link, or a dial, for.
 
-        Exposed for the same reason a cell exposes its watchers: "the link was
-        released" has to be a thing a test can assert rather than infer.
+        Exposed for the same reason a cell exposes its watchers: a test has to
+        be able to assert that the link was released.
         """
         return tuple(self._associations)
 
@@ -187,10 +187,10 @@ class RemoteEndpoint:
     ) -> None:
         """Handshake an inbound connection, then hand the link to an association.
 
-        The accepting task ends as soon as the handshake does: reading the link
-        belongs to the association's own reader, which is a task a cell owns
-        and cancels. This one is tracked only so that a connection caught
-        mid-handshake at shutdown is cancelled rather than left talking.
+        The accepting task ends as soon as the handshake does. Reading the
+        link belongs to the association's own reader, which is a task a cell
+        owns and cancels. This task is tracked only so that a connection
+        caught mid-handshake at shutdown is cancelled rather than left open.
         """
         task = asyncio.current_task()
         if task is not None:
@@ -205,10 +205,10 @@ class RemoteEndpoint:
                 timeout=self._settings.handshake_timeout.total_seconds(),
             )
         except (OSError, TapioError, TimeoutError, EOFError) as error:
-            # Refused before a single message frame was read, which is the
-            # point of doing this first: a peer that cannot say who it is, or
-            # runs a version this one does not speak, gets a closed connection
-            # and a log line rather than a partly understood session.
+            # Refused before any message frame was read, which is why the
+            # handshake comes first. A peer that cannot say who it is, or runs
+            # a version this one does not speak, gets a closed connection and
+            # a log line instead of a half-understood session.
             _log.warning("refused a connection from %s: %s", link.peer, error)
             await link.close()
             return
@@ -223,15 +223,15 @@ class RemoteEndpoint:
     def _adopt(self, peer: Address, uid: int, link: FrameLink) -> None:
         """Take a handshaken inbound link, resolving a simultaneous dial.
 
-        Both ends connecting at once is normal under load, and without a rule
-        the pair keeps two connections and FIFO per association stops meaning
+        Both ends connecting at once is normal under load. Without a rule the
+        pair keeps two connections, and FIFO per association stops meaning
         anything. The rule is address order: the link opened by the
-        lower-sorting system wins, and the loser is closed.
+        lower-sorting system wins, and the other is closed.
         """
         if self._closed:
-            # The system is going away. Closing is the whole of the answer: the
-            # peer will see the link drop, which is the same thing it would see
-            # a moment later anyway.
+            # The system is going away, so closing is the whole answer. The
+            # peer sees the link drop, which is what it would see a moment
+            # later anyway.
             self._close_later(link, peer)
             return
         existing = self._associations.get(peer)
@@ -250,8 +250,8 @@ class RemoteEndpoint:
     def _close_later(self, link: FrameLink, peer: Address) -> None:
         """Close a link this endpoint is not going to use.
 
-        Its own task because closing waits for the transport, and the caller
-        here is a handshake that has finished having anything to say.
+        It gets its own task because closing waits for the transport, and the
+        caller is a handshake that has nothing left to say.
         """
         self._dispatcher.spawn_task(link.close(), name=f"tapio-link-close:{peer}")
 
@@ -262,10 +262,10 @@ class RemoteEndpoint:
             peer: The peer's canonical address.
 
         Returns:
-            The association, whose link may still be coming up: sends queue
-            behind it rather than waiting on it, so nothing blocks on a dial.
-            `None` once this system is shutting down, when there is nothing
-            left to dial with.
+            The association. Its link may still be coming up, and sends queue
+            behind it rather than waiting, so nothing blocks on a dial.
+            `None` once this system is shutting down and there is nothing left
+            to dial with.
         """
         if self._closed:
             return None
@@ -280,10 +280,9 @@ class RemoteEndpoint:
         """Turn a foreign address and path into a ref that reaches it.
 
         This is the peer resolver the system calls when a ref names another
-        system, which happens both at `resolve` and inside a decode. A ref that
-        arrives in a message field therefore works without anyone arranging
-        anything, which is what makes a `reply_to` from a third system an
-        ordinary send.
+        system, both at `resolve` and inside a decode. A ref that arrives in a
+        message field therefore works with no setup, which is what makes a
+        `reply_to` from a third system an ordinary send.
 
         Args:
             address: The system the ref names.
@@ -320,9 +319,9 @@ class RemoteEndpoint:
     ) -> ActorRef[Any]:
         """Build a remote ref that finds its association at every send."""
         # Bound to the peer rather than to one association, so a ref outlives
-        # a link that failed: the next send through it dials again. A ref is a
-        # handle to an actor on a node, not to a socket that happened to be
-        # open when it was resolved.
+        # a failed link and the next send through it dials again. A ref points
+        # at an actor on a node, not at the socket that was open when it was
+        # resolved.
         return RemoteRef[Any](
             path,
             outbox=PeerOutbox(self, address),
@@ -337,8 +336,8 @@ class RemoteEndpoint:
     def forget_all(self, detail: str) -> None:
         """Close every association, as a link failure would one at a time.
 
-        For the tests that need a link to go away without a peer going away,
-        which is the only way to show that a ref survives one.
+        For the tests that need a link to go away while the peer stays, which
+        is the only way to show that a ref survives a failed link.
 
         Args:
             detail: Why, for the log and the dead letters that follow.
@@ -349,9 +348,9 @@ class RemoteEndpoint:
     def forget(self, association: Association) -> None:
         """Drop an association that has stopped.
 
-        The next send to that peer creates a new one and dials again. Holding a
-        stopped association would mean holding a link that is not there, and
-        the honest answer to "is the peer back" is to find out by dialling.
+        The next send to that peer creates a new one and dials again. Holding
+        a stopped association would mean holding a link that is not there, and
+        the only way to know whether the peer is back is to dial it.
         """
         if self._associations.get(association.peer) is association:
             del self._associations[association.peer]
@@ -379,10 +378,9 @@ class RemoteEndpoint:
     async def close(self) -> None:
         """Stop listening, and let the tree stop the links.
 
-        The associations are children of this endpoint's actor, so they are
-        already being stopped by the sweep that got here. What is left is the
-        socket and any connection still mid-handshake, which belongs to nobody
-        else.
+        The associations are children of this endpoint's actor, so the sweep
+        that reached here is already stopping them. What is left is the socket
+        and any connection still mid-handshake, which nobody else owns.
         """
         if self._closed:
             return
@@ -412,10 +410,10 @@ class RemoteEndpoint:
 class PeerOutbox:
     """A peer, as a place to hand frames, whatever link is up at the time.
 
-    One of these sits behind every remote ref. It looks the association up per
-    send instead of holding one, which is what makes a ref survive a link that
-    failed, and it is where a send lands when there is no endpoint left to hold
-    an association at all.
+    One of these sits behind every remote ref. It looks the association up on
+    each send instead of holding one, which is what lets a ref survive a
+    failed link. It is also where a send lands when there is no endpoint left
+    to hold an association.
     """
 
     __slots__ = ("_endpoint", "_peer")
@@ -477,8 +475,8 @@ def open_listener(settings: RemoteSettings) -> socket.socket:
 def _wins(initiator: Address, challenger: Address) -> bool:
     """Whether the link opened by `initiator` beats one opened by `challenger`.
 
-    Sorted by address string, so both ends compute the same answer from the
-    same two names and neither has to be told which one it is.
+    It sorts the address strings, so both ends compute the same answer from
+    the same two names and neither has to be told which one it is.
     """
     return str(initiator) < str(challenger)
 
@@ -491,10 +489,10 @@ def _sanitize(peer: Address) -> str:
 def _accept_any_message(message: Message) -> None:
     """Check nothing, for a ref whose peer protocol was never declared.
 
-    A ref that arrived in a message field carries no claim about what the actor
-    on the other end accepts, and inventing one here would be a check on a
-    guess. The authoritative check runs on the receiving node against the
-    target's real message type, where it can be trusted.
+    A ref that arrived in a message field carries no claim about what the
+    actor on the other end accepts, and inventing one here would check a
+    guess. The check that decides runs on the receiving node, against the
+    target's real message type.
     """
 
 

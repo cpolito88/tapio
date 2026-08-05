@@ -13,11 +13,11 @@ __all__ = ["RemoteSettings", "TLSSettings", "TapioSettings"]
 class TLSSettings(BaseSettings):
     """Certificates for a link, and optionally for the peer on the other end.
 
-    The shared secret authenticates a peer; TLS is what makes the conversation
-    confidential. They answer different questions, so they are configured
-    separately and recommended together for anything crossing a machine
-    boundary: a secret sent over plaintext protects the handshake and nothing
-    that follows it.
+    The shared secret proves who a peer is. TLS keeps the conversation
+    private. They answer different questions, so they are configured
+    separately, and both are recommended for anything crossing a machine
+    boundary. A secret sent in plaintext protects the handshake and nothing
+    after it.
     """
 
     model_config = SettingsConfigDict(env_prefix="TAPIO_REMOTE_TLS_", frozen=True)
@@ -46,13 +46,13 @@ class TLSSettings(BaseSettings):
 class RemoteSettings(BaseSettings):
     """Where this system listens, and how peers address it.
 
-    Nested under `TapioSettings.remote` rather than spread across it, so "is
-    this system reachable from outside the process" is one `is None` check
-    instead of a handful of defaults that individually look harmless.
+    Nested under `TapioSettings.remote` rather than spread across it, so
+    "is this system reachable from outside the process" is one `is None`
+    check, not a handful of defaults that each look harmless on their own.
 
-    Bind and canonical are separate because they routinely differ: containers,
-    NAT and port mapping all mean the address a peer dials is not the one the
-    socket is bound to. What a ref writes down is always the canonical one.
+    Bind and canonical are separate because they often differ. With
+    containers, NAT or port mapping, the address a peer dials is not the one
+    the socket is bound to. A ref always writes down the canonical one.
     """
 
     model_config = SettingsConfigDict(env_prefix="TAPIO_REMOTE_", frozen=True)

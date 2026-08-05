@@ -1,15 +1,15 @@
 """The ambient system a ref deserializes against.
 
-Turning `tapio://orders@10.0.0.4:25520/user/checkout#3` back into a working ref
-takes something a Pydantic validator has no way to reach on its own: the system
-doing the reading. It has to know whether that address is its own, so it can
-hand back the live local ref rather than a proxy to itself, and it has to own
-the association a foreign address resolves through.
+Turning `tapio://orders@10.0.0.4:25520/user/checkout#3` back into a working
+ref needs something a Pydantic validator cannot reach on its own: the system
+doing the reading. That system knows whether the address is its own, so it can
+hand back the live local ref rather than a proxy to itself, and it owns the
+association a foreign address resolves through.
 
 So the receiving end sets an ambient context for the duration of a decode, and
-the ref validator reads it. Outside one there is no honest answer, and a
+the ref validator reads it. Outside one there is no answer to give, and
 `RefResolutionError` says so: a ref is a handle into a live runtime, and there
-is no meaningful ref outside of one.
+is no meaningful ref without one.
 """
 
 from collections.abc import Iterator
@@ -44,9 +44,9 @@ class DeserializationContext(Protocol):
     def resolve_path(self, address: Address, path: "ActorPath") -> "ActorRef[Any]":
         """Turn an address and a path into a ref that can be told things.
 
-        Never raises about the target: an actor that has stopped, an
-        incarnation that has been replaced and a peer with no link to it all
-        resolve to something whose `tell` produces a dead letter.
+        Never raises about the target. A stopped actor, a replaced
+        incarnation, and a peer with no link all resolve to something whose
+        `tell` produces a dead letter.
         """
         ...
 
