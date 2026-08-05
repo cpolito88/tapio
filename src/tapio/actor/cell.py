@@ -18,10 +18,10 @@ import contextlib
 import itertools
 import random
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Any, Generic, TypeVar, cast
+from typing import Any, Generic, TypeAlias, TypeVar, cast
 
 from tapio.actor.adapter import AdaptedMessage, AdapterRef
 from tapio.actor.ask import ask as run_ask
@@ -37,7 +37,7 @@ from tapio.actor.behavior import (
     resolve_handler_msg_type,
 )
 from tapio.actor.context import ActorContext
-from tapio.actor.dead_letters import DeadLetterOffice, DeadLetterReason
+from tapio.actor.dead_letters import Carrier, DeadLetterOffice, DeadLetterReason
 from tapio.actor.mailbox import Envelope, Mailbox, MailboxConfig
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
@@ -52,6 +52,7 @@ from tapio.errors import (
     ActorSystemTerminating,
     BehaviorTypeError,
     MailboxFullError,
+    RefResolutionError,
     WatchError,
 )
 from tapio.logging import ActorLogAdapter, actor_logger, runtime_logger
@@ -61,7 +62,15 @@ from tapio.remote.registry import RefRegistry
 from tapio.settings import TapioSettings
 from tapio.validation import MessageType, MessageValidator, resolve_validator
 
-__all__ = ["ActorCell", "ActorRuntime", "LocalActorRef"]
+__all__ = ["ActorCell", "ActorRuntime", "LocalActorRef", "RefResolver"]
+
+RefResolver: TypeAlias = Callable[[str, type[Message]], Awaitable["ActorRef[Any]"]]
+"""Turns a ref's string form into a ref, against the system that holds it.
+
+The system installs one on its runtime so that `ctx.resolve` is the same call
+as `system.resolve` rather than a second implementation of it, and so that a
+cell needs no reference to the system to make it.
+"""
 
 T = TypeVar("T", bound=Message)
 U = TypeVar("U", bound=Message)
@@ -134,6 +143,13 @@ class ActorRuntime:
     Read only to tell one dead-letter reason from another: a message sent to a
     stopped actor and a message sent after the system went away are different
     diagnoses, and the sender usually cares which.
+    """
+
+    resolver: RefResolver | None = None
+    """How this system turns a ref's string form into a ref.
+
+    Installed by the system, and `None` only for a cell built directly in a
+    test, which has no system to resolve against.
     """
 
     guardian_failure: Callable[[ActorPath, BaseException], None] | None = None
@@ -1184,11 +1200,12 @@ class ActorCell(Generic[T]):
     def _dead_letter(self, message: Message, reason: str) -> None:
         """Account for a message that had nowhere to go.
 
-        A message that came through an adapter is reported as what its sender
-        sent. The wrapper is a detail of how it travelled, and a subscriber
-        matching on message types should not have to know about one.
+        A message that was travelling inside a wrapper, through an adapter or
+        out to a peer, is reported as what its sender sent. The wrapper is a
+        detail of how it travelled, and a subscriber matching on message types
+        should not have to know about one.
         """
-        if isinstance(message, AdaptedMessage):
+        if isinstance(message, Carrier):
             message = message.payload
         self._runtime.dead_letters.publish(message, self._path, reason)
 
@@ -1277,6 +1294,16 @@ class _CellContext(ActorContext[T]):
     ) -> ActorRef[U]:
         """Hand out a ref that translates another protocol into this actor's."""
         return self._cell.message_adapter(adapt, msg_type)
+
+    async def resolve(self, uri: str, *, expect: type[U]) -> ActorRef[U]:
+        """Turn a ref's string form into a ref, local or remote."""
+        resolver = self._cell.runtime.resolver
+        if resolver is None:  # pragma: no cover - every system installs one
+            msg = (
+                f"cannot resolve {uri!r}: this actor's runtime has no system behind it"
+            )
+            raise RefResolutionError(msg)
+        return cast("ActorRef[U]", await resolver(uri, expect))
 
     def watch(self, ref: ActorRef[Any]) -> None:
         """Ask to be sent `Terminated` when another actor stops."""

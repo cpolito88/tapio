@@ -2,11 +2,45 @@
 
 from datetime import timedelta
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from tapio.actor.mailbox import MailboxConfig, OverflowStrategy
 
-__all__ = ["RemoteSettings", "TapioSettings"]
+__all__ = ["RemoteSettings", "TLSSettings", "TapioSettings"]
+
+
+class TLSSettings(BaseSettings):
+    """Certificates for a link, and optionally for the peer on the other end.
+
+    The shared secret authenticates a peer; TLS is what makes the conversation
+    confidential. They answer different questions, so they are configured
+    separately and recommended together for anything crossing a machine
+    boundary: a secret sent over plaintext protects the handshake and nothing
+    that follows it.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="TAPIO_REMOTE_TLS_", frozen=True)
+
+    certfile: str
+    """This system's certificate, presented to every peer."""
+
+    keyfile: str | None = None
+    """The private key, when it is not in `certfile`."""
+
+    cafile: str | None = None
+    """The authority peers' certificates are checked against.
+
+    Set on both ends for mutual authentication: a server with this set requires
+    a client certificate, and a client with it set verifies the server's.
+    """
+
+    check_hostname: bool = True
+    """Whether a dialled peer's certificate must match the host dialled.
+
+    Off only for the deployments where the canonical host is not what the
+    certificate names, which is a thing to know about rather than to discover.
+    """
 
 
 class RemoteSettings(BaseSettings):
@@ -29,7 +63,9 @@ class RemoteSettings(BaseSettings):
     default is set for someone who has not thought about it yet."""
 
     bind_port: int = 25520
-    """The port to listen on."""
+    """The port to listen on. `0` takes whatever the OS hands out, and the
+    canonical port then follows the one it bound, so a test or a sidecar that
+    cannot pick a port in advance still advertises a dialable address."""
 
     canonical_host: str | None = None
     """The host peers dial. `bind_host` when omitted."""
@@ -39,6 +75,39 @@ class RemoteSettings(BaseSettings):
 
     max_frame_bytes: int = 4 * 1024 * 1024
     """Refuse a frame larger than this, before its body is read."""
+
+    secret: SecretStr | None = None
+    """The shared secret both ends prove they hold during the handshake.
+
+    Required to bind anywhere but loopback: a system that accepts frames naming
+    actor paths and message types from any host that can reach the port, with
+    nothing to prove, fails to start rather than serving strangers.
+    """
+
+    tls: TLSSettings | None = None
+    """Certificates for the link, or `None` for plaintext."""
+
+    handshake_timeout: timedelta = timedelta(seconds=5)
+    """How long a link has to be dialled, accepted and handshaken.
+
+    One deadline for the whole opening, so a peer that accepts a connection and
+    then says nothing costs this and not a parked task.
+    """
+
+    heartbeat_interval: timedelta = timedelta(seconds=1)
+    """How often an idle association writes a heartbeat.
+
+    A link that carries traffic needs none of these; they exist so that silence
+    can be told from a peer with nothing to say.
+    """
+
+    outbound_capacity: int = 10_000
+    """Frames one association will hold for a peer that is not reading.
+
+    Backpressure against a socket, and deliberately not backpressure from the
+    receiving actor: nothing in a fire-and-forget wire protocol can offer the
+    latter. What overflows here goes to dead letters with the peer named.
+    """
 
 
 class TapioSettings(BaseSettings):

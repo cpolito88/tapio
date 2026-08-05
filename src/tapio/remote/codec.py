@@ -319,7 +319,7 @@ def receive_frame(
         )
         return
 
-    recipient = context.resolve(context.address, frame.to)
+    recipient = context.resolve_path(context.address, frame.to)
     try:
         recipient.tell(message)
     except MessageTypeError as error:

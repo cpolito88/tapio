@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Annotated, Any, TypeAlias, TypeVar, cast
 
 from pydantic import PlainSerializer, PlainValidator
 
-from tapio.actor.dead_letters import CarriedMessage
+from tapio.actor.dead_letters import Carrier
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
 from tapio.message import Message
@@ -78,7 +78,7 @@ wrapper somebody caught mid-flight prints something rather than raising.
 """
 
 
-class AdaptedMessage(Message):
+class AdaptedMessage(Carrier):
     """One message on its way through an adapter, not yet translated.
 
     Internal, and short-lived: it exists between the adapter ref that accepted
@@ -87,9 +87,6 @@ class AdaptedMessage(Message):
     the payload rather than this wrapper, since the wrapper is a detail of how
     the message travelled and not of what was sent.
     """
-
-    payload: CarriedMessage
-    """The foreign message, exactly as its sender passed it."""
 
     adapt: AdaptFunction
     """What turns it into one of the owner's messages."""

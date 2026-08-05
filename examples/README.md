@@ -45,6 +45,15 @@ Tiers 1-3, teaching exactly one concept.
 | `rate_limiter` | token bucket in one actor, the mailbox as mutex |
 | `stash_on_startup` | stashing traffic during startup, then unstashing |
 
+### Tier 5: Distribution
+
+Every example here starts two systems in one process, on loopback ports the OS
+picks, and shuts both down. No orchestration, no second machine.
+
+| Example | Teaches |
+|---|---|
+| `two_nodes` | `resolve`, a `tell` across an association, and a reply arriving through a `reply_to` that crossed the wire |
+
 ### Tier 4: Realistic composition
 
 | Example | Teaches |
@@ -54,5 +63,5 @@ Tiers 1-3, teaching exactly one concept.
 | `fastapi_app` | `ActorSystem` in a FastAPI lifespan; the deployment story |
 | `blocking_offload` | `ctx.run_blocking`, counted against the same code without it |
 
-Tiers 1 and 2 have landed and run in CI. Tiers 3 and 4 are what the later
-milestones will fill in.
+Tiers 1, 2 and 3 have landed and run in CI, and Tier 5 has begun with
+`two_nodes`. Tier 4 is what the later milestones will fill in.

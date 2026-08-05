@@ -1,8 +1,7 @@
-"""Addresses and the string form of a ref.
+"""Tests for addresses and the string form of a ref.
 
-A ref's string form is its wire form, so every claim here is a claim about
-what a peer will read. The round trip is the whole point: what one system
-writes down, another has to be able to take apart again.
+A ref's string form is its wire form, so what one system writes down another
+has to be able to parse back.
 """
 
 import pytest
@@ -35,8 +34,7 @@ def test_an_ipv6_literal_survives_the_round_trip():
 
 
 def test_a_host_without_a_port_is_refused():
-    # Half an address is worse than none: it would render as something a peer
-    # could parse and not dial.
+    # Half an address would render as something a peer can parse but not dial.
     with pytest.raises(ValueError, match="host and a port together"):
         Address(system="orders", host="10.0.0.4")
 
@@ -52,8 +50,8 @@ def test_a_port_outside_the_range_is_refused():
 
 
 def test_a_system_name_no_path_could_hold_is_refused():
-    # The system name is the authority in every path below it, so the rules
-    # are the path's rules rather than a second set that could drift.
+    # A system name is checked with the path rules, not a second set that
+    # could drift away from them.
     with pytest.raises(ValueError, match="invalid actor system name"):
         Address(system="not a name")
 
@@ -105,8 +103,8 @@ def test_uid_zero_is_left_out_and_comes_back_as_zero():
 
 
 def test_an_address_and_a_path_from_different_systems_are_refused():
-    # Nothing legitimate produces this pairing, and rendering it would produce
-    # a ref naming one system in its authority and another in its path.
+    # Rendering this would name one system in the address and another in the
+    # path.
     address = Address(system="orders")
     with pytest.raises(ValueError, match="cannot address"):
         format_ref(address, ActorPath.root("inventory").child("user"))
@@ -118,7 +116,6 @@ def test_parsing_something_that_is_not_a_ref_says_what_the_form_is():
 
 
 def test_parsing_a_ref_whose_path_holds_an_illegal_name_is_refused():
-    # The path rules apply to what came off the wire exactly as they do to a
-    # name passed to `spawn`: a peer does not get to invent an element.
+    # A name off the wire is checked like a name passed to `spawn`.
     with pytest.raises(ValueError, match="invalid actor name"):
         parse_ref("tapio://orders/user/bad!name")

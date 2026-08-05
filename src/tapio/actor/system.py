@@ -9,30 +9,41 @@ they share nothing but that loop.
 """
 
 import asyncio
+import secrets
+import socket
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from types import TracebackType
-from typing import Any, Self, TypeVar
+from typing import Any, Final, Self, TypeVar, cast
 
 from tapio.actor.behavior import Behavior, Behaviors
-from tapio.actor.cell import ActorCell, ActorRuntime
+from tapio.actor.cell import ActorCell, ActorRuntime, LocalActorRef
 from tapio.actor.dead_letters import DeadLetterOffice, DeadLetterReason, DeadLetterRef
 from tapio.actor.mailbox import MailboxConfig
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
 from tapio.dispatch.dispatcher import Dispatcher
-from tapio.errors import ActorSystemTerminating
+from tapio.errors import ActorSystemTerminating, RefResolutionError
 from tapio.logging import ActorLogAdapter, actor_logger
 from tapio.message import Message
-from tapio.remote.address import Address
+from tapio.remote.address import Address, parse_ref
 from tapio.remote.codec import receive_frame
 from tapio.remote.context import use_context
+from tapio.remote.endpoint import RemoteEndpoint, open_listener
 from tapio.remote.registry import RefRegistry
 from tapio.settings import RemoteSettings, TapioSettings
+from tapio.validation import normalize_msg_type
 
 __all__ = ["ActorSystem", "PeerResolver"]
 
 T = TypeVar("T", bound=Message)
+
+_UID_BITS: Final = 63
+"""How much randomness goes into a system's incarnation uid.
+
+Random rather than sequential: two systems that restart do not coordinate, and
+a counter would hand the same uid to different incarnations on different hosts.
+"""
 
 PeerResolver = Callable[[Address, ActorPath], "ActorRef[Any] | None"]
 """Turns another system's address and a path into a ref that reaches it.
@@ -58,19 +69,23 @@ def _guardian() -> Behavior[_GuardianMessage]:
     return Behaviors.receive_message(_guardian_receive, msg_type=_GuardianMessage)
 
 
-def _canonical_address(name: str, remote: RemoteSettings | None) -> Address:
+def _canonical_address(
+    name: str, remote: RemoteSettings | None, listener: socket.socket | None
+) -> Address:
     """Work out the address this system's refs write down.
 
     Canonical falls back to bind, which is right for the ordinary case of a
     process whose peers dial the interface it listens on, and overridable for
-    the ones where they cannot: containers, NAT and port mapping.
+    the ones where they cannot: containers, NAT and port mapping. The port
+    comes from the socket rather than from the setting, so that `bind_port=0`
+    advertises the port the OS actually handed out.
     """
-    if remote is None:
+    if remote is None or listener is None:
         return Address(system=name)
     return Address(
         system=name,
         host=remote.canonical_host or remote.bind_host,
-        port=remote.canonical_port or remote.bind_port,
+        port=remote.canonical_port or listener.getsockname()[1],
     )
 
 
@@ -107,9 +122,24 @@ class ActorSystem:
         """
         self._settings = settings if settings is not None else TapioSettings()
         self._root = ActorPath.root(name)
-        self._address = _canonical_address(name, self._settings.remote)
         self._refs = RefRegistry()
         self._peer_resolver: PeerResolver | None = None
+        # Minted per incarnation, so that a system restarted at the same host
+        # and port is a *different* peer rather than a slow one. Without it
+        # neither a link nor anything built on one can tell a restart from a
+        # pause, and every ref held against the previous incarnation would
+        # resolve to a stranger.
+        self._uid = secrets.randbits(_UID_BITS)
+        # Bound before anything else, so the canonical address is settled
+        # before a single ref can write itself down, and so a configuration
+        # that would listen to the world fails here rather than at the first
+        # connection.
+        self._listener = (
+            open_listener(self._settings.remote)
+            if self._settings.remote is not None
+            else None
+        )
+        self._address = _canonical_address(name, self._settings.remote, self._listener)
         dispatcher = Dispatcher.from_running_loop()
         self._dead_letters = DeadLetterOffice(
             log_first=self._settings.dead_letter_log_first,
@@ -126,6 +156,7 @@ class ActorSystem:
             dispatcher=dispatcher,
             dead_letters=self._dead_letters,
             guardian_failure=self._on_guardian_failure,
+            resolver=lambda uri, expect: self.resolve(uri, expect=expect),
         )
         self._log: ActorLogAdapter = actor_logger(self._root)
         self._terminating = False
@@ -134,7 +165,31 @@ class ActorSystem:
 
         self._user: ActorCell[_GuardianMessage] = self._guardian_cell("user")
         self._system: ActorCell[_GuardianMessage] = self._guardian_cell("system")
+        self._remote: RemoteEndpoint | None = None
+        if self._listener is not None:
+            self._remote = self._start_remoting(self._listener)
         self._log.debug("started")
+
+    def _start_remoting(self, listener: socket.socket) -> RemoteEndpoint:
+        """Hang the endpoint under `/system` and start accepting on its socket.
+
+        The endpoint is an actor and the associations are its children, so the
+        port and every link under it are released by the ordinary stop sweep
+        rather than by a shutdown step that could be forgotten.
+        """
+        endpoint = RemoteEndpoint(
+            address=self._address,
+            uid=self._uid,
+            settings=self._settings,
+            dispatcher=self._runtime.dispatcher,
+            dead_letters=self._dead_letters,
+            deliver=lambda frame, peer: self.deliver_frame(frame, peer=peer),
+            listener=listener,
+        )
+        ref = self._system.spawn(endpoint.behavior(), "remote")
+        endpoint.start(cast("LocalActorRef[Any]", ref).cell)
+        self.set_peer_resolver(endpoint.resolve_peer)
+        return endpoint
 
     def _guardian_cell(self, name: str) -> ActorCell[_GuardianMessage]:
         """Create and start one top-level guardian."""
@@ -182,6 +237,26 @@ class ActorSystem:
         return self._address
 
     @property
+    def uid(self) -> int:
+        """This incarnation's uid, presented to every peer in the handshake.
+
+        A system restarted at the same host and port is a *different* peer, and
+        this is what says so. Without it a node that restarts inside a failure
+        detector's window is indistinguishable from one that was merely slow.
+        """
+        return self._uid
+
+    @property
+    def remote(self) -> RemoteEndpoint | None:
+        """This system's remoting, or `None` when it is switched off.
+
+        The port, the associations, and the resolver behind every foreign ref.
+        Exposed so a test or an operator can see which peers are associated
+        rather than infer it from traffic.
+        """
+        return self._remote
+
+    @property
     def refs(self) -> RefRegistry:
         """The live refs of this system, by path and incarnation uid.
 
@@ -226,7 +301,7 @@ class ActorSystem:
         """
         return use_context(self)
 
-    def resolve(self, address: Address, path: ActorPath) -> ActorRef[Any]:
+    def resolve_path(self, address: Address, path: ActorPath) -> ActorRef[Any]:
         """Turn an address and a path into something that can be told messages.
 
         This is the whole of ref resolution, and it never raises about the
@@ -269,6 +344,74 @@ class ActorSystem:
             dead_letters=self._dead_letters,
             reason=DeadLetterReason.NO_ASSOCIATION,
             peer=address,
+        )
+
+    async def resolve(self, uri: str, *, expect: type[T]) -> ActorRef[T]:
+        """Turn a ref's string form into something that can be told messages.
+
+        ```python
+        stock = await system.resolve(
+            "tapio://inventory@inventory.svc:25520/user/stock", expect=Reserve
+        )
+        stock.tell(Reserve(sku="X-1", qty=2, reply_to=ctx.self_ref))
+        ```
+
+        That is the whole user-facing surface of remote messaging: one
+        resolve, and then an ordinary ref. Nothing is dialled here: the
+        association is created by the first send through the ref, and dialling
+        happens behind it, so this call does not wait on a peer that may be
+        down and a `tell` to one that never answers dead-letters rather than
+        hanging. The ref is bound to the peer rather than to a link, so it
+        keeps working across one that failed.
+
+        `expect` declares what the actor over there accepts. It is a claim
+        about the peer rather than knowledge of it, so it catches a mistake at
+        this end; the authoritative check runs on the receiving node against
+        the target's real message type.
+
+        Args:
+            uri: The full string form, `tapio://sys@host:port/user/x#uid`.
+            expect: What the target accepts.
+
+        Returns:
+            A ref. The live local one when the address is this system's own,
+            since resolving your own address should not put a socket in the
+            middle of a local send.
+
+        Raises:
+            RefResolutionError: If the text is not a ref, if it names another
+                system with no host to dial, or if it names a reachable peer
+                and this system has remoting switched off.
+            MessageTypeError: If `expect` is not a `Message` subclass or a
+                union of them.
+        """
+        try:
+            address, path = parse_ref(uri)
+        except ValueError as error:
+            raise RefResolutionError(str(error)) from error
+
+        if address.system == self.name and (
+            not address.is_addressable or address == self._address
+        ):
+            return cast("ActorRef[T]", self.resolve_path(address, path))
+
+        msg_type = normalize_msg_type(expect, origin=f"resolving {uri}")
+        if not address.is_addressable:
+            msg = (
+                f"cannot resolve {uri!r}: it names the system {address.system!r} "
+                "and no host to dial. A system with remoting switched off writes "
+                "its refs down that way, and there is nowhere to send to."
+            )
+            raise RefResolutionError(msg)
+        if self._remote is None:
+            msg = (
+                f"cannot resolve {uri!r}: this system has remoting switched off. "
+                "Pass TapioSettings(remote=RemoteSettings(...)) to reach another "
+                "system."
+            )
+            raise RefResolutionError(msg)
+        return cast(
+            "ActorRef[T]", self._remote.resolve_expecting(address, path, msg_type)
         )
 
     def deliver_frame(self, data: bytes, *, peer: Address | None = None) -> None:
