@@ -420,6 +420,14 @@ the network is doing.
 - `await ctx.run_blocking(fn, ...)`, which keeps a blocking call off the loop
   and out of every other actor's way. See [Blocking calls](blocking.md), the
   page for the mistake that is hardest to see in production.
+- Supervision, in the detail it deserves: see
+  [Supervision](supervision.md) for the four decisions and exactly what a
+  restart keeps, and [The life of an actor](lifecycle.md) for signals,
+  watching and shutdown.
+- The remoting pages: [Overview](remoting.md) has the table of what is and is
+  not transparent, [When a node stops answering](unreachable.md) has the
+  failure that can be wrong about a live peer, and [Security](security.md) has
+  what the transport is and is not designed for.
 - `tapio.testkit`: `TestProbe`, `BehaviorTestKit`, pytest fixtures that arrive
   through an entry point, and the leak assertions. See
   [Testing](testing.md).

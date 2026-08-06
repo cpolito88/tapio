@@ -12,13 +12,16 @@ from tapio.testkit import assert_no_leaked_tasks
 from tapio_examples import (
     ask_timeout,
     blocking_offload,
+    chat_sessions,
     counter,
     dead_letters,
     death_watch,
     escalation,
+    fastapi_app,
     graceful_shutdown,
     hello_world,
     node_failure,
+    order_saga,
     partition,
     ping_pong,
     rate_limiter,
@@ -35,13 +38,16 @@ from tapio_examples import (
 ASSERTED = {
     "ask_timeout",
     "blocking_offload",
+    "chat_sessions",
     "counter",
     "dead_letters",
     "death_watch",
     "escalation",
     "graceful_shutdown",
     "hello_world",
+    "fastapi_app",
     "node_failure",
+    "order_saga",
     "partition",
     "ping_pong",
     "rate_limiter",
@@ -332,6 +338,58 @@ async def test_partition():
     assert away[1].startswith("away: gave up on tapio://home@")
     assert away[2] == "away: told that tapio://home/user/steady#2 has stopped"
     assert away[3] == "away: poked by away itself, still working"
+
+
+async def test_chat_sessions():
+    with assert_no_leaked_tasks():
+        lines = await chat_sessions.main()
+
+    # The model crashed while it was holding a request, so the ask timed out
+    # and the session asked the restarted client instead. The turn count is
+    # the proof that the session's own state was never touched.
+    assert lines == [
+        "chat: alice has a session at session-alice",
+        "chat: alice heard \"about 'hello', then\" on turn 1",
+        "chat: bob has a session at session-bob",
+        "chat: bob heard \"about 'hi', then\" on turn 1",
+        "chat: no answer for alice, so ask the new client",
+        "chat: alice heard \"about 'again', then\" on turn 2",
+        "chat: alice's session stopped, so it is evicted",
+    ]
+
+
+async def test_order_saga():
+    with assert_no_leaked_tasks():
+        lines = await order_saga.main()
+
+    # Two steps ran, shipping refused, and exactly those two were undone, in
+    # reverse. Nothing raised and nothing was left half done.
+    assert lines == [
+        "saga: payments did its part of order-1",
+        "saga: inventory did its part of order-1",
+        "saga: inventory undid its part of order-1",
+        "saga: payments undid its part of order-1",
+        "saga: order-1 failed because shipping refused",
+        "saga: undone, newest first: inventory, payments",
+        "saga: nothing was left half done, and nothing raised",
+    ]
+
+
+async def test_fastapi_app():
+    with assert_no_leaked_tasks():
+        lines = await fastapi_app.main()
+
+    # Twenty concurrent requests through one actor, and every count handed out
+    # exactly once. The 503 is the ask deadline the handler owns, and the dead
+    # letter after it is the answer nobody was waiting for any more.
+    assert lines[0] == "web: POST /hit -> 200 {'total': 1}"
+    assert lines[1] == "web: 20 concurrent hits ran 2 to 21, 20 distinct"
+    assert lines[2] == "web: POST /slow -> 503, and the app serves on"
+    assert lines[3] == (
+        "web: the counter answered anyway, and Counted became a dead letter "
+        "(ask-settled)"
+    )
+    assert lines[4] == "web: POST /hit -> 200 {'total': 22}"
 
 
 async def test_blocking_offload():

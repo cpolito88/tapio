@@ -40,6 +40,12 @@ plugins:
 nav:
   - Home: index.md
   - Getting started: getting-started.md
-  - Testing: testing.md
+  - The life of an actor: lifecycle.md
+  - Supervision: supervision.md
   - Blocking calls: blocking.md
+  - Testing: testing.md
+  - Remoting:
+      - Overview: remoting.md
+      - When a node stops answering: unreachable.md
+      - Security: security.md
   - Reference: reference.md
