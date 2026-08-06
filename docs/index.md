@@ -15,8 +15,9 @@ supervision, with Pydantic models throughout.
     an explicit reconnect. Actors can be started on another node too, by asking
     a spawner there, with supervision staying inside each node. The TestKit is
     here too: probes, a behavior test kit, pytest fixtures, and two nodes with
-    a network you can break. What is left before 0.1.0 is the last of the
-    examples, the rest of these pages, and the benchmarks.
+    a network you can break. What is left before 0.1.0 is the benchmarks, so
+    that the cost of validation and the ceiling on resident actors are
+    published numbers rather than claims.
 
 Every code block on this site is a snippet include from `examples/`, so nothing
 documented here is unexecuted.
