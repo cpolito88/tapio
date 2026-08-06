@@ -24,6 +24,7 @@ from tapio.errors import (
     AskTargetUnreachable,
     AskTimeoutError,
     AskTypeError,
+    BehaviorRegistrationError,
     BehaviorTypeError,
     FrameTooLargeError,
     HandshakeError,
@@ -42,6 +43,16 @@ from tapio.message import Message
 from tapio.remote.address import Address
 from tapio.remote.failure import PeerUnreachable
 from tapio.remote.registry import register_message
+from tapio.remote.spawner import (
+    NoArgs,
+    Spawn,
+    Spawned,
+    SpawnFailed,
+    SpawnFailure,
+    SpawnReply,
+    remote_behavior,
+    spawner,
+)
 from tapio.settings import RemoteSettings, TapioSettings, TLSSettings
 from tapio.version import __version__
 
@@ -60,6 +71,7 @@ __all__ = [
     "AskTypeError",
     "Backoff",
     "Behavior",
+    "BehaviorRegistrationError",
     "BehaviorTypeError",
     "Behaviors",
     "ChildFailed",
@@ -77,6 +89,7 @@ __all__ = [
     "MessageEncodingError",
     "MessageRegistrationError",
     "MessageTypeError",
+    "NoArgs",
     "OverflowStrategy",
     "PeerUnreachable",
     "PostStop",
@@ -87,6 +100,11 @@ __all__ = [
     "Routers",
     "RoutingStrategy",
     "Signal",
+    "Spawn",
+    "SpawnFailed",
+    "SpawnFailure",
+    "SpawnReply",
+    "Spawned",
     "StashBuffer",
     "StashOverflowError",
     "Subscription",
@@ -99,4 +117,6 @@ __all__ = [
     "WatchError",
     "__version__",
     "register_message",
+    "remote_behavior",
+    "spawner",
 ]

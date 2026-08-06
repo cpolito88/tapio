@@ -90,6 +90,28 @@ Generated from the source, so it cannot drift from what is installed.
 
 ::: tapio.settings.TLSSettings
 
+## Remote spawning
+
+::: tapio.remote.spawner.remote_behavior
+
+::: tapio.remote.spawner.spawner
+
+::: tapio.remote.spawner.Spawn
+
+::: tapio.remote.spawner.SpawnReply
+
+::: tapio.remote.spawner.Spawned
+
+::: tapio.remote.spawner.SpawnFailed
+
+::: tapio.remote.spawner.SpawnFailure
+
+::: tapio.remote.spawner.NoArgs
+
+::: tapio.remote.spawner.RemoteFactory
+
+::: tapio.remote.spawner.factory_for_key
+
 ## Reachability
 
 ::: tapio.remote.failure

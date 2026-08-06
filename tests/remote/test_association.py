@@ -25,8 +25,6 @@ from tests.remote.peers import (
     uri,
 )
 
-# --- messages cross ----------------------------------------------------------
-
 
 async def test_a_message_crosses_an_association(alpha: ActorSystem, beta: ActorSystem):
     seen: list[int] = []
@@ -104,9 +102,6 @@ async def test_fifo_holds_for_ten_thousand_messages(
     assert seen == list(range(10_000))
 
 
-# --- what the sender hears, and what it does not -----------------------------
-
-
 async def test_an_unregistered_message_raises_at_the_send_site(
     alpha: ActorSystem, beta: ActorSystem
 ):
@@ -167,9 +162,6 @@ async def test_a_failed_association_is_forgotten_so_the_next_send_dials_again(
     await eventually(lambda: bool(letters))
     assert alpha.remote is not None
     await eventually(lambda: alpha.remote.associations == ())  # type: ignore[union-attr]
-
-
-# --- what a peer can inflict -------------------------------------------------
 
 
 async def test_a_type_key_the_peer_does_not_know_dead_letters_over_there(
@@ -254,9 +246,6 @@ async def test_a_link_frame_this_version_does_not_know_is_ignored(beta: ActorSys
         await link.close()
 
 
-# --- simultaneous dial -------------------------------------------------------
-
-
 async def test_both_ends_dialling_at_once_end_up_with_one_association(
     alpha: ActorSystem, beta: ActorSystem
 ):
@@ -293,9 +282,6 @@ async def test_traffic_survives_the_link_that_lost_the_dial(
         to_beta.tell(Tick(n=n))
 
     await eventually(lambda: there == list(range(20)))
-
-
-# --- the same code, with a secret and without --------------------------------
 
 
 async def test_two_systems_sharing_a_secret_talk():

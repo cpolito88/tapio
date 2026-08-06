@@ -161,9 +161,6 @@ def link(source: ActorSystem, target: ActorSystem) -> None:
     source.set_peer_resolver(resolve)
 
 
-# --- the frame itself --------------------------------------------------------
-
-
 async def test_a_frame_is_a_length_prefix_and_a_body(alpha: ActorSystem):
     stock = alpha.spawn(collecting([]), "stock")
     frame = encode(Reserved(sku="X-1"), to=stock.path)
@@ -206,9 +203,6 @@ async def test_an_oversized_frame_raises_at_the_send_site(alpha: ActorSystem):
     stock = alpha.spawn(collecting([]), "stock")
     with pytest.raises(FrameTooLargeError, match="over the 32 byte frame limit"):
         encode(Reserved(sku="X" * 100), to=stock.path, max_frame_bytes=32)
-
-
-# --- what arrives ------------------------------------------------------------
 
 
 async def test_a_message_encoded_on_one_system_arrives_on_the_other(
@@ -319,9 +313,6 @@ async def test_an_unaddressable_ref_from_the_reading_system_resolves_locally(
     assert message.reply_to is local
 
 
-# --- frames that do not survive the decode -----------------------------------
-
-
 def framed(body: bytes) -> bytes:
     """Put an honest length prefix in front of a body written by hand."""
     return len(body).to_bytes(LENGTH_PREFIX, "big") + body
@@ -358,9 +349,6 @@ def test_a_recipient_that_is_not_a_path_is_refused():
     body = b'{"v":1,"to":"user/x","t":"k","p":{}}'
     with pytest.raises(MessageDecodingError, match="an absolute path"):
         decode(framed(body), system="beta")
-
-
-# --- what a peer can get wrong ----------------------------------------------
 
 
 async def test_a_stale_uid_dead_letters_instead_of_reaching_the_newcomer(
@@ -520,9 +508,6 @@ async def test_a_ref_for_a_system_with_no_link_dead_letters_on_use(
     await eventually(lambda: len(seen) == 1)
     assert seen[0].reason == DeadLetterReason.NO_ASSOCIATION
     assert seen[0].peer == str(alpha.address)
-
-
-# --- the deserialization context --------------------------------------------
 
 
 async def test_a_ref_does_not_deserialize_without_a_system(alpha: ActorSystem):

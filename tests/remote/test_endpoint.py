@@ -13,8 +13,6 @@ from tests.failures import eventually
 from tests.messages import NotAMessage
 from tests.remote.peers import Tick, counting, remoting, uri
 
-# --- what an address resolves to --------------------------------------------
-
 
 async def test_resolving_this_system_gives_the_live_local_ref(alpha: ActorSystem):
     # Resolving your own address must not put a socket in the middle of a
@@ -125,9 +123,6 @@ async def test_an_actor_resolves_through_its_own_context(
     await eventually(lambda: seen == [3])
 
 
-# --- addressing --------------------------------------------------------------
-
-
 async def test_the_advertised_port_is_the_one_the_os_handed_out(alpha: ActorSystem):
     # The port is bound during construction, so the first ref handed out
     # already names a port a peer can dial.
@@ -179,9 +174,6 @@ async def test_binding_beyond_loopback_without_a_secret_refuses_to_start():
                 remote=RemoteSettings(_env_file=None, bind_host="0.0.0.0", bind_port=0),
             ),
         )
-
-
-# --- shutdown ----------------------------------------------------------------
 
 
 async def test_both_systems_terminate_with_the_sockets_closed():

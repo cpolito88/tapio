@@ -64,6 +64,10 @@ Every example here starts two systems in one process and shuts both down.
 | Example | Teaches |
 |---|---|
 | `two_nodes` | `resolve`, a `tell` across an association, and a reply arriving through a `reply_to` that crossed the wire |
+| `remote_ask` | `ask` across a link, and `AskTargetUnreachable` told apart from a timeout |
+| `node_failure` | watching a ref on another node, and rebuilding the work when that node goes |
+| `partition` | both nodes alive, both cut off, both wrong about the other, and the explicit repair |
+| `remote_spawn` | `@remote_behavior`, a spawner with an allowlist, and the peer supervising its own child |
+| `worker_pool_remote` | why `offer` is not end-to-end backpressure across a link, and the credit protocol that is |
 
-Tiers 1, 2 and 3 have landed and run in CI, and Tier 5 has begun with
-`two_nodes`. Tier 4 is still to be written.
+Tiers 1, 2, 3 and 5 have landed and run in CI. Tier 4 is still to be written.

@@ -46,9 +46,6 @@ async def linked() -> tuple[FrameLink, FrameLink, asyncio.Server]:
     return client, await accepted.get(), server
 
 
-# --- framing -----------------------------------------------------------------
-
-
 async def test_a_frame_arrives_whole():
     client, server_side, server = await linked()
     try:
@@ -85,9 +82,6 @@ async def test_a_closed_peer_ends_the_read():
         server.close()
 
 
-# --- telling the two kinds of frame apart ------------------------------------
-
-
 def test_a_link_frame_is_recognised_without_being_parsed():
     assert is_link_frame(framed(Heartbeat().model_dump_json().encode()))
 
@@ -105,9 +99,6 @@ def test_a_link_frame_that_is_not_an_object_is_refused():
 def test_a_link_frame_that_is_not_json_is_refused():
     with pytest.raises(MessageDecodingError, match="not JSON"):
         link_body(framed(b"{oops"))
-
-
-# --- binding -----------------------------------------------------------------
 
 
 def test_binding_port_zero_gives_a_port_that_can_be_read_back():
@@ -137,9 +128,6 @@ def test_a_name_that_is_not_an_address_literal_is_not_assumed_to_be_loopback():
 
 def test_binding_anywhere_with_a_secret_is_allowed():
     verify_bind_security(remote(bind_host="0.0.0.0", secret="shh"))
-
-
-# --- TLS ---------------------------------------------------------------------
 
 
 def test_a_certificate_that_is_not_there_fails_where_it_is_configured(tmp_path):

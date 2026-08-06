@@ -22,11 +22,13 @@ from tapio_examples import (
     ping_pong,
     rate_limiter,
     remote_ask,
+    remote_spawn,
     stash_on_startup,
     state_machine,
     supervision_backoff,
     two_nodes,
     worker_pool,
+    worker_pool_remote,
 )
 
 ASSERTED = {
@@ -42,11 +44,13 @@ ASSERTED = {
     "ping_pong",
     "rate_limiter",
     "remote_ask",
+    "remote_spawn",
     "stash_on_startup",
     "state_machine",
     "supervision_backoff",
     "two_nodes",
     "worker_pool",
+    "worker_pool_remote",
 }
 
 
@@ -326,6 +330,42 @@ async def test_partition():
     assert away[1].startswith("away: gave up on tapio://home@")
     assert away[2] == "away: told that tapio://home/user/steady#2 has stopped"
     assert away[3] == "away: poked by away itself, still working"
+
+
+async def test_remote_spawn():
+    with assert_no_leaked_tasks():
+        lines = await remote_spawn.main()
+
+    # The worker was started on the other node, crashed, and was restarted
+    # there. The job queued behind the crash came back through the same ref,
+    # and the only trace of the restart is the job count starting again.
+    assert lines[0].startswith("orders: compute started doubler-1 at tapio://compute/")
+    assert lines[1:] == [
+        "orders: 6 doubled is 12, job 1 for it",
+        "orders: 7 doubled is 14, job 1 for it",
+        "orders: the count restarted, and nothing told me why",
+        "orders: compute cannot start 'tripler' (unknown-factory)",
+        "orders: the worker is gone, so ask for another",
+    ]
+
+
+async def test_worker_pool_remote():
+    with assert_no_leaked_tasks():
+        lines = await worker_pool_remote.main()
+
+    # The grant is the only thing bounding the work in flight. Nothing in the
+    # transport enforces it, and the split between the two workers is whatever
+    # the scheduling happened to be.
+    assert lines[0] == "orders: 2 workers on compute, each granting 3 items at a time"
+    first, second = (int(part) for part in lines[1].split() if part.isdigit())
+    assert first + second == 12
+    assert first > 0
+    assert second > 0
+    assert lines[2:] == [
+        "orders: 12 items done, and never more than 3 outstanding at one worker",
+        "orders: the grant is the backpressure; offer would have waited on "
+        "this node's outbound buffer instead",
+    ]
 
 
 def test_every_example_is_asserted():

@@ -299,6 +299,76 @@ testkit ships one. `two_nodes()` starts a pair on loopback ports the OS picks,
 and `partition()`, `heal()`, `drop()` and `delay()` lose frames without
 breaking anything real.
 
+## Starting an actor on another node
+
+Everything above is location transparent: an actor holding a ref sends, asks
+and watches without knowing which node the target is on. Placement is not, and
+it is not by design. Starting an actor elsewhere is a different call, and it is
+awaited, because a round trip is happening.
+
+**Both nodes must be running the same code.** A behavior is a closure, and a
+closure does not cross a socket. What crosses is a key naming a factory and a
+model holding its arguments, and the peer looks that key up in its own
+registry. Nothing is imported to find out what an unknown key might have meant,
+exactly as for a message type. A key the peer has never heard of comes back as
+`SpawnFailed(reason="unknown-factory")`, which is what version skew between two
+deployments looks like from the requesting side.
+
+```python
+--8<-- "examples/tapio_examples/remote_spawn.py"
+```
+
+Three things in that example are the whole design.
+
+The factory declares its own supervision, with `Behaviors.supervise(...)`
+around what it returns. That is the only place it can be declared, because the
+restart happens entirely on the node that runs the actor. If the local parent
+supervised a remote child, every restart, stop and failure report would be a
+frame on a link that can go silent halfway through the decision, and
+supervision is the one thing in this library that has to be able to answer. So
+the tree stays inside one node.
+
+The requester watches instead of parenting. `Terminated` arrives when the actor
+stops, when its node stops, and when the link to that node is given up on, and
+all three are indistinguishable on purpose: they mean the same thing to the
+requester, which is that this worker is gone and another one should be asked
+for. That is a smaller contract than supervision, and it is the largest one a
+network can keep.
+
+A spawner offers named factories rather than the registry. An actor that will
+start anything registered, on request, is a capability handed to whoever can
+reach the port, and the port's threat model does not assume that is nobody. The
+allowlist is checked when the spawner is built, so a typo in it fails where it
+was written.
+
+The one restriction worth knowing before you write an arguments model: it
+cannot carry an `ActorRef`. Arguments are validated on the peer *after* the
+factory key has been checked, deliberately outside the decode that resolves
+refs, so a ref in them would have nothing to resolve against. Send the new
+actor a message instead. You are holding a ref to it, and refs inside that
+message resolve normally.
+
+## Backpressure across a link
+
+`await ref.offer(msg)` on a remote ref waits for room in the sending node's
+outbound buffer. That is honest local backpressure against a socket that is not
+draining, and it is not backpressure from the receiving actor. A worker with a
+large mailbox reads every frame the moment it arrives, so the buffer stays
+empty, `offer` never waits, and the backlog builds up on the other node where
+this one cannot see it.
+
+Nothing in a fire-and-forget wire protocol can do better, so flow control is
+built out of messages, where the receiver is the one who knows:
+
+```python
+--8<-- "examples/tapio_examples/worker_pool_remote.py"
+```
+
+Each worker grants the producer a number of items it will have outstanding.
+The producer sends that many and no more, and each finished item grants one
+back. The grant is the backpressure, it is end to end, and it holds whatever
+the network is doing.
+
 ## What the runtime gives you today
 
 - `ActorSystem`, with a `/user` guardian above everything you spawn.
@@ -347,6 +417,7 @@ breaking anything real.
   `system.events`, and `remote.reconnect` as the one way back.
 - `tapio.testkit.two_nodes()`, with link faults for partitions, dropped frames
   and delays, so the failure paths are tested rather than described.
-
-Starting an actor on another node is next: a spawner actor, a factory
-registry, and a docs page saying that both nodes have to run the same code.
+- `@remote_behavior()` and `spawner(offers=[...])`, which start an actor on
+  another node without any supervision crossing the wire. The requester
+  watches what it gets back, a refused request comes back as `SpawnFailed`
+  with a reason, and both nodes have to be running the same code.
