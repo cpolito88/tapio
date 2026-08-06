@@ -417,6 +417,12 @@ the network is doing.
   `system.events`, and `remote.reconnect` as the one way back.
 - `tapio.testkit.two_nodes()`, with link faults for partitions, dropped frames
   and delays, so the failure paths are tested rather than described.
+- `await ctx.run_blocking(fn, ...)`, which keeps a blocking call off the loop
+  and out of every other actor's way. See [Blocking calls](blocking.md), the
+  page for the mistake that is hardest to see in production.
+- `tapio.testkit`: `TestProbe`, `BehaviorTestKit`, pytest fixtures that arrive
+  through an entry point, and the leak assertions. See
+  [Testing](testing.md).
 - `@remote_behavior()` and `spawner(offers=[...])`, which start an actor on
   another node without any supervision crossing the wire. The requester
   watches what it gets back, a refused request comes back as `SpawnFailed`

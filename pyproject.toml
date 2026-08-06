@@ -24,6 +24,11 @@ dependencies = [
     "typing-extensions>=4.10",
 ]
 
+# Registers the fixtures in tapio.testkit.plugin, so a project that installs
+# tapio can ask for `actor_system` with nothing added to its conftest.
+[project.entry-points.pytest11]
+tapio = "tapio.testkit.plugin"
+
 [project.urls]
 Homepage = "https://github.com/cpolito88/tapio"
 Repository = "https://github.com/cpolito88/tapio"

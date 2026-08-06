@@ -13,8 +13,10 @@ supervision, with Pydantic models throughout.
     the other side. So do the parts that decide a peer has gone away: watching
     an actor on another node, asking one, a failure detector, quarantine, and
     an explicit reconnect. Actors can be started on another node too, by asking
-    a spawner there, with supervision staying inside each node. What is left
-    before 0.1.0 is the TestKit, the rest of the docs, and the benchmarks.
+    a spawner there, with supervision staying inside each node. The TestKit is
+    here too: probes, a behavior test kit, pytest fixtures, and two nodes with
+    a network you can break. What is left before 0.1.0 is the last of the
+    examples, the rest of these pages, and the benchmarks.
 
 Every code block on this site is a snippet include from `examples/`, so nothing
 documented here is unexecuted.

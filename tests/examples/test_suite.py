@@ -11,6 +11,7 @@ import tapio_examples
 from tapio.testkit import assert_no_leaked_tasks
 from tapio_examples import (
     ask_timeout,
+    blocking_offload,
     counter,
     dead_letters,
     death_watch,
@@ -33,6 +34,7 @@ from tapio_examples import (
 
 ASSERTED = {
     "ask_timeout",
+    "blocking_offload",
     "counter",
     "dead_letters",
     "death_watch",
@@ -330,6 +332,20 @@ async def test_partition():
     assert away[1].startswith("away: gave up on tapio://home@")
     assert away[2] == "away: told that tapio://home/user/steady#2 has stopped"
     assert away[3] == "away: poked by away itself, still working"
+
+
+async def test_blocking_offload():
+    with assert_no_leaked_tasks():
+        lines = await blocking_offload.main()
+
+    # The count is asserted and the elapsed times are not. A loaded CI runner
+    # changes how long the call took; it does not change the fact that the
+    # loop was frozen for all of it.
+    assert lines[0] == (
+        "on the loop: the rest of the system processed 0 messages during the call"
+    )
+    processed = int(lines[1].split("processed ")[1].split(" ")[0])
+    assert processed > 10, lines[1]
 
 
 async def test_remote_spawn():

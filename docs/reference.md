@@ -52,6 +52,10 @@ Generated from the source, so it cannot drift from what is installed.
 
 ::: tapio.actor.router.RoundRobin
 
+## Blocking calls
+
+::: tapio.dispatch.blocking
+
 ## Messages and validation
 
 ::: tapio.message.Message
@@ -145,6 +149,18 @@ Generated from the source, so it cannot drift from what is installed.
 ::: tapio.actor.signals.ChildFailed
 
 ## Test support
+
+::: tapio.testkit.probe.TestProbe
+
+::: tapio.testkit.behavior.BehaviorTestKit
+
+::: tapio.testkit.behavior.Spawned
+
+::: tapio.testkit.behavior.Watched
+
+::: tapio.testkit.behavior.RecordingRef
+
+::: tapio.testkit.plugin
 
 ::: tapio.testkit.leaks
 

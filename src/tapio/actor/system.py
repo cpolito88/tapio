@@ -23,6 +23,7 @@ from tapio.actor.events import EventStream
 from tapio.actor.mailbox import MailboxConfig
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
+from tapio.dispatch.blocking import BlockingPool
 from tapio.dispatch.dispatcher import Dispatcher
 from tapio.errors import ActorSystemTerminating, RefResolutionError
 from tapio.logging import ActorLogAdapter, actor_logger
@@ -149,6 +150,12 @@ class ActorSystem:
             clock=dispatcher.now,
         )
         self._events = EventStream()
+        # Described here, started by the first blocking call. A system that
+        # never blocks starts no threads, which is what keeps the thread-leak
+        # check meaningful for everything else.
+        self._blocking = BlockingPool(
+            size=self._settings.blocking_pool_size, system=name
+        )
         self._runtime = ActorRuntime(
             name=name,
             address=self._address,
@@ -156,6 +163,7 @@ class ActorSystem:
             settings=self._settings,
             dispatcher=dispatcher,
             dead_letters=self._dead_letters,
+            blocking=self._blocking,
             events=self._events,
             guardian_failure=self._on_guardian_failure,
             resolver=lambda uri, expect: self.resolve(uri, expect=expect),
@@ -265,6 +273,16 @@ class ActorSystem:
         associated, instead of inferring it from traffic.
         """
         return self._remote
+
+    @property
+    def blocking(self) -> BlockingPool:
+        """The threads this system runs blocking calls on.
+
+        Exposed so a test can assert that shutdown left none of them running.
+        The pool is the one piece of the runtime that is not a task, so the
+        leak invariant does not cover it for free.
+        """
+        return self._blocking
 
     @property
     def refs(self) -> RefRegistry:
@@ -545,6 +563,10 @@ class ActorSystem:
         # facilities that they may still be using on the way out.
         await self._user.stop(deadline)
         await self._system.stop(deadline)
+        # Against the same deadline as the tree. Threads are not tasks, so
+        # nothing above has touched them, and a system that has terminated
+        # must leave none behind.
+        await self._blocking.shutdown(deadline, now=self._runtime.dispatcher.now)
         # Set before the event. A send racing shutdown should be told that the
         # system is gone, which is a different problem from one actor stopping
         # while the rest of the tree runs on.

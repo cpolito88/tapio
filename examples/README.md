@@ -55,7 +55,7 @@ picks, so they need no orchestration and no second machine.
 | `chat_sessions` | per-user session actors over a simulated flaky LLM |
 | `order_saga` | compensating transactions, unwinding on failure |
 | `fastapi_app` | `ActorSystem` in a FastAPI lifespan, and the deployment story |
-| `blocking_offload` | `ctx.run_blocking`, measured against the same code without it |
+
 
 ### Tier 5: Distribution
 
@@ -70,4 +70,5 @@ Every example here starts two systems in one process and shuts both down.
 | `remote_spawn` | `@remote_behavior`, a spawner with an allowlist, and the peer supervising its own child |
 | `worker_pool_remote` | why `offer` is not end-to-end backpressure across a link, and the credit protocol that is |
 
-Tiers 1, 2, 3 and 5 have landed and run in CI. Tier 4 is still to be written.
+Tiers 1, 2, 3 and 5 have landed and run in CI, and Tier 4 has begun with
+`blocking_offload`.

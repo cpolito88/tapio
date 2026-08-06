@@ -47,6 +47,7 @@ from tapio.actor.stash import StashBuffer, UnstashBehavior
 from tapio.actor.supervision import Decision, SupervisorStrategy
 from tapio.actor.timers import TimerScheduler
 from tapio.actor.watch import Watcher, WatchTarget
+from tapio.dispatch.blocking import BlockingPool, describe_blocking
 from tapio.dispatch.dispatcher import Dispatcher
 from tapio.errors import (
     ActorNameError,
@@ -76,6 +77,7 @@ cell needs no reference to the system to make it.
 T = TypeVar("T", bound=Message)
 U = TypeVar("U", bound=Message)
 R = TypeVar("R", bound=Message)
+B = TypeVar("B")
 
 _log = runtime_logger("runtime")
 
@@ -137,6 +139,16 @@ class ActorRuntime:
 
     dead_letters: DeadLetterOffice
     """Where a message goes when its recipient cannot take it."""
+
+    blocking: BlockingPool = field(
+        default_factory=lambda: BlockingPool(size=1, system="test")
+    )
+    """The threads `ctx.run_blocking` pushes blocking calls onto.
+
+    The default is a one-thread pool, for a cell built directly in a test with
+    no system around it. A real system passes its own, sized by
+    `blocking_pool_size`, and shuts it down with the tree.
+    """
 
     events: EventStream = field(default_factory=EventStream)
     """What this system publishes about itself, for whoever subscribed.
@@ -600,6 +612,41 @@ class ActorCell(Generic[T]):
         self._runtime.refs.register(ref)
         self._adapter_paths.append(path)
         return ref
+
+    async def run_blocking(
+        self, fn: Callable[..., B], /, *args: Any, **kwargs: Any
+    ) -> B:
+        """Run a blocking call on the system's pool, parking this actor.
+
+        The actor is awaiting for the duration, so its mailbox fills up behind
+        the call. The loop stays free, which is the whole point, and this
+        actor does not.
+
+        Args:
+            fn: The blocking callable.
+            *args: Its positional arguments.
+            **kwargs: Its keyword arguments.
+
+        Returns:
+            Whatever `fn` returned.
+
+        Raises:
+            ActorSystemTerminating: If the pool is shut down, which means the
+                system is going away and the call would never be run.
+        """
+        try:
+            return await self._runtime.blocking.submit(
+                self._runtime.dispatcher.loop, fn, *args, **kwargs
+            )
+        except RuntimeError as error:
+            if not self._runtime.blocking.is_accepting:
+                msg = (
+                    f"cannot run {describe_blocking(fn)} for {self._path}: the "
+                    "system is shutting down, so its blocking pool takes no "
+                    "more work"
+                )
+                raise ActorSystemTerminating(msg) from error
+            raise
 
     def watch(self, ref: ActorRef[Any]) -> None:
         """Ask to be told when another actor stops.
@@ -1326,6 +1373,12 @@ class _CellContext(ActorContext[T]):
     ) -> ActorRef[U]:
         """Hand out a ref that translates another protocol into this actor's."""
         return self._cell.message_adapter(adapt, msg_type)
+
+    async def run_blocking(
+        self, fn: Callable[..., B], /, *args: Any, **kwargs: Any
+    ) -> B:
+        """Run a call that blocks on the system's thread pool."""
+        return await self._cell.run_blocking(fn, *args, **kwargs)
 
     async def resolve(self, uri: str, *, expect: type[U]) -> ActorRef[U]:
         """Turn a ref's string form into a ref, local or remote."""
