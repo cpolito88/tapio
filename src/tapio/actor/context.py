@@ -18,6 +18,7 @@ __all__ = ["ActorContext"]
 
 T = TypeVar("T", bound=Message)
 U = TypeVar("U", bound=Message)
+R = TypeVar("R")
 
 
 class ActorContext(ABC, Generic[T]):
@@ -145,6 +146,47 @@ class ActorContext(ABC, Generic[T]):
                 what the adapter accepts.
             MessageTypeError: If what it resolves to is not a `Message`
                 subclass or a union of them.
+        """
+
+    @abstractmethod
+    async def run_blocking(
+        self, fn: Callable[..., R], /, *args: Any, **kwargs: Any
+    ) -> R:
+        """Run a call that blocks on a thread, instead of on the loop.
+
+        ```python
+        rows = await ctx.run_blocking(cursor.execute, "select 1")
+        ```
+
+        Every actor in a system shares one event loop, so a handler that
+        blocks stops all of them. This moves the call to a bounded pool of
+        threads that belongs to the system, sized by `blocking_pool_size`.
+
+        Two things about it are worth knowing before you rely on it.
+
+        **The actor is parked for the duration.** It is awaiting, so it is not
+        reading its mailbox: messages queue up behind the call, and on a
+        bounded mailbox the overflow strategy will fire while it waits. The
+        loop is free, which is the point, but this actor is not.
+
+        **The call cannot be cancelled.** Python cannot interrupt a thread
+        that is inside a C call. Cancelling the actor abandons the result and
+        the thread keeps going, and shutdown waits for it only until the
+        deadline. Pass whatever timeout the library you are calling offers.
+
+        Args:
+            fn: The blocking callable.
+            *args: Its positional arguments.
+            **kwargs: Its keyword arguments.
+
+        Returns:
+            Whatever `fn` returned.
+
+        Raises:
+            ActorSystemTerminating: If the system is shutting down, so the
+                pool is no longer accepting work.
+            Exception: Whatever `fn` raised, re-raised here, where it becomes
+                this actor's supervision decision like any other failure.
         """
 
     @abstractmethod

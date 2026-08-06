@@ -64,6 +64,11 @@ class FakeContext(ActorContext[Message]):
     ) -> ActorRef[Message]:
         raise NotImplementedError
 
+    async def run_blocking(
+        self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any
+    ) -> Any:
+        raise NotImplementedError
+
     async def resolve(self, uri: str, *, expect: type[Any]) -> ActorRef[Any]:
         raise NotImplementedError
 
