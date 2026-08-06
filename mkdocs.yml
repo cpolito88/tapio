@@ -40,4 +40,6 @@ plugins:
 nav:
   - Home: index.md
   - Getting started: getting-started.md
+  - Testing: testing.md
+  - Blocking calls: blocking.md
   - Reference: reference.md

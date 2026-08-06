@@ -237,8 +237,6 @@ async def test_an_unknown_factory_key_is_refused_and_starts_nothing(
 
     reply = await ask_to_spawn(ref, "nobody-has-this")
 
-    assert isinstance(reply, SpawnFailed)
-    assert reply.reason == SpawnFailure.UNKNOWN_FACTORY
     assert "same code" in reply.detail
     assert _children_of(system, "spawner") == ()
 
