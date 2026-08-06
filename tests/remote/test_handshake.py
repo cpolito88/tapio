@@ -33,9 +33,6 @@ async def closed(link: FrameLink) -> bool:
     return False
 
 
-# --- what the handshake establishes -----------------------------------------
-
-
 async def test_a_peer_that_says_who_it_is_gets_a_welcome(beta: ActorSystem):
     link = await dial(beta)
     try:
@@ -91,9 +88,6 @@ async def test_a_peer_that_writes_nonsense_instead_of_a_hello_is_refused(
         writer.close()
 
 
-# --- the secret --------------------------------------------------------------
-
-
 async def test_a_peer_that_answers_the_challenge_is_let_in(guarded: ActorSystem):
     link = await dial(guarded, secret="shh")
     try:
@@ -135,9 +129,6 @@ async def test_a_refused_peer_gets_nothing_delivered(guarded: ActorSystem):
         assert seen == []
     finally:
         await link.close()
-
-
-# --- the other direction -----------------------------------------------------
 
 
 async def test_dialling_something_that_is_not_tapio_fails_as_a_handshake(

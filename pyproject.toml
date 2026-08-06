@@ -61,8 +61,6 @@ members = ["examples"]
 [tool.uv]
 default-groups = ["dev"]
 
-# --- ruff ---------------------------------------------------------------------
-
 [tool.ruff]
 line-length = 88
 target-version = "py311"
@@ -106,15 +104,11 @@ ban-relative-imports = "all"
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
-# --- mypy ---------------------------------------------------------------------
-
 [tool.mypy]
 python_version = "3.11"
 strict = true
 warn_unreachable = true
 enable_error_code = ["redundant-expr", "truthy-bool", "ignore-without-code"]
-
-# --- pytest -------------------------------------------------------------------
 
 [tool.pytest.ini_options]
 minversion = "8.0"
@@ -123,8 +117,6 @@ addopts = "-ra --strict-markers --strict-config --benchmark-skip"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 filterwarnings = ["error"]
-
-# --- coverage -----------------------------------------------------------------
 
 [tool.coverage.run]
 source = ["src/tapio"]

@@ -13,8 +13,6 @@ from tapio.actor.behavior import resolve_handler_msg_type
 from tapio.errors import BehaviorTypeError, MessageTypeError
 from tests.messages import GetCount, Greet, Greeted, Increment, NotAMessage
 
-# --- sentinels ---------------------------------------------------------------
-
 
 def test_same_is_a_singleton():
     # The runtime compares these by identity, so returning a new object each
@@ -50,9 +48,6 @@ def test_sentinels_are_distinct():
 
 def test_a_sentinel_reprs_as_its_factory_call():
     assert repr(Behaviors.stopped()) == "Behaviors.stopped()"
-
-
-# --- receive -----------------------------------------------------------------
 
 
 async def handle(ctx: ActorContext[Greet], msg: Greet) -> Behavior[Greet]:
@@ -125,9 +120,6 @@ def test_receive_reprs_with_the_handler_name():
     assert "handle" in repr(Behaviors.receive(handle))
 
 
-# --- unresolvable types fail loudly ------------------------------------------
-
-
 def test_an_unannotated_handler_raises():
     with pytest.raises(BehaviorTypeError, match="has no annotation"):
         Behaviors.receive(handle_untyped)
@@ -171,9 +163,6 @@ def test_resolution_names_the_offending_function():
         resolve_handler_msg_type(handle_untyped, explicit=None, message_param_index=1)
 
 
-# --- setup -------------------------------------------------------------------
-
-
 def test_setup_defers_construction(ctx):
     calls = []
 
@@ -203,9 +192,6 @@ def test_setup_can_run_more_than_once(ctx):
     behavior.setup(ctx)
     behavior.setup(ctx)
     assert len(calls) == 2
-
-
-# --- the class-based style ---------------------------------------------------
 
 
 def test_a_subclass_resolves_its_type_from_the_parameter():

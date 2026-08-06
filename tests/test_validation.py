@@ -46,9 +46,6 @@ def tampered(ref) -> Greet:
     return Greet.model_construct(whom="world", count="not-an-int", reply_to=ref)
 
 
-# --- the proof ---------------------------------------------------------------
-
-
 def test_a_tampered_message_is_rejected_when_validation_is_on(on, tampered):
     validate = resolve_validator(msg_type=Greet, settings=on)
     with pytest.raises(ValidationError):
@@ -100,9 +97,6 @@ def test_the_recipient_always_gets_the_object_the_sender_passed(validate_on_tell
     assert validate(good) is None
 
 
-# --- strict-vs-lax construction -----------------------------------------------
-
-
 @pytest.mark.parametrize(
     ("sent", "stored"),
     [
@@ -132,9 +126,6 @@ def test_lax_construction_leaves_nothing_for_strict_revalidation_to_reject(
     resolve_validator(msg_type=Greet, settings=on)(message)
 
 
-# --- step 2: the type check --------------------------------------------------
-
-
 def test_a_message_of_the_wrong_type_is_rejected(on, ref):
     validate = resolve_validator(msg_type=Greet, settings=on)
     with pytest.raises(MessageTypeError, match="Greeted"):
@@ -161,9 +152,6 @@ def test_the_type_error_names_both_types(on):
     validate = resolve_validator(msg_type=Greet, settings=on)
     with pytest.raises(MessageTypeError, match=r"Greeted.*does not match.*Greet"):
         validate(Greeted(whom="world"))
-
-
-# --- unions ------------------------------------------------------------------
 
 
 def test_a_union_accepts_either_member(on, ref):
@@ -196,9 +184,6 @@ def test_typing_union_is_normalized_so_isinstance_works(on, ref):
     resolve_validator(msg_type=msg_type, settings=on)(Increment(by=1))
 
 
-# --- declaring a type that cannot carry the guarantee ------------------------
-
-
 def test_a_plain_basemodel_message_type_is_refused():
     with pytest.raises(MessageTypeError, match="subclasses BaseModel"):
         normalize_msg_type(NotAMessage, origin="test")
@@ -226,9 +211,6 @@ def test_something_that_is_not_a_type_at_all_is_refused():
 def test_a_union_containing_a_plain_basemodel_is_refused():
     with pytest.raises(MessageTypeError, match="subclasses BaseModel"):
         normalize_msg_type(Increment | NotAMessage, origin="test")
-
-
-# --- settings ----------------------------------------------------------------
 
 
 def test_validation_is_on_by_default():

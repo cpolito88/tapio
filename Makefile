@@ -19,8 +19,6 @@ help: ## Show this help
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-# --- setup -------------------------------------------------------------------
-
 .PHONY: install
 install: ## Create the venv and install all deps (including dev)
 	$(UV) sync --all-extras --dev
@@ -32,8 +30,6 @@ lock: ## Re-resolve and update uv.lock
 .PHONY: hooks
 hooks: ## Install git pre-commit hooks
 	$(UV) run pre-commit install
-
-# --- quality -----------------------------------------------------------------
 
 .PHONY: fmt
 fmt: ## Auto-format and apply safe lint fixes
@@ -51,8 +47,6 @@ type: ## Type-check under mypy strict
 
 .PHONY: check
 check: lint type test ## Pre-push gate: lint + types + tests
-
-# --- testing -----------------------------------------------------------------
 
 .PHONY: test
 test: ## Run the test suite with coverage
@@ -74,8 +68,6 @@ bench: ## Run benchmarks (msg/s, spawn cost, ask latency)
 examples: ## Execute every example end to end
 	$(UV) run pytest tests/examples
 
-# --- docs --------------------------------------------------------------------
-
 .PHONY: docs
 docs: ## Serve the docs site with live reload
 	$(UV) run mkdocs serve
@@ -84,8 +76,6 @@ docs: ## Serve the docs site with live reload
 docs-build: ## Build the docs site into site/
 	$(UV) run mkdocs build --strict
 
-# --- release -----------------------------------------------------------------
-
 .PHONY: build
 build: ## Build sdist and wheel into dist/
 	$(UV) build
@@ -93,8 +83,6 @@ build: ## Build sdist and wheel into dist/
 .PHONY: publish
 publish: ## Publish to PyPI (requires UV_PUBLISH_TOKEN)
 	$(UV) publish
-
-# --- meta --------------------------------------------------------------------
 
 .PHONY: ci
 ci: ## What GitHub Actions runs: locked install, then the full gate
