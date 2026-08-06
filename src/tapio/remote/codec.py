@@ -53,7 +53,9 @@ __all__ = [
     "UndecodableFrame",
     "decode",
     "encode",
+    "format_target",
     "frame_length",
+    "parse_target",
     "receive_frame",
 ]
 
@@ -135,7 +137,7 @@ def encode(
     key = registered_key(type(message))
     header = {
         "v": FRAME_VERSION,
-        "to": _format_target(to),
+        "to": format_target(to),
         "from": format_ref(sender.address, sender.path) if sender else None,
         "t": key,
     }
@@ -218,7 +220,7 @@ def decode(data: bytes, *, system: str, max_frame_bytes: int | None = None) -> F
         )
         raise MessageDecodingError(msg)
     try:
-        to = _parse_target(system, parsed["to"])
+        to = parse_target(system, parsed["to"])
         key = parsed["t"]
         payload = parsed["p"]
     except (KeyError, TypeError, ValueError) as error:
@@ -376,15 +378,36 @@ def _refuse(
     )
 
 
-def _format_target(path: ActorPath) -> str:
-    """Write a recipient path the way a frame carries it, with no address."""
+def format_target(path: ActorPath) -> str:
+    """Write a path the way a frame carries it, with no address.
+
+    A frame arriving on a link is addressed to the system that received it, so
+    the address would say nothing. The uid still travels, because it is what
+    tells one incarnation of a path from the next.
+
+    Args:
+        path: The path to write.
+
+    Returns:
+        `/user/checkout/session-7#3`, or without the fragment when there is no
+        incarnation uid.
+    """
     body = "/".join(path.elements)
     fragment = f"#{path.uid}" if path.uid else ""
     return f"/{body}{fragment}"
 
 
-def _parse_target(system: str, text: object) -> ActorPath:
-    """Read a frame's recipient back into a path in the reading system.
+def parse_target(system: str, text: object) -> ActorPath:
+    """Read a path a frame carried back into a path in a named system.
+
+    Args:
+        system: Whose path space the text belongs to. That is the reading
+            system for a recipient, and the sending one for a path that came
+            back after crossing in the other direction, as a watch does.
+        text: The path as the frame carried it.
+
+    Returns:
+        The path.
 
     Raises:
         ValueError: If the text is not a path with an optional uid fragment.

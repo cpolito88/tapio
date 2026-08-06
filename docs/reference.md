@@ -30,6 +30,8 @@ Generated from the source, so it cannot drift from what is installed.
 
 ::: tapio.actor.ask.ask
 
+::: tapio.actor.ask.ask_through
+
 ::: tapio.actor.ask.PromiseRef
 
 ## Timers and stash
@@ -84,7 +86,17 @@ Generated from the source, so it cannot drift from what is installed.
 
 ::: tapio.remote.ref.RemoteRef
 
+::: tapio.remote.ref.PeerWatch
+
 ::: tapio.settings.TLSSettings
+
+## Reachability
+
+::: tapio.remote.failure
+
+::: tapio.actor.events.EventStream
+
+::: tapio.actor.events.Subscription
 
 ## Supervision
 
@@ -106,11 +118,15 @@ Generated from the source, so it cannot drift from what is installed.
 
 ::: tapio.actor.signals.Terminated
 
+::: tapio.actor.watch
+
 ::: tapio.actor.signals.ChildFailed
 
 ## Test support
 
 ::: tapio.testkit.leaks
+
+::: tapio.testkit.remote
 
 ## Errors
 

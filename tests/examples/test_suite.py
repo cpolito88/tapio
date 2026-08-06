@@ -17,8 +17,11 @@ from tapio_examples import (
     escalation,
     graceful_shutdown,
     hello_world,
+    node_failure,
+    partition,
     ping_pong,
     rate_limiter,
+    remote_ask,
     stash_on_startup,
     state_machine,
     supervision_backoff,
@@ -34,8 +37,11 @@ ASSERTED = {
     "escalation",
     "graceful_shutdown",
     "hello_world",
+    "node_failure",
+    "partition",
     "ping_pong",
     "rate_limiter",
+    "remote_ask",
     "stash_on_startup",
     "state_machine",
     "supervision_backoff",
@@ -268,6 +274,58 @@ async def test_state_machine():
         "conn: dropped Send, closing",
         "conn: closed",
     ]
+
+
+async def test_remote_ask():
+    with assert_no_leaked_tasks():
+        lines = await remote_ask.main()
+
+    # One answer, and two failures that took about the same time for entirely
+    # different reasons. The third is the one that could not happen locally:
+    # the node stopped answering, so the ask failed on the peer rather than
+    # waiting out the thirty seconds it was given.
+    assert lines == [
+        "asker: six by seven is 42",
+        "asker: no answer in time, and the node is still there",
+        "asker: the answering node is unreachable, so no waiting",
+        "asker: after reconnecting, six by seven is still 42",
+    ]
+
+
+async def test_node_failure():
+    with assert_no_leaked_tasks():
+        lines = await node_failure.main()
+
+    # The coordinator does not retry against the node that is gone. It
+    # rebuilds the worker under itself and finishes the job there.
+    assert lines == [
+        "home: job 1 done by away",
+        "home: the away node is gone, rebuilding here",
+        "home: job 2 done by home",
+    ]
+
+
+async def test_partition():
+    with assert_no_leaked_tasks():
+        lines = await partition.main()
+
+    # Both nodes give up on the other, both tell their watchers that a live
+    # actor has stopped, and both keep working. The two beliefs are
+    # contradictory and neither node can tell.
+    home, away = lines[:6], lines[6:]
+    assert home[0] == "home: poked by away, still working"
+    assert home[1].startswith("home: gave up on tapio://away@")
+    assert home[1].endswith("quarantined")
+    assert home[2] == "home: told that tapio://away/user/steady#2 has stopped"
+    assert home[3] == "home: poked by home itself, still working"
+    assert home[4:] == [
+        "home: network repaired, and still no association",
+        "home: reconnected, because somebody decided to",
+    ]
+    assert away[0] == "away: poked by home, still working"
+    assert away[1].startswith("away: gave up on tapio://home@")
+    assert away[2] == "away: told that tapio://home/user/steady#2 has stopped"
+    assert away[3] == "away: poked by away itself, still working"
 
 
 def test_every_example_is_asserted():

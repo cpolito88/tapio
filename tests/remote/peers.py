@@ -5,7 +5,15 @@ import json
 from hashlib import sha256
 
 from tapio import Message
-from tapio.actor import ActorRef, ActorSystem, Behavior, Behaviors
+from tapio.actor import (
+    ActorContext,
+    ActorRef,
+    ActorSystem,
+    Behavior,
+    Behaviors,
+    Signal,
+    Terminated,
+)
 from tapio.remote.address import Address, format_ref
 from tapio.remote.registry import register_message
 from tapio.remote.transport import FrameLink, connect, framed
@@ -59,10 +67,26 @@ def uri(system: ActorSystem, ref: ActorRef[Message]) -> str:
 
 
 def echoing() -> Behavior[Ping]:
-    """An actor that answers every ping on the ref the ping carried."""
+    """An actor that answers every ping on the ref the ping carried.
+
+    A negative ping stops it without an answer, so a test can watch an ask
+    lose its target through the target's own behavior.
+    """
 
     async def on_message(message: Ping) -> Behavior[Ping]:
+        if message.n < 0:
+            return Behaviors.stopped()
         message.reply_to.tell(Pong(n=message.n))
+        return Behaviors.same()
+
+    return Behaviors.receive_message(on_message, msg_type=Ping)
+
+
+def ignoring(seen: list[int]) -> Behavior[Ping]:
+    """An actor that takes every ping and answers none of them."""
+
+    async def on_message(message: Ping) -> Behavior[Ping]:
+        seen.append(message.n)
         return Behaviors.same()
 
     return Behaviors.receive_message(on_message, msg_type=Ping)
@@ -94,6 +118,61 @@ def counting(seen: list[int]) -> Behavior[Tick]:
     return Behaviors.receive_message(on_message, msg_type=Tick)
 
 
+def relaying(target: ActorRef[Ping], seen: list[int]) -> Behavior[Tick]:
+    """An actor that asks a peer to reply to an adapter rather than to itself.
+
+    Its own protocol is ticks, and the peer answers in pongs, so what it
+    hands over is an adapter ref. That ref has to write itself down with this
+    system's address or the answer has nowhere to come back to.
+    """
+
+    def build(ctx: ActorContext[Tick]) -> Behavior[Tick]:
+        # Negated, so an answer coming back is not mistaken for a new request.
+        answers: ActorRef[Pong] = ctx.message_adapter(
+            lambda pong: Tick(n=-pong.n), Pong
+        )
+
+        async def on_message(message: Tick) -> Behavior[Tick]:
+            if message.n > 0:
+                target.tell(Ping(n=message.n, reply_to=answers))
+                return Behaviors.same()
+            seen.append(-message.n)
+            return Behaviors.same()
+
+        return Behaviors.receive_message(on_message, msg_type=Tick)
+
+    return Behaviors.setup(build)
+
+
+def watching(target: ActorRef[Message], seen: list[str]) -> Behavior[Tick]:
+    """An actor that watches one ref and records what it is told about it.
+
+    It takes ticks so a test can prove it is still running afterwards, which
+    is the difference between "the watch fired" and "the watcher died". A
+    negative tick makes it stop watching.
+    """
+
+    def build(ctx: ActorContext[Tick]) -> Behavior[Tick]:
+        ctx.watch(target)
+
+        async def on_message(message: Tick) -> Behavior[Tick]:
+            if message.n < 0:
+                ctx.unwatch(target)
+                seen.append("unwatched")
+                return Behaviors.same()
+            seen.append(f"tick {message.n}")
+            return Behaviors.same()
+
+        async def on_signal(ctx: ActorContext[Tick], signal: Signal) -> Behavior[Tick]:
+            if isinstance(signal, Terminated):
+                seen.append(f"terminated {signal.ref.path}")
+            return Behaviors.same()
+
+        return Behaviors.receive_message(on_message, msg_type=Tick, on_signal=on_signal)
+
+    return Behaviors.setup(build)
+
+
 async def dial(
     target: ActorSystem,
     *,
@@ -103,6 +182,7 @@ async def dial(
     system: str | None = None,
     proof: str | None = None,
     welcome: bool = True,
+    uid: int = 99,
 ) -> FrameLink:
     """Dial a system as a peer that writes its own handshake.
 
@@ -118,6 +198,8 @@ async def dial(
         proof: An answer to the challenge, overriding what `secret` gives.
         welcome: Read the peer's welcome before returning. Pass False when
             expecting a refusal, since no welcome is coming.
+        uid: The incarnation to claim. A second dial with a different one is
+            how a restarted peer says it is not the one from before.
 
     Returns:
         The open link.
@@ -136,7 +218,7 @@ async def dial(
                     "link": "client-hello",
                     "system": system if system is not None else address.system,
                     "address": str(address),
-                    "uid": 99,
+                    "uid": uid,
                     "version": version,
                     "nonce": "0" * 32,
                     "proof": answer,

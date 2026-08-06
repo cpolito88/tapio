@@ -21,15 +21,17 @@ from collections.abc import Callable
 from typing import Any, Final, TypeVar
 
 from tapio.actor.behavior import Behavior, Behaviors
-from tapio.actor.cell import ActorCell
+from tapio.actor.cell import ActorCell, ActorRuntime
 from tapio.actor.context import ActorContext
 from tapio.actor.dead_letters import DeadLetterOffice, DeadLetterReason
+from tapio.actor.events import EventStream
 from tapio.actor.mailbox import MailboxConfig, OverflowStrategy
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
 from tapio.actor.signals import PostStop, Signal
+from tapio.actor.watch import Watcher
 from tapio.dispatch.dispatcher import Dispatcher
-from tapio.errors import HandshakeError, TapioError
+from tapio.errors import ActorSystemTerminating, HandshakeError, TapioError
 from tapio.logging import runtime_logger
 from tapio.message import Message
 from tapio.remote.address import Address
@@ -38,12 +40,13 @@ from tapio.remote.handshake import accept
 from tapio.remote.ref import RemoteRef
 from tapio.remote.transport import (
     FrameLink,
+    Link,
     bind,
     listen,
     server_ssl_context,
     verify_bind_security,
 )
-from tapio.settings import RemoteSettings, TapioSettings
+from tapio.settings import RemoteSettings
 from tapio.validation import MessageType, MessageValidator, resolve_validator
 
 __all__ = ["RemoteEndpoint"]
@@ -70,45 +73,40 @@ class RemoteEndpoint:
     def __init__(
         self,
         *,
-        address: Address,
+        runtime: ActorRuntime,
         uid: int,
-        settings: TapioSettings,
-        dispatcher: Dispatcher,
-        dead_letters: DeadLetterOffice,
         deliver: Callable[[bytes, Address], None],
         listener: socket.socket,
     ) -> None:
         """Wire an endpoint to the system it belongs to.
 
         Args:
-            address: This system's canonical address.
+            runtime: The system slice this endpoint works through: its
+                canonical address, its loop, its dead letters, its event
+                stream, and the registry a frame's recipient is looked up in.
             uid: This system's incarnation uid.
-            settings: The system's tunables. The `remote` half is required
-                here. `validate_on_tell` decides how much a ref resolved with
-                an expected type checks before it encodes.
-            dispatcher: The loop everything here runs on.
-            dead_letters: Where a frame that never left is accounted for.
             deliver: Hands an inbound message frame to the system.
             listener: The socket already bound by `open_listener`.
         """
-        remote = settings.remote
+        remote = runtime.settings.remote
         if remote is None:  # pragma: no cover - the system checks before it builds one
             msg = "an endpoint needs RemoteSettings; this system has remoting off"
             raise TapioError(msg)
-        self._address = address
+        self._runtime = runtime
+        self._address = runtime.address
         self._uid = uid
-        self._all_settings = settings
+        self._all_settings = runtime.settings
         self._settings = remote
-        self._dispatcher = dispatcher
-        self._dead_letters = dead_letters
         self._deliver = deliver
         self._listener = listener
         self._server: asyncio.Server | None = None
         self._associations: dict[Address, Association] = {}
+        self._quarantined: dict[Address, str] = {}
         self._handshakes: set[asyncio.Task[None]] = set()
         self._names = 0
         self._parent: ActorCell[Any] | None = None
         self._closed = False
+        self._link_filter: Callable[[FrameLink], Link] | None = None
 
     @property
     def address(self) -> Address:
@@ -128,12 +126,22 @@ class RemoteEndpoint:
     @property
     def dead_letters(self) -> DeadLetterOffice:
         """Where a frame that never left is accounted for."""
-        return self._dead_letters
+        return self._runtime.dead_letters
+
+    @property
+    def events(self) -> EventStream:
+        """Where this system says that a peer went out of reach."""
+        return self._runtime.events
 
     @property
     def dispatcher(self) -> Dispatcher:
         """The loop this system runs on."""
-        return self._dispatcher
+        return self._runtime.dispatcher
+
+    @property
+    def is_closing(self) -> bool:
+        """Whether this system's remoting is shutting down."""
+        return self._closed
 
     @property
     def associations(self) -> tuple[Address, ...]:
@@ -143,6 +151,16 @@ class RemoteEndpoint:
         be able to assert that the link was released.
         """
         return tuple(self._associations)
+
+    @property
+    def quarantined(self) -> tuple[Address, ...]:
+        """The peers this system has given up on and will not dial again.
+
+        An address stays here until `reconnect` clears it, which is the whole
+        point: recovery from a peer declared unreachable is a decision
+        somebody made, never something that happened while nobody was looking.
+        """
+        return tuple(self._quarantined)
 
     def behavior(self) -> Behavior[_EndpointMessage]:
         """Build the `/system/remote` actor: parent of every association."""
@@ -168,7 +186,7 @@ class RemoteEndpoint:
             cell: The endpoint's actor, which parents every association.
         """
         self._parent = cell
-        self._dispatcher.spawn_task(self._serve(), name="tapio-remote-listener")
+        self.dispatcher.spawn_task(self._serve(), name="tapio-remote-listener")
 
     async def _serve(self) -> None:
         """Accept on the socket that was bound at construction."""
@@ -218,9 +236,9 @@ class RemoteEndpoint:
         finally:
             if task is not None:
                 self._handshakes.discard(task)
-        self._adopt(identity.address, identity.uid, link)
+        self._adopt(identity.address, identity.uid, self.wrap(link))
 
-    def _adopt(self, peer: Address, uid: int, link: FrameLink) -> None:
+    def _adopt(self, peer: Address, uid: int, link: Link) -> None:
         """Take a handshaken inbound link, resolving a simultaneous dial.
 
         Both ends connecting at once is normal under load. Without a rule the
@@ -234,26 +252,78 @@ class RemoteEndpoint:
             # later anyway.
             self._close_later(link, peer)
             return
+        if peer in self._quarantined:
+            # This system gave up on that address, and a peer dialling in is
+            # not a reason to change its mind. Recovery is a decision somebody
+            # makes with `reconnect`, because watchers were already told that
+            # actors over there are gone, and resuming quietly would leave two
+            # nodes believing different things with no way to notice.
+            _log.warning("refused a link from quarantined %s", peer)
+            self._close_later(link, peer)
+            return
         existing = self._associations.get(peer)
         if existing is not None:
-            if _wins(existing.initiator, peer):
+            if existing.peer_uid not in (0, uid):
+                # A different incarnation answers to that address, so the peer
+                # this system was talking to is gone. Its watchers are told,
+                # and the new link is a new association rather than the old
+                # one quietly changing who is on the other end. The address is
+                # not quarantined: what happened here is known exactly, which
+                # is the opposite of the silence a quarantine exists for.
+                _log.info(
+                    "%s restarted: incarnation %d replaces %d",
+                    peer,
+                    uid,
+                    existing.peer_uid,
+                )
+                existing.close(f"{peer} restarted as incarnation {uid}")
+            elif _wins(existing.initiator, peer):
                 _log.debug("closing a second link from %s; ours won", peer)
                 self._close_later(link, peer)
                 return
-            _log.debug("taking the link %s dialled; theirs won", peer)
-            existing.adopt(link, uid)
-            return
+            else:
+                _log.debug("taking the link %s dialled; theirs won", peer)
+                existing.adopt(link, uid)
+                return
         self._start_association(
             Association(host=self, peer=peer, initiator=peer, link=link, uid=uid)
         )
 
-    def _close_later(self, link: FrameLink, peer: Address) -> None:
+    def wrap(self, link: FrameLink) -> Link:
+        """Put whatever sits between this system and its sockets in the way.
+
+        Nothing, in production: the link is returned as it came. A test
+        installs a filter with `set_link_filter` to drop, delay or swallow
+        frames, which is how a partition is simulated with no second machine
+        and nothing real broken.
+
+        Args:
+            link: The link just opened or accepted.
+
+        Returns:
+            The link the association will read and write.
+        """
+        if self._link_filter is None:
+            return link
+        return self._link_filter(link)
+
+    def set_link_filter(self, wrap: Callable[[FrameLink], Link] | None) -> None:
+        """Install what every link opened from now on passes through.
+
+        Args:
+            wrap: Called with each new link, returning what to use in its
+                place. `None` removes the filter. Links already open keep
+                whatever they were wrapped in.
+        """
+        self._link_filter = wrap
+
+    def _close_later(self, link: Link, peer: Address) -> None:
         """Close a link this endpoint is not going to use.
 
         It gets its own task because closing waits for the transport, and the
         caller is a handshake that has nothing left to say.
         """
-        self._dispatcher.spawn_task(link.close(), name=f"tapio-link-close:{peer}")
+        self.dispatcher.spawn_task(link.close(), name=f"tapio-link-close:{peer}")
 
     def outbound(self, peer: Address) -> Association | None:
         """Return the association for a peer, dialling if there is none.
@@ -264,10 +334,11 @@ class RemoteEndpoint:
         Returns:
             The association. Its link may still be coming up, and sends queue
             behind it rather than waiting, so nothing blocks on a dial.
-            `None` once this system is shutting down and there is nothing left
-            to dial with.
+            `None` once this system is shutting down, and for a peer it has
+            given up on: neither is a thing to dial, and what was being sent
+            is accounted for instead.
         """
-        if self._closed:
+        if self._closed or peer in self._quarantined:
             return None
         existing = self._associations.get(peer)
         if existing is not None:
@@ -275,6 +346,17 @@ class RemoteEndpoint:
         return self._start_association(
             Association(host=self, peer=peer, initiator=self._address)
         )
+
+    def association_for(self, peer: Address) -> Association | None:
+        """Return the association for a peer, without dialling one.
+
+        Args:
+            peer: The peer's canonical address.
+
+        Returns:
+            The association, or `None` if this system holds none.
+        """
+        return self._associations.get(peer)
 
     def resolve_peer(self, address: Address, path: ActorPath) -> ActorRef[Any] | None:
         """Turn a foreign address and path into a ref that reaches it.
@@ -327,11 +409,122 @@ class RemoteEndpoint:
             outbox=PeerOutbox(self, address),
             validate=validate,
             max_frame_bytes=self._settings.max_frame_bytes,
+            runtime=self._runtime,
         )
 
     def deliver(self, frame: bytes, peer: Address) -> None:
         """Hand an inbound message frame to the system that owns the recipient."""
         self._deliver(frame, peer)
+
+    def lookup(self, path: ActorPath) -> ActorRef[Any] | None:
+        """Find a live local actor by path and incarnation uid.
+
+        Args:
+            path: The path a peer named, uid included.
+
+        Returns:
+            The live ref, or `None` when nothing is there. A uid whose
+            incarnation is over answers `None`, which is what stops a watch
+            from attaching to whoever holds that path now.
+        """
+        return self._runtime.refs.lookup(path)
+
+    def peer_ref(self, peer: Address, path: ActorPath) -> ActorRef[Any]:
+        """Build a ref to an actor on a peer, to name it in a `Terminated`.
+
+        Args:
+            peer: The peer's canonical address.
+            path: Where in its tree the actor sat.
+
+        Returns:
+            A ref. It stays a valid handle after the actor it names has
+            stopped, exactly as a local one does.
+        """
+        return self._ref_to(peer, path, _ACCEPT_ANY_MESSAGE)
+
+    def quarantine(self, peer: Address, detail: str) -> None:
+        """Freeze an address, because this system decided the peer is gone.
+
+        Nothing is sent there and nothing is dialled, in either direction,
+        until `reconnect` clears it. That is deliberate. Watchers have already
+        been told that actors over there are gone, so a link coming quietly
+        back would leave this system and its peer believing different things
+        with no way to notice.
+
+        Args:
+            peer: The peer's canonical address.
+            detail: Why, kept for the log and for `reconnect`.
+        """
+        self._quarantined[peer] = detail
+
+    def is_quarantined(self, peer: Address) -> bool:
+        """Whether this system has given up on an address."""
+        return peer in self._quarantined
+
+    def clear_quarantine(self, peer: Address) -> bool:
+        """Take an address off the list this system refuses to talk to.
+
+        Nothing is dialled. It says only that this system is willing to be
+        associated with that peer again, which is what the *other* end of a
+        healed partition needs before its dial can be accepted.
+
+        Each node gives up for itself, so each node relents for itself. A pair
+        that gave up on each other is repaired by relenting on one side and
+        dialling from the other:
+
+        ```python
+        beta.remote.clear_quarantine(alpha.address)
+        await alpha.remote.reconnect(beta.address)
+        ```
+
+        Args:
+            peer: The peer's canonical address.
+
+        Returns:
+            Whether it was quarantined at all.
+        """
+        detail = self._quarantined.pop(peer, None)
+        if detail is None:
+            return False
+        _log.info("clearing the quarantine on %s: %s", peer, detail)
+        return True
+
+    async def reconnect(self, peer: Address) -> None:
+        """Clear a quarantine and associate again, because someone decided to.
+
+        Recovery is never automatic. A peer declared unreachable may have been
+        alive the whole time, and its watchers here were told otherwise, so
+        resuming is a decision a person or a supervisor makes rather than
+        something a timer does.
+
+        This repairs one end. A peer that gave up on this system at the same
+        moment, which is what both sides of a partition do, refuses the dial
+        until it has relented too. See `clear_quarantine`.
+
+        Refs held from before are not reusable: their uid belongs to a session
+        that is over. Resolve again after this returns.
+
+        Args:
+            peer: The peer's canonical address.
+
+        Raises:
+            ActorSystemTerminating: If this system is shutting down.
+            HandshakeError: If the peer could not be dialled, refused this
+                system, or dropped the link before it carried anything.
+            TimeoutError: If the peer did not answer within
+                `handshake_timeout`.
+        """
+        if self._closed:
+            msg = f"cannot reconnect to {peer}: this system's remoting is shutting down"
+            raise ActorSystemTerminating(msg)
+        self.clear_quarantine(peer)
+        association = self.outbound(peer)
+        if association is None:  # pragma: no cover - the check above covers it
+            msg = f"cannot reconnect to {peer}: this system holds no links"
+            raise ActorSystemTerminating(msg)
+        await association.wait_connected(
+            self._settings.handshake_timeout.total_seconds()
+        )
 
     def forget_all(self, detail: str) -> None:
         """Close every association, as a link failure would one at a time.
@@ -428,19 +621,56 @@ class PeerOutbox:
         """The address on the other end."""
         return self._peer
 
+    @property
+    def is_quarantined(self) -> bool:
+        """Whether this system has given up on the peer.
+
+        A watch registered against a quarantined peer is answered at once
+        rather than waiting for a signal that nothing is left to send.
+        """
+        return self._endpoint.is_quarantined(self._peer)
+
     def send(self, message: Message, frame: bytes, recipient: ActorPath) -> None:
         """Queue a frame with the association for this peer, dialling if needed."""
         association = self._endpoint.outbound(self._peer)
         if association is None:
+            quarantined = self._endpoint.is_quarantined(self._peer)
             self._endpoint.dead_letters.publish(
                 message,
                 recipient,
-                DeadLetterReason.NO_ASSOCIATION,
+                DeadLetterReason.QUARANTINED
+                if quarantined
+                else DeadLetterReason.NO_ASSOCIATION,
                 peer=self._peer,
-                detail="this system is shutting down and holds no links",
+                detail=(
+                    "this system gave up on that peer; remote.reconnect clears it"
+                    if quarantined
+                    else "this system is shutting down and holds no links"
+                ),
             )
             return
         association.send(message, frame, recipient)
+
+    def watch(self, watchee: ActorPath, watcher: Watcher) -> None:
+        """Ask the peer to report when one of its actors stops."""
+        association = self._endpoint.outbound(self._peer)
+        if association is None:
+            watcher.notify_unreachable(
+                self._endpoint.peer_ref(self._peer, watchee),
+                f"this system holds no link to {self._peer}",
+            )
+            return
+        association.watch(watchee, watcher)
+
+    def unwatch(self, watchee: ActorPath, watcher: Watcher) -> None:
+        """Withdraw a watch on an actor over there.
+
+        It looks the association up rather than dialling, because withdrawing
+        a watch nobody holds is not a reason to open a connection.
+        """
+        association = self._endpoint.association_for(self._peer)
+        if association is not None:
+            association.unwatch(watchee, watcher)
 
     async def offer(self, message: Message, frame: bytes, recipient: ActorPath) -> None:
         """Queue a frame, waiting for room in the outbound buffer."""

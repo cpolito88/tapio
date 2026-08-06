@@ -3,9 +3,14 @@
 A link carries two kinds of frame over the same stream, and tells them apart
 without parsing either. **Message frames** are what [tapio.remote.codec][]
 writes, and they open with `{"v":`. **Link frames** are the transport's own,
-the handshake and the heartbeat, and they open with `{"link":`. The reader can
-therefore pass a message frame straight on, and only parses the frames meant
-for itself.
+the handshake, the heartbeat and the death watch, and they open with
+`{"link":`. The reader can therefore pass a message frame straight on, and
+only parses the frames meant for itself.
+
+Death watch travels as link frames rather than as messages because it is the
+runtime talking to itself. A watch is not addressed to an actor, carries no
+user payload, and must work whether or not the two systems have registered any
+message types in common.
 
 Everything here is about bytes and sockets. What a frame means is
 [tapio.remote.codec][]'s job, and who it reaches is
@@ -20,7 +25,7 @@ import socket
 import ssl
 from collections.abc import Awaitable, Callable
 from types import TracebackType
-from typing import Any, Final, Self, TypeAlias
+from typing import Any, Final, Protocol, Self, TypeAlias
 
 from pydantic import BaseModel
 
@@ -32,6 +37,11 @@ __all__ = [
     "LINK_PREFIX",
     "FrameLink",
     "Heartbeat",
+    "Link",
+    "LinkFrame",
+    "Unwatch",
+    "Watch",
+    "WatcheeTerminated",
     "bind",
     "client_ssl_context",
     "connect",
@@ -74,6 +84,84 @@ class Heartbeat(LinkFrame):
 
     link: str = "heartbeat"
     """The frame kind, first in the encoding so `LINK_PREFIX` holds."""
+
+
+class Watch(LinkFrame):
+    """Ask a peer to report when one of its actors stops."""
+
+    link: str = "watch"
+    """The frame kind, first in the encoding so `LINK_PREFIX` holds."""
+
+    watchee: str
+    """The actor to watch, in the receiving system's path space, uid included.
+    A uid that no longer matches is answered at once, since that incarnation is
+    already over."""
+
+    watcher: str
+    """Who is watching, in the sending system's path space. The receiver never
+    resolves it. It is an opaque key that comes back on the answer, which is
+    what keeps a watch from being a way to address actors on the watcher."""
+
+
+class Unwatch(LinkFrame):
+    """Withdraw a watch. The pair of paths identifies which one."""
+
+    link: str = "unwatch"
+    """The frame kind, first in the encoding so `LINK_PREFIX` holds."""
+
+    watchee: str
+    """The actor being watched, in the receiving system's path space."""
+
+    watcher: str
+    """Who was watching, in the sending system's path space."""
+
+
+class WatcheeTerminated(LinkFrame):
+    """Report that a watched actor has stopped.
+
+    Sent by the node that owns the actor, so it means the actor really did
+    stop. A watcher that is told the same thing because the link went silent
+    is being told a guess, and that one is decided locally and never travels.
+    """
+
+    link: str = "terminated"
+    """The frame kind, first in the encoding so `LINK_PREFIX` holds."""
+
+    watchee: str
+    """The actor that stopped, in the sending system's path space."""
+
+    watcher: str
+    """Who was watching, in the receiving system's path space, as they said it."""
+
+
+class Link(Protocol):
+    """One open connection, as everything above the transport uses it.
+
+    A protocol rather than the class, so that a test can put a link that
+    drops, delays or swallows frames where a real one goes and exercise the
+    failure detector without breaking anything real.
+    """
+
+    @property
+    def peer(self) -> str:
+        """The socket address on the other end, for a log line."""
+        ...
+
+    async def read_frame(self) -> bytes:
+        """Read one complete frame, prefix included."""
+        ...
+
+    async def write_frame(self, data: bytes) -> None:
+        """Write one complete frame and wait for the buffer to drain."""
+        ...
+
+    async def write_link(self, message: LinkFrame) -> None:
+        """Write one of the transport's own frames."""
+        ...
+
+    async def close(self) -> None:
+        """Close the connection, ignoring how it ends."""
+        ...
 
 
 def is_link_frame(frame: bytes) -> bool:
