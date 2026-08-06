@@ -18,6 +18,7 @@ __all__ = [
     "AskTargetUnreachable",
     "AskTimeoutError",
     "AskTypeError",
+    "BehaviorRegistrationError",
     "BehaviorTypeError",
     "FrameTooLargeError",
     "HandshakeError",
@@ -83,6 +84,16 @@ class MessageRegistrationError(TapioError):
     sharing one would decode as whichever imported last. Raised at encode time
     for a type with no key, because a key is never an import path and a peer
     could not rebuild an unregistered type.
+    """
+
+
+class BehaviorRegistrationError(TapioError):
+    """A behavior could not be offered to peers, or was never registered.
+
+    Raised at import time for a duplicate factory key and for a factory whose
+    arguments model cannot be resolved, since a factory no peer could call is
+    a bug where it is written. Raised at construction for a spawner offering a
+    key nothing registered, which is almost always a typo in the allowlist.
     """
 
 

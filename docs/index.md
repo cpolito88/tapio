@@ -12,8 +12,9 @@ supervision, with Pydantic models throughout.
     shake hands, and send each other typed messages, with refs that work on
     the other side. So do the parts that decide a peer has gone away: watching
     an actor on another node, asking one, a failure detector, quarantine, and
-    an explicit reconnect. Starting actors on another node is still to come,
-    and these pages fill in as it lands.
+    an explicit reconnect. Actors can be started on another node too, by asking
+    a spawner there, with supervision staying inside each node. What is left
+    before 0.1.0 is the TestKit, the rest of the docs, and the benchmarks.
 
 Every code block on this site is a snippet include from `examples/`, so nothing
 documented here is unexecuted.
