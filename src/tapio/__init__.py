@@ -7,6 +7,7 @@ throughout.
 from tapio.actor.behavior import AbstractBehavior, Behavior, Behaviors
 from tapio.actor.context import ActorContext
 from tapio.actor.dead_letters import DeadLetter, DeadLetterReason
+from tapio.actor.events import EventStream, Subscription
 from tapio.actor.mailbox import MailboxConfig, OverflowStrategy
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
@@ -20,6 +21,7 @@ from tapio.errors import (
     ActorNameError,
     ActorSystemTerminating,
     AskTargetTerminated,
+    AskTargetUnreachable,
     AskTimeoutError,
     AskTypeError,
     BehaviorTypeError,
@@ -38,6 +40,7 @@ from tapio.errors import (
 )
 from tapio.message import Message
 from tapio.remote.address import Address
+from tapio.remote.failure import PeerUnreachable
 from tapio.remote.registry import register_message
 from tapio.settings import RemoteSettings, TapioSettings, TLSSettings
 from tapio.version import __version__
@@ -52,6 +55,7 @@ __all__ = [
     "ActorSystemTerminating",
     "Address",
     "AskTargetTerminated",
+    "AskTargetUnreachable",
     "AskTimeoutError",
     "AskTypeError",
     "Backoff",
@@ -62,6 +66,7 @@ __all__ = [
     "DeadLetter",
     "DeadLetterReason",
     "Decision",
+    "EventStream",
     "FrameTooLargeError",
     "HandshakeError",
     "InsecureRemoteConfig",
@@ -73,6 +78,7 @@ __all__ = [
     "MessageRegistrationError",
     "MessageTypeError",
     "OverflowStrategy",
+    "PeerUnreachable",
     "PostStop",
     "PreRestart",
     "RefResolutionError",
@@ -83,6 +89,7 @@ __all__ = [
     "Signal",
     "StashBuffer",
     "StashOverflowError",
+    "Subscription",
     "SupervisorStrategy",
     "TLSSettings",
     "TapioError",

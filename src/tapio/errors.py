@@ -15,6 +15,7 @@ __all__ = [
     "ActorNameError",
     "ActorSystemTerminating",
     "AskTargetTerminated",
+    "AskTargetUnreachable",
     "AskTimeoutError",
     "AskTypeError",
     "BehaviorTypeError",
@@ -149,6 +150,18 @@ class AskTypeError(TapioError, TypeError):
 
 class AskTargetTerminated(TapioError):  # noqa: N818 - reads as a state, not a failure
     """The target of an ask stopped before it replied."""
+
+
+class AskTargetUnreachable(TapioError):  # noqa: N818 - reads as a state
+    """The peer holding the target of an ask became unreachable.
+
+    Different from `AskTargetTerminated` on purpose. That one says an actor
+    stopped, which is a fact. This one says a link went silent, which is a
+    judgement that can be wrong: the actor may be alive on the other side of a
+    partition. Both fail the ask at once rather than after the full timeout,
+    and which one arrived tells the caller whether retrying elsewhere makes
+    sense.
+    """
 
 
 class StashOverflowError(TapioError):

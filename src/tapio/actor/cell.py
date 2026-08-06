@@ -38,6 +38,7 @@ from tapio.actor.behavior import (
 )
 from tapio.actor.context import ActorContext
 from tapio.actor.dead_letters import Carrier, DeadLetterOffice, DeadLetterReason
+from tapio.actor.events import EventStream
 from tapio.actor.mailbox import Envelope, Mailbox, MailboxConfig
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
@@ -45,7 +46,7 @@ from tapio.actor.signals import ChildFailed, PostStop, PreRestart, Signal, Termi
 from tapio.actor.stash import StashBuffer, UnstashBehavior
 from tapio.actor.supervision import Decision, SupervisorStrategy
 from tapio.actor.timers import TimerScheduler
-from tapio.actor.watch import Watcher
+from tapio.actor.watch import Watcher, WatchTarget
 from tapio.dispatch.dispatcher import Dispatcher
 from tapio.errors import (
     ActorNameError,
@@ -137,6 +138,14 @@ class ActorRuntime:
     dead_letters: DeadLetterOffice
     """Where a message goes when its recipient cannot take it."""
 
+    events: EventStream = field(default_factory=EventStream)
+    """What this system publishes about itself, for whoever subscribed.
+
+    Runtime facts rather than traffic: today, that a peer became unreachable.
+    A default is provided so a cell built directly in a test needs no stream
+    of its own.
+    """
+
     terminated: bool = False
     """Whether the system has finished shutting down.
 
@@ -201,6 +210,10 @@ class LocalActorRef(ActorRef[T]):
         For the runtime, which needs the object behind the handle to register
         a death watch. Application code needs only the ref.
         """
+        return self._cell
+
+    def watch_target(self) -> WatchTarget:
+        """Return the cell, which is what a death watch is registered on."""
         return self._cell
 
     def tell(self, message: T) -> None:
@@ -354,7 +367,7 @@ class ActorCell(Generic[T]):
         # actor leaves an entry behind in the other when it stops. Not every
         # watcher is a cell: an ask's promise watches its target too.
         self._watchers: dict[ActorPath, Watcher] = {}
-        self._watching: dict[ActorPath, ActorCell[Any]] = {}
+        self._watching: dict[ActorPath, WatchTarget] = {}
         self._log = actor_logger(path)
         # Both are owned by the cell rather than by a behavior, and both
         # outlive an incarnation. A restart empties them and hands the same
@@ -591,14 +604,21 @@ class ActorCell(Generic[T]):
     def watch(self, ref: ActorRef[Any]) -> None:
         """Ask to be told when another actor stops.
 
+        The ref may point at an actor on a peer, and the call is the same. So
+        is the signal: `Terminated` arrives when that actor stops, and also
+        when the peer holding it becomes unreachable, which is a judgement
+        that can be wrong. There is no way to tell those apart from here, and
+        this is the one place remoting is not transparent by design rather
+        than by omission.
+
         Args:
             ref: The actor to watch.
 
         Raises:
-            WatchError: If the ref has no live cell behind it, or if an actor
+            WatchError: If the ref has no live actor behind it, or if an actor
                 tries to watch itself.
         """
-        target = _cell_behind(ref)
+        target = _watch_target(ref)
         if target is self:
             msg = (
                 f"{self._path} cannot watch itself: the signal would be "
@@ -1151,6 +1171,17 @@ class ActorCell(Generic[T]):
         if self._alive:
             self._mailbox.put_system(Terminated(ref))
 
+    def notify_unreachable(self, ref: ActorRef[Any], detail: str) -> None:
+        """Take delivery of a watched actor's peer going out of reach.
+
+        An actor is told the same thing either way. Whether the actor over
+        there stopped or the link to it went silent, what this one can do
+        about it is identical, so `Terminated` is the signal and the reason is
+        logged rather than delivered.
+        """
+        self._log.info("%s is unreachable: %s", ref.path, detail)
+        self.notify_terminated(ref)
+
     def _remove_child(self, child: "ActorCell[Any]") -> None:
         """Deregister a stopped child, freeing its name for reuse."""
         if self._children.get(child.path.name) is child:
@@ -1232,17 +1263,21 @@ class ActorCell(Generic[T]):
         return f"ActorCell({str(self._path)!r}, {self._behavior!r})"
 
 
-def _cell_behind(ref: ActorRef[Any]) -> ActorCell[Any]:
-    """Find the cell a ref delivers into.
+def _watch_target(ref: ActorRef[Any]) -> WatchTarget:
+    """Find what would arrange a death watch on a ref.
 
     Raises:
-        WatchError: If the ref is not one a running system handed out.
+        WatchError: If the ref is not one a running system handed out. A
+            dead-letter target is the usual case: it stands for an actor that
+            is already gone, and there is no death left to report.
     """
-    if isinstance(ref, LocalActorRef):
-        return ref.cell
+    target = ref.watch_target()
+    if target is not None:
+        return target
     msg = (
-        f"cannot watch {ref!r}: it is not a ref to a live actor in this "
-        "system. Watch a ref obtained from spawn or carried in a message."
+        f"cannot watch {ref!r}: it is not a ref to a live actor, here or on a "
+        "peer. Watch a ref obtained from spawn, from resolve, or carried in a "
+        "message."
     )
     raise WatchError(msg)
 

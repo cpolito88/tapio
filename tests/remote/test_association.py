@@ -20,6 +20,7 @@ from tests.remote.peers import (
     counting,
     dial,
     echoing,
+    relaying,
     remoting,
     uri,
 )
@@ -253,18 +254,6 @@ async def test_a_link_frame_this_version_does_not_know_is_ignored(beta: ActorSys
         await link.close()
 
 
-async def test_asking_across_an_association_says_what_to_do_instead(
-    alpha: ActorSystem, beta: ActorSystem
-):
-    # A remote ask needs the remote death watch to fail fast. Until that
-    # lands, an ask here could only time out, so it refuses instead.
-    echo = beta.spawn(echoing(), "echo")
-    remote = await alpha.resolve(uri(beta, echo), expect=Ping)
-
-    with pytest.raises(NotImplementedError, match="reply_to"):
-        await remote.ask(lambda reply_to: Ping(n=1, reply_to=reply_to), expect=Pong)
-
-
 # --- simultaneous dial -------------------------------------------------------
 
 
@@ -341,3 +330,20 @@ async def test_a_peer_with_the_wrong_secret_gets_nothing_through():
         await eventually(lambda: bool(letters))
         assert seen == []
         assert letters[0].reason == DeadLetterReason.LINK_FAILED
+
+
+async def test_an_adapter_ref_handed_to_a_peer_is_answerable(
+    alpha: ActorSystem, beta: ActorSystem
+):
+    # An adapter is addressable like the actor behind it, so it has to write
+    # itself down with the system's canonical address. Without that a peer
+    # reads it as a ref naming a system and nowhere to dial, and the answer
+    # dead-letters instead of arriving.
+    seen: list[int] = []
+    echo = beta.spawn(echoing(), "echo")
+    remote = await alpha.resolve(uri(beta, echo), expect=Ping)
+    relay = alpha.spawn(relaying(remote, seen), "relay")
+
+    relay.tell(Tick(n=5))
+
+    await eventually(lambda: seen == [5])

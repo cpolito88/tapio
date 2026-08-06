@@ -101,6 +101,18 @@ class RemoteSettings(BaseSettings):
     can be told from a peer with nothing to say.
     """
 
+    unreachable_after: timedelta = timedelta(seconds=10)
+    """How long a link may be silent before the peer is declared unreachable.
+
+    Nothing arriving for this long, heartbeats included, means the peer is
+    gone as far as this system can tell. Every local watcher of an actor over
+    there is told `Terminated`, the association is quarantined, and recovery
+    is an explicit `remote.reconnect`. That verdict can be wrong: a partition,
+    a long pause and an overloaded peer all look the same from one node, and
+    resolving which it was needs membership and a quorum that v0.1 does not
+    have. Set it well above the peer's `heartbeat_interval`.
+    """
+
     outbound_capacity: int = 10_000
     """Frames one association will hold for a peer that is not reading.
 

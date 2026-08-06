@@ -240,6 +240,65 @@ type key on a frame is a registry key, so both ends have to
 `@register_message()` what they exchange. An unknown key is a dead letter
 naming the key, and nothing is imported to find out what it meant.
 
+## When a node stops answering
+
+Watching an actor on another node is the same call as watching one next door,
+and it is how you depend on something in another process without asking it
+whether it is still alive:
+
+```python
+--8<-- "examples/tapio_examples/node_failure.py"
+```
+
+What the signal means is not the same, and this is the one place where the
+difference is worth understanding before you need it. Locally, `Terminated`
+says an actor stopped, which is a fact. Across a link it says this node
+stopped hearing from that one, which is a conclusion. A partition, a long
+pause and a dead process all look identical from a single node.
+
+So tapio does what a single node can do, and says so plainly. Each association
+heartbeats. When nothing has arrived for `unreachable_after`, every local
+watcher of an actor over there is told `Terminated`, a `PeerUnreachable` event
+is published on `system.events`, and the address is **quarantined**: sends to
+it dead-letter and nothing dials it again.
+
+Recovery is explicit, never automatic. Watchers have already been told that
+live actors are gone, so a link coming quietly back would leave two nodes
+holding contradictory beliefs with nothing to notice it. `clear_quarantine`
+says this node is willing to talk to that peer again, and `remote.reconnect`
+dials.
+
+The example that shows all of it is the uncomfortable one, with both nodes
+alive and each convinced the other has died:
+
+```python
+--8<-- "examples/tapio_examples/partition.py"
+```
+
+Both nodes are wrong, and both are locally correct. Fixing that needs enough
+nodes to hold a vote, so that the minority side of a partition can discover
+that it is the minority. That is clustering, and it is not in this version.
+What is here instead is a default chosen to be recoverable: fail fast, freeze
+the address, and let a person or a supervisor decide when to try again. For
+request/response and work distribution, wrongly deciding a peer is dead costs
+a retry. Waiting forever costs availability.
+
+`ask` works across a link too, and it has one failure a local ask does not:
+
+```python
+--8<-- "examples/tapio_examples/remote_ask.py"
+```
+
+`AskTimeoutError` says the peer was there and nobody answered in time, so
+asking again may work. `AskTargetUnreachable` says this node has given up on
+the peer, so it will not. Both fail immediately rather than waiting out the
+deadline, which is what the death watch under the ask is for.
+
+Testing any of this needs a network that can be broken on purpose, so the
+testkit ships one. `two_nodes()` starts a pair on loopback ports the OS picks,
+and `partition()`, `heal()`, `drop()` and `delay()` lose frames without
+breaking anything real.
+
 ## What the runtime gives you today
 
 - `ActorSystem`, with a `/user` guardian above everything you spawn.
@@ -282,6 +341,12 @@ naming the key, and nothing is imported to find out what it meant.
   outbound buffer.
 - `await system.resolve(uri, expect=...)` and `ctx.resolve(...)`, which turn
   another system's address into an ordinary ref.
+- `ctx.watch` on a ref that points at another node, and `await ref.ask(...)`
+  across a link, with `AskTargetUnreachable` told apart from a timeout.
+- A heartbeat failure detector, quarantine, `PeerUnreachable` on
+  `system.events`, and `remote.reconnect` as the one way back.
+- `tapio.testkit.two_nodes()`, with link faults for partitions, dropped frames
+  and delays, so the failure paths are tested rather than described.
 
-Remote death watch, a failure detector and quarantine are next, and with them
-an `ask` that works across a link.
+Starting an actor on another node is next: a spawner actor, a factory
+registry, and a docs page saying that both nodes have to run the same code.

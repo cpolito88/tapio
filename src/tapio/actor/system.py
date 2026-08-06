@@ -19,6 +19,7 @@ from typing import Any, Final, Self, TypeVar, cast
 from tapio.actor.behavior import Behavior, Behaviors
 from tapio.actor.cell import ActorCell, ActorRuntime, LocalActorRef
 from tapio.actor.dead_letters import DeadLetterOffice, DeadLetterReason, DeadLetterRef
+from tapio.actor.events import EventStream
 from tapio.actor.mailbox import MailboxConfig
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
@@ -147,6 +148,7 @@ class ActorSystem:
             ),
             clock=dispatcher.now,
         )
+        self._events = EventStream()
         self._runtime = ActorRuntime(
             name=name,
             address=self._address,
@@ -154,6 +156,7 @@ class ActorSystem:
             settings=self._settings,
             dispatcher=dispatcher,
             dead_letters=self._dead_letters,
+            events=self._events,
             guardian_failure=self._on_guardian_failure,
             resolver=lambda uri, expect: self.resolve(uri, expect=expect),
         )
@@ -177,11 +180,8 @@ class ActorSystem:
         separate shutdown step is needed, and none can be forgotten.
         """
         endpoint = RemoteEndpoint(
-            address=self._address,
+            runtime=self._runtime,
             uid=self._uid,
-            settings=self._settings,
-            dispatcher=self._runtime.dispatcher,
-            dead_letters=self._dead_letters,
             deliver=lambda frame, peer: self.deliver_frame(frame, peer=peer),
             listener=listener,
         )
@@ -223,6 +223,17 @@ class ActorSystem:
         message was dropped" and "the code never ran" look the same.
         """
         return self._dead_letters
+
+    @property
+    def events(self) -> EventStream:
+        """What this system publishes about itself, for whoever subscribes.
+
+        Runtime facts rather than traffic. Today that is
+        [PeerUnreachable][tapio.remote.failure.PeerUnreachable], which is how
+        a service learns that a node it was talking to is beyond reach and
+        decides whether to log it, alarm, or stop.
+        """
+        return self._events
 
     @property
     def address(self) -> Address:

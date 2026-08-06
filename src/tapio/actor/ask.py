@@ -4,16 +4,23 @@
 a `PromiseRef`: a ref with no mailbox and no cell, whose `tell` resolves an
 `asyncio.Future` instead of enqueuing anything. The caller awaits that future.
 
-Three things fail an ask. All three are here so that the caller never waits
-out a timeout for an answer that is not coming:
+Four things fail an ask. All four are here so that the caller never waits out
+a timeout for an answer that is not coming:
 
 * The timeout elapses. This is the only one that costs the full wait.
 * The target stops. The promise watches it, so this fails at once.
+* The peer holding the target becomes unreachable. Only across a link, and
+  reported separately from a target that stopped, because the caller may want
+  to retry somewhere else.
 * The reply is not of the expected type. That is a bug in the responder, and
   it surfaces in the caller rather than as a value whose static type is a lie.
 
 After any of those the promise is settled, and a reply arriving later becomes
 a dead letter rather than resolving a future nobody is awaiting.
+
+An ask across a link runs through the same promise and the same watch. What
+differs is only where the request goes and what the watch is registered on,
+which is why `ask_through` takes both as arguments.
 """
 
 import asyncio
@@ -26,11 +33,14 @@ from pydantic import ValidationError
 from tapio.actor.dead_letters import DeadLetterReason
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
+from tapio.actor.watch import WatchTarget
 from tapio.errors import (
     AskTargetTerminated,
+    AskTargetUnreachable,
     AskTimeoutError,
     AskTypeError,
     MessageTypeError,
+    TapioError,
 )
 from tapio.logging import runtime_logger
 from tapio.message import Message
@@ -40,7 +50,7 @@ from tapio.validation import MessageValidator, normalize_msg_type, resolve_valid
 if TYPE_CHECKING:
     from tapio.actor.cell import ActorRuntime, LocalActorRef
 
-__all__ = ["PromiseRef", "ask"]
+__all__ = ["PromiseRef", "ask", "ask_through", "promise_path"]
 
 T = TypeVar("T", bound=Message)
 R = TypeVar("R", bound=Message)
@@ -153,6 +163,27 @@ class PromiseRef(ActorRef[R]):
         msg = f"{ref.path} stopped before replying to an ask expecting {self._expected}"
         self._future.set_exception(AskTargetTerminated(msg))
 
+    def notify_unreachable(self, ref: ActorRef[Any], detail: str) -> None:
+        """Fail the ask because the peer holding its target went out of reach.
+
+        An actor watching would be told `Terminated` and could not tell the
+        two apart. A caller can: an actor that stopped will not answer, while
+        an actor behind a partition may be running and answering somebody
+        else. Retrying elsewhere is reasonable for one and not the other, so
+        the errors are different.
+
+        Args:
+            ref: A ref to the actor that can no longer be reached.
+            detail: Why the peer is considered gone.
+        """
+        if self._settled or self._future.done():
+            return
+        msg = (
+            f"{ref.path} became unreachable before replying to an ask "
+            f"expecting {self._expected}: {detail}"
+        )
+        self._future.set_exception(AskTargetUnreachable(msg))
+
     def settle(self) -> None:
         """Close this promise, whatever became of the ask.
 
@@ -228,35 +259,85 @@ async def ask(
             request or the reply does not satisfy its own model.
     """
     cell = target.cell
-    runtime = cell.runtime
+    gone = AskTargetTerminated(
+        f"{cell.path} had already stopped when an ask expecting "
+        f"{expect.__name__} was made"
+    )
+    return await ask_through(
+        cell,
+        target.tell,
+        make,
+        runtime=cell.runtime,
+        expect=expect,
+        timeout=timeout,
+        gone=gone,
+    )
+
+
+async def ask_through(
+    watched: WatchTarget,
+    deliver: Callable[[T], None],
+    make: Callable[[ActorRef[R]], T],
+    *,
+    runtime: "ActorRuntime",
+    expect: type[R],
+    timeout: timedelta | None,  # noqa: ASYNC109 - the ask deadline
+    gone: TapioError,
+) -> R:
+    """Run one ask: make a promise, send, watch, and wait for whichever lands.
+
+    Both asks run through here. A local one delivers into a cell and watches
+    that cell. A remote one writes a frame and watches the actor on the peer.
+    Everything between is the same, which is the point: the promise, the
+    watch, the deadline and the cleanup should not have two implementations
+    that can drift.
+
+    Args:
+        watched: What to watch so a target that goes away fails the ask at
+            once instead of after the full deadline.
+        deliver: How to send the request.
+        make: Builds the request from the ref the reply should go to.
+        runtime: The asking system's slice, for the loop and the registry.
+        expect: The reply type.
+        timeout: How long to wait. The system's `ask_timeout` when omitted.
+        gone: The error to raise if the target is already beyond reach when
+            the ask begins. The caller builds it, because a stopped actor and
+            an unreachable peer are different diagnoses.
+
+    Returns:
+        The reply.
+
+    Raises:
+        AskTimeoutError: If no reply arrived in time.
+        AskTargetTerminated: If the target stopped without replying.
+        AskTargetUnreachable: If the peer holding the target went out of reach.
+        AskTypeError: If a reply arrived that was not an `expect`.
+        RuntimeError: If called from a thread that is not running the loop.
+    """
     if not runtime.dispatcher.is_current():
         msg = (
-            f"ask to {cell.path} must run on the system's loop; a reply is "
+            f"ask to {watched.path} must run on the system's loop; a reply is "
             "resolved there and cannot be awaited from another thread"
         )
         raise RuntimeError(msg)
 
-    origin = f"an ask to {cell.path}"
+    origin = f"an ask to {watched.path}"
     reply_type = normalize_msg_type(expect, origin=origin)
     promise: PromiseRef[R] = PromiseRef(
-        path=_promise_path(runtime),
+        path=promise_path(runtime),
         runtime=runtime,
         validate=resolve_validator(
             msg_type=reply_type, settings=runtime.settings, target=None
         ),
         expected=expect.__name__,
-        target=cell.path,
+        target=watched.path,
     )
 
-    if not cell.is_alive:
+    if not watched.is_alive:
         # Nothing between here and the watch below awaits, and a cell stops on
-        # this same loop, so the target cannot slip through the gap.
-        msg = (
-            f"{cell.path} had already stopped when an ask expecting "
-            f"{expect.__name__} was made"
-        )
-        raise AskTargetTerminated(msg)
-    cell.add_watcher(promise)
+        # this same loop, so a local target cannot slip through the gap.
+        raise gone
+    watched.add_watcher(promise)
     # After the early exit above, so that an ask which never starts leaves
     # nothing registered. `settle` in the `finally` below takes it out again.
     runtime.refs.register(promise)
@@ -266,13 +347,13 @@ async def ask(
     ).total_seconds()
     try:
         request = make(promise)
-        target.tell(request)
+        deliver(request)
         try:
             async with asyncio.timeout(seconds):
                 return await promise.future
         except TimeoutError:
             msg = (
-                f"no reply from {cell.path} within {seconds:g}s to "
+                f"no reply from {watched.path} within {seconds:g}s to "
                 f"{type(request).__name__}, expecting {expect.__name__}"
             )
             raise AskTimeoutError(msg) from None
@@ -280,10 +361,10 @@ async def ask(
         # Both have to run however this ended. The promise stops accepting
         # replies, and the target stops holding a watcher for a finished ask.
         promise.settle()
-        cell.remove_watcher(promise)
+        watched.remove_watcher(promise)
 
 
-def _promise_path(runtime: "ActorRuntime") -> ActorPath:
+def promise_path(runtime: "ActorRuntime") -> ActorPath:
     """Address one promise under `/system/promises`.
 
     The uid comes from the system's incarnation counter, so no two asks in a

@@ -17,6 +17,7 @@ from typing import Annotated, Any, TypeAlias
 
 from pydantic import PlainValidator, SerializeAsAny
 
+from tapio.actor.events import Subscription
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
 from tapio.logging import runtime_logger
@@ -135,6 +136,12 @@ class DeadLetterReason:
     backpressure from the receiving actor: nothing in a fire-and-forget wire
     protocol can offer the latter."""
 
+    QUARANTINED = "quarantined"
+    """The peer was declared unreachable and its address is frozen. Nothing is
+    sent there and nothing is dialled until `remote.reconnect` says so, because
+    silently re-associating after a false alarm would leave two nodes with
+    contradictory beliefs and no way to notice."""
+
     LINK_FAILED = "link-failed"
     """The link to the peer failed while the message was on it or queued for
     it. At-most-once means exactly this: a message written to a socket that
@@ -162,28 +169,6 @@ class DeadLetter(Message):
     """The specifics, when the reason alone does not carry them: the type key
     nobody registered, the two types that did not match, the size that was
     refused."""
-
-
-class Subscription:
-    """A handle for undoing one `subscribe` call."""
-
-    __slots__ = ("_cancel",)
-
-    def __init__(self, cancel: Callable[[], None]) -> None:
-        """Bind the subscription to the office that made it."""
-        self._cancel = cancel
-
-    def unsubscribe(self) -> None:
-        """Stop receiving dead letters. Calling this twice is harmless."""
-        self._cancel()
-
-    def __enter__(self) -> "Subscription":
-        """Return the subscription, for use as a context manager."""
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        """Unsubscribe on the way out of the block."""
-        self.unsubscribe()
 
 
 class DeadLetterOffice:

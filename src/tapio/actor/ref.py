@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 from datetime import timedelta
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from pydantic import GetCoreSchemaHandler
 from pydantic_core import core_schema
@@ -11,6 +11,9 @@ from tapio.actor.path import ActorPath
 from tapio.message import Message
 from tapio.remote.address import Address, format_ref
 from tapio.remote.context import resolve_ref
+
+if TYPE_CHECKING:
+    from tapio.actor.watch import WatchTarget
 
 __all__ = ["ActorRef"]
 
@@ -118,6 +121,19 @@ class ActorRef(Generic[T]):
                 to the concrete refs a running actor system hands out.
         """
         raise NotImplementedError(self._undeliverable())
+
+    def watch_target(self) -> "WatchTarget | None":
+        """Return what would arrange a death watch on this ref, if anything can.
+
+        `None` on this base class, and on any ref that is not a handle to a
+        live actor: a dead-letter target has nothing to report the death of.
+        A local ref answers with its cell, and a remote ref with the peer that
+        holds the actor, so watching is one call either way.
+
+        Returns:
+            The watch target, or `None` when this ref cannot be watched.
+        """
+        return None
 
     def _undeliverable(self) -> str:
         """Explain that this ref is not attached to a running actor."""

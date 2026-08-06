@@ -30,6 +30,7 @@ from tapio.actor.dead_letters import Carrier
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
 from tapio.message import Message
+from tapio.remote.address import Address
 from tapio.validation import MessageValidator
 
 if TYPE_CHECKING:
@@ -138,6 +139,16 @@ class AdapterRef(ActorRef[U]):
         self._cell = cell
         self._adapt = adapt
         self._validate = validate
+
+    @property
+    def address(self) -> Address:
+        """The canonical address of the system the owning actor runs in.
+
+        An adapter is addressable like the actor behind it. Without this it
+        would write itself down with no host, and a peer handed one in a
+        `reply_to` would read it as a ref with nowhere to dial.
+        """
+        return self._cell.runtime.address
 
     def tell(self, message: U) -> None:
         """Accept a message, to be translated and delivered to the owner.
