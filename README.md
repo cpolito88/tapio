@@ -162,11 +162,20 @@ Requires Python 3.11+ (for `asyncio.timeout()` and `typing.Self`).
 
 ## Numbers
 
-Measured with `make bench` and `make bench-scale`, which anybody can run. The
-figures below are the best of twenty rounds on an Intel i7-5600U at 2.6 GHz,
-Python 3.11 and Pydantic 2.13, on a laptop that was doing other things. Take
-the ratios seriously and the absolute numbers as an order of magnitude: a
-current server core is considerably faster than this one.
+Measured with `make bench` and `make bench-scale`, which anybody can run. Both
+print what they ran on, and this is what they printed:
+
+```
+Intel(R) Core(TM) i7-5600U CPU @ 2.60GHz, 4 cores, 8 GB RAM
+Linux 7.1.5-arch1-2
+CPython 3.11.11, pydantic 2.13.4
+measured 2026-08-07
+```
+
+The figures below are the best of twenty rounds, on a laptop that was doing
+other things at the time. Take the ratios seriously and the absolute numbers
+as an order of magnitude: that is a 2015 mobile part, and a current server
+core is considerably faster.
 
 **Messages per second**, one sender to one actor, ten thousand at a time:
 

@@ -25,6 +25,8 @@ import subprocess
 import sys
 import time
 
+from tests.benchmarks.machine import as_text
+
 from tapio import Behavior, Behaviors, Message
 from tapio.actor import ActorContext, ActorRef, ActorSystem
 from tapio.settings import TapioSettings
@@ -138,6 +140,8 @@ def child(count: int) -> dict[str, float]:
 def main() -> None:
     """Measure every size and print the table the README carries."""
     rows = [child(count) for count in SIZES]
+    print(as_text())
+    print()
     print(
         f"{'actors':>9}  {'RSS':>9}  {'per actor':>10}  {'ask p50':>9}  {'ask p99':>9}"
     )
