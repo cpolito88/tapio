@@ -50,7 +50,14 @@ check: lint type test ## Pre-push gate: lint + types + tests
 
 .PHONY: test
 test: ## Run the test suite with coverage
-	$(UV) run pytest --cov=$(PKG) --cov-report=term-missing --cov-report=xml
+	# `coverage run -m pytest` rather than `pytest --cov`, because tapio
+	# registers a pytest plugin through an entry point. pytest imports that
+	# plugin, and so most of the package, before pytest-cov starts measuring,
+	# which leaves every module's import-time lines looking unexecuted and
+	# reports about 54% for a suite that covers 93%.
+	$(UV) run coverage run -m pytest
+	$(UV) run coverage report --show-missing
+	$(UV) run coverage xml
 
 .PHONY: test-fast
 test-fast: ## Run tests, stop at first failure, quiet
