@@ -50,7 +50,14 @@ check: lint type test ## Pre-push gate: lint + types + tests
 
 .PHONY: test
 test: ## Run the test suite with coverage
-	$(UV) run pytest --cov=$(PKG) --cov-report=term-missing --cov-report=xml
+	# `coverage run -m pytest` rather than `pytest --cov`, because tapio
+	# registers a pytest plugin through an entry point. pytest imports that
+	# plugin, and so most of the package, before pytest-cov starts measuring,
+	# which leaves every module's import-time lines looking unexecuted and
+	# reports about 54% for a suite that covers 93%.
+	$(UV) run coverage run -m pytest
+	$(UV) run coverage report --show-missing
+	$(UV) run coverage xml
 
 .PHONY: test-fast
 test-fast: ## Run tests, stop at first failure, quiet
@@ -84,9 +91,24 @@ docs-build: ## Build the docs site into site/
 build: ## Build sdist and wheel into dist/
 	$(UV) build
 
+.PHONY: next-version
+next-version: ## Print the version the commits since the last tag would produce
+	$(UV) run semantic-release version --print
+
+.PHONY: release
+release: ## Tag and build from the commits (CI runs this, not you)
+	# --no-commit and --no-changelog: the release is the tag, so there is
+	# nothing to write into the tree and nothing to push to a protected
+	# branch. The tag alone is what the build reads its version from.
+	$(UV) run semantic-release version --no-commit --no-changelog
+	$(UV) run semantic-release publish
+
 .PHONY: publish
 publish: ## Publish to PyPI (requires UV_PUBLISH_TOKEN)
-	$(UV) publish
+	# --check-url makes a repeat run a no-op rather than an error: an upload
+	# that half succeeded, or a job somebody re-ran, skips the files PyPI
+	# already has instead of failing on all of them.
+	$(UV) publish --check-url https://pypi.org/simple/
 
 .PHONY: ci
 ci: ## What GitHub Actions runs: locked install, then the full gate

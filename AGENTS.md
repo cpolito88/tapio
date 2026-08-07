@@ -68,6 +68,19 @@ you are already editing.
 
 ## Commit messages and pull requests
 
+- **The commit type decides the version.** python-semantic-release reads the
+  history on `main`, so `feat:` moves the minor, `fix:` moves the patch, and
+  anything else moves nothing. Write the type you mean: a `fix:` that is
+  really a feature ships under a version number that lies about it. A
+  `BREAKING CHANGE:` footer moves the minor too while this is 0.x, since
+  going to 1.0.0 is a decision rather than a side effect. Nobody edits a
+  version by hand, and `make next-version` says what the current history
+  would produce.
+- **Nothing in the repository holds a version number.** It is derived from the
+  git tag at build time, so a release is a tag and nothing else. Do not add a
+  literal version to `pyproject.toml` or `version.py`: the second copy is the
+  one that goes stale, and writing one would put the release job back to
+  pushing commits at a protected branch.
 - **Wrap commit messages at 72 columns.** `git log` does not reflow, so an
   unwrapped paragraph becomes one very long line in a terminal.
 - **Do not wrap pull request bodies.** One line per paragraph and one per list
