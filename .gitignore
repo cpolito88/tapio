@@ -34,4 +34,3 @@ PLAN.md
 .idea/
 .vscode/
 .DS_Store
-src/tapio/_version.py

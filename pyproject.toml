@@ -47,11 +47,6 @@ build-backend = "hatchling.build"
 [tool.hatch.version]
 source = "vcs"
 
-[tool.hatch.build.hooks.vcs]
-# Written into the wheel at build time, so an installed tapio knows its own
-# version without asking the metadata, and a source checkout falls back to it.
-version-file = "src/tapio/_version.py"
-
 [tool.hatch.build.targets.wheel]
 packages = ["src/tapio"]
 
@@ -154,16 +149,12 @@ filterwarnings = ["error"]
 tag_format = "v{version}"
 major_on_zero = false
 allow_zero_version = true
-commit_message = "chore(release): {version}\n\nWritten by python-semantic-release from the commits since the last tag."
-# The wheel is built by the release job, from the tree that has just been
-# bumped, so what is tagged and what is uploadable are the same thing.
+# Built by the release job from the tag it has just created, so the version in
+# the artifact is the tag by construction rather than by agreement.
 build_command = "uv build"
 
 [tool.semantic_release.branches.main]
 match = "main"
-
-[tool.semantic_release.changelog]
-exclude_commit_patterns = ["^chore\\(release\\):"]
 
 [tool.coverage.run]
 source = ["src/tapio"]
