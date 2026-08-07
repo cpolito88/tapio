@@ -94,6 +94,8 @@ Generated from the source, so it cannot drift from what is installed.
 
 ::: tapio.settings.TLSSettings
 
+::: tapio.remote.protocol
+
 ## Remote spawning
 
 ::: tapio.remote.spawner.remote_behavior

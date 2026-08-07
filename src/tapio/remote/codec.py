@@ -44,10 +44,10 @@ from tapio.errors import (
 from tapio.message import Message
 from tapio.remote.address import Address, format_ref
 from tapio.remote.context import DeserializationContext, use_context
+from tapio.remote.protocol import PROTOCOL_VERSION
 from tapio.remote.registry import registered_key, type_for_key
 
 __all__ = [
-    "FRAME_VERSION",
     "LENGTH_PREFIX",
     "Frame",
     "UndecodableFrame",
@@ -59,8 +59,6 @@ __all__ = [
     "receive_frame",
 ]
 
-FRAME_VERSION: Final = 1
-"""The wire format version, carried in every frame as `v`."""
 
 LENGTH_PREFIX: Final = 4
 """Bytes of big-endian length in front of every frame body."""
@@ -136,7 +134,7 @@ def encode(
     """
     key = registered_key(type(message))
     header = {
-        "v": FRAME_VERSION,
+        "v": PROTOCOL_VERSION,
         "to": format_target(to),
         "from": format_ref(sender.address, sender.path) if sender else None,
         "t": key,
@@ -214,9 +212,9 @@ def decode(data: bytes, *, system: str, max_frame_bytes: int | None = None) -> F
         msg = f"a frame body is a JSON object, got {type(parsed).__name__}"
         raise MessageDecodingError(msg)
     version = parsed.get("v")
-    if version != FRAME_VERSION:
+    if version != PROTOCOL_VERSION:
         msg = (
-            f"frame speaks wire version {version!r}, this system speaks {FRAME_VERSION}"
+            f"frame speaks protocol {version!r}, this system speaks {PROTOCOL_VERSION}"
         )
         raise MessageDecodingError(msg)
     try:

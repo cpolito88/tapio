@@ -5,8 +5,8 @@ prove they hold the shared secret. Three link frames, one round trip and a
 half:
 
 ```
-server -> client   server-hello   name, address, uid, version, nonce
-client -> server   client-hello   name, address, uid, version, nonce, proof
+server -> client   server-hello   name, address, uid, protocol, version, nonce
+client -> server   client-hello   name, address, uid, protocol, version, nonce, proof
 server -> client   welcome        proof
 ```
 
@@ -14,9 +14,13 @@ Both proofs are HMACs of the other side's nonce, so neither end can be
 replayed at the other, and a peer holding no secret cannot pass for one that
 does. Three things are established here:
 
-* **Version equality.** Both ends must run the same tapio version. A wire
-  format that half works is worse than one that refuses, and a version is
-  cheap to check before something harder to diagnose goes wrong.
+* **Protocol equality.** Both ends must speak the same
+  [PROTOCOL_VERSION][tapio.remote.protocol.PROTOCOL_VERSION]. A wire format
+  that half works is worse than one that refuses, and it is cheap to check
+  before something harder to diagnose goes wrong. The tapio version travels
+  too, but only as a diagnostic: two nodes on different releases of the
+  library talk to each other as long as neither release changed the wire,
+  which is what makes a rolling deploy possible.
 * **The canonical address**, used to address the peer and to key the
   association. It is what the peer advertises, not the socket it dialled from,
   since containers, NAT and port mapping routinely make those differ.
@@ -35,6 +39,7 @@ from pydantic import SecretStr, ValidationError
 
 from tapio.errors import HandshakeError
 from tapio.remote.address import Address
+from tapio.remote.protocol import PROTOCOL_VERSION
 from tapio.remote.transport import FrameLink, LinkFrame
 from tapio.version import __version__
 
@@ -56,8 +61,16 @@ class PeerIdentity:
     uid: int
     """The peer's incarnation uid. A new one means the old peer died."""
 
+    protocol: int
+    """The wire protocol it speaks, which equals this system's or it got no further."""
+
     version: str
-    """The tapio version it runs, which equals this system's or it got no further."""
+    """The tapio version it runs, which may differ from this system's.
+
+    Kept for diagnostics. When two nodes disagree about something subtle, the
+    first useful question is which releases they are running, and the answer
+    should not require reading two deployment manifests.
+    """
 
 
 class _ServerHello(LinkFrame):
@@ -67,6 +80,7 @@ class _ServerHello(LinkFrame):
     system: str
     address: str
     uid: int
+    protocol: int
     version: str
     nonce: str
 
@@ -78,6 +92,7 @@ class _ClientHello(LinkFrame):
     system: str
     address: str
     uid: int
+    protocol: int
     version: str
     nonce: str
     proof: str
@@ -123,17 +138,20 @@ async def accept(
             system=address.system,
             address=str(address),
             uid=uid,
+            protocol=PROTOCOL_VERSION,
             version=__version__,
             nonce=nonce,
         )
     )
     hello = _read(_ClientHello, await link.read_link(timeout), "client-hello")
-    _check_version(hello.version)
+    _check_protocol(hello.protocol, hello.version)
     _check_proof(secret, nonce, hello.proof, who="the peer that dialled in")
     # Every reason to refuse a peer is checked before the welcome is sent. A
     # welcome followed by a close would look like a peer that vanished, when
     # what really happened was a refusal with a reason.
-    identity = _identify(hello.system, hello.address, hello.uid, hello.version)
+    identity = _identify(
+        hello.system, hello.address, hello.uid, hello.protocol, hello.version
+    )
     await link.write_link(_Welcome(proof=_proof(secret, hello.nonce)))
     return identity
 
@@ -167,13 +185,14 @@ async def introduce(
         TimeoutError: If the peer stopped talking part-way through.
     """
     hello = _read(_ServerHello, await link.read_link(timeout), "server-hello")
-    _check_version(hello.version)
+    _check_protocol(hello.protocol, hello.version)
     nonce = secrets.token_hex(_NONCE_BYTES)
     await link.write_link(
         _ClientHello(
             system=address.system,
             address=str(address),
             uid=uid,
+            protocol=PROTOCOL_VERSION,
             version=__version__,
             nonce=nonce,
             proof=_proof(secret, hello.nonce),
@@ -181,7 +200,9 @@ async def introduce(
     )
     welcome = _read(_Welcome, await link.read_link(timeout), "welcome")
     _check_proof(secret, nonce, welcome.proof, who="the peer that was dialled")
-    return _identify(hello.system, hello.address, hello.uid, hello.version)
+    return _identify(
+        hello.system, hello.address, hello.uid, hello.protocol, hello.version
+    )
 
 
 def _proof(secret: SecretStr | None, nonce: str) -> str:
@@ -215,23 +236,35 @@ def _check_proof(secret: SecretStr | None, nonce: str, proof: str, *, who: str) 
     raise HandshakeError(msg)
 
 
-def _check_version(version: str) -> None:
-    """Refuse a peer running a different tapio.
+def _check_protocol(protocol: int, version: str) -> None:
+    """Refuse a peer that speaks a different wire protocol.
+
+    The tapio version is not checked, only reported. Two nodes on different
+    releases speak to each other as long as neither release changed the wire,
+    which is what lets a deployment roll rather than stop.
+
+    Args:
+        protocol: What the peer says it speaks.
+        version: What release the peer runs, for the error message.
 
     Raises:
-        HandshakeError: If the versions differ.
+        HandshakeError: If the protocols differ.
     """
-    if version == __version__:
+    if protocol == PROTOCOL_VERSION:
         return
     msg = (
-        f"the peer runs tapio {version} and this system runs {__version__}. "
-        "Both ends of a link run the same version: a wire format that half "
-        "matches would corrupt a session rather than refuse one."
+        f"the peer speaks wire protocol {protocol} and this system speaks "
+        f"{PROTOCOL_VERSION} (the peer runs tapio {version}, this system runs "
+        f"{__version__}). Both ends of a link speak the same protocol: a wire "
+        "format that half matches would corrupt a session rather than refuse "
+        "one."
     )
     raise HandshakeError(msg)
 
 
-def _identify(system: str, address: str, uid: int, version: str) -> PeerIdentity:
+def _identify(
+    system: str, address: str, uid: int, protocol: int, version: str
+) -> PeerIdentity:
     """Turn what a peer said about itself into an identity, or refuse it.
 
     Raises:
@@ -257,7 +290,7 @@ def _identify(system: str, address: str, uid: int, version: str) -> PeerIdentity
             "names a different system"
         )
         raise HandshakeError(msg)
-    return PeerIdentity(address=parsed, uid=uid, version=version)
+    return PeerIdentity(address=parsed, uid=uid, protocol=protocol, version=version)
 
 
 def _read(model: type[F], body: dict[str, object], expected: str) -> F:
