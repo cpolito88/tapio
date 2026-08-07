@@ -15,6 +15,7 @@ from tapio.actor import (
     Terminated,
 )
 from tapio.remote.address import Address, format_ref
+from tapio.remote.protocol import PROTOCOL_VERSION
 from tapio.remote.registry import register_message
 from tapio.remote.transport import FrameLink, connect, framed
 from tapio.settings import RemoteSettings, TapioSettings
@@ -177,6 +178,7 @@ async def dial(
     target: ActorSystem,
     *,
     secret: str | None = None,
+    protocol: int = PROTOCOL_VERSION,
     version: str = __version__,
     address: Address = GHOST,
     system: str | None = None,
@@ -192,7 +194,8 @@ async def dial(
     Args:
         target: The system to dial.
         secret: Used to answer the challenge, if the caller has one.
-        version: The tapio version to claim.
+        protocol: The wire protocol to claim.
+        version: The tapio release to claim, which the peer does not check.
         address: The canonical address to advertise.
         system: The name to claim, if it should differ from `address`.
         proof: An answer to the challenge, overriding what `secret` gives.
@@ -219,6 +222,7 @@ async def dial(
                     "system": system if system is not None else address.system,
                     "address": str(address),
                     "uid": uid,
+                    "protocol": protocol,
                     "version": version,
                     "nonce": "0" * 32,
                     "proof": answer,

@@ -142,6 +142,12 @@ you are already editing.
   sequence.** If you add a task, say which cell owns it. Remoting adds no
   exception: an association is an actor whose reader is its own task, and the
   endpoint actor owns the listener and any connection still mid-handshake.
+- **The handshake pins the protocol version, not the package version.**
+  `PROTOCOL_VERSION` in `remote/protocol.py` describes the wire contract and
+  is what both ends must agree on. `__version__` travels in the hello as a
+  diagnostic and is never compared, so two nodes on different releases
+  interoperate and a rolling deploy is possible. Raising the protocol version
+  is a deployment event and belongs in the pull request body.
 - **A type key on a frame is a registry key, never an import path.** Resolving
   a dotted name that arrived on a socket into an importable object is remote
   code execution. An unregistered key is a dead letter naming the key, and
