@@ -167,13 +167,13 @@ jobs:
       - name: make publish
         if: vars.PUBLISH_PYPI == 'true'
         env:
-          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
+          UV_PUBLISH_TOKEN: ${{ secrets.UV_PUBLISH_TOKEN }}
         run: |
           # Checked here rather than in the step `if`, because the secrets
           # context is not readable from one. A repository with the variable
           # set and no token should say so, not upload nothing quietly.
           if [ -z "${UV_PUBLISH_TOKEN:-}" ]; then
-            echo "PUBLISH_PYPI is true but the PYPI_TOKEN secret is not set."
+            echo "PUBLISH_PYPI is true but UV_PUBLISH_TOKEN is not set."
             exit 1
           fi
           make publish
