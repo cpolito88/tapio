@@ -57,6 +57,7 @@ dev = [
     "mkdocs-material>=9.5",
     "mkdocstrings[python]>=0.25",
     "tapio-examples",
+    "python-semantic-release>=9",
 ]
 
 # examples/ is importable and type-checked, never shipped.
@@ -125,6 +126,30 @@ addopts = "-ra --strict-markers --strict-config --benchmark-skip"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 filterwarnings = ["error"]
+
+# Versions come from the commits, not from a human editing two files and
+# hoping they match. `feat:` moves the minor, `fix:` the patch, and a
+# `BREAKING CHANGE:` footer the minor too while this is 0.x, because promoting
+# to 1.0.0 is a decision somebody makes rather than a side effect of a footer.
+#
+# This is only safe because a link is pinned to PROTOCOL_VERSION rather than to
+# this number. Bumping the release no longer refuses a peer, so a bot may do it.
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+version_variables = ["src/tapio/version.py:__version__"]
+tag_format = "v{version}"
+major_on_zero = false
+allow_zero_version = true
+commit_message = "chore(release): {version}\n\nWritten by python-semantic-release from the commits since the last tag."
+# The wheel is built by the release job, from the tree that has just been
+# bumped, so what is tagged and what is uploadable are the same thing.
+build_command = "uv build"
+
+[tool.semantic_release.branches.main]
+match = "main"
+
+[tool.semantic_release.changelog]
+exclude_commit_patterns = ["^chore\\(release\\):"]
 
 [tool.coverage.run]
 source = ["src/tapio"]

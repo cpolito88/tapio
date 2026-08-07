@@ -68,6 +68,14 @@ you are already editing.
 
 ## Commit messages and pull requests
 
+- **The commit type decides the version.** python-semantic-release reads the
+  history on `main`, so `feat:` moves the minor, `fix:` moves the patch, and
+  anything else moves nothing. Write the type you mean: a `fix:` that is
+  really a feature ships under a version number that lies about it. A
+  `BREAKING CHANGE:` footer moves the minor too while this is 0.x, since
+  going to 1.0.0 is a decision rather than a side effect. Nobody edits a
+  version by hand, and `make next-version` says what the current history
+  would produce.
 - **Wrap commit messages at 72 columns.** `git log` does not reflow, so an
   unwrapped paragraph becomes one very long line in a terminal.
 - **Do not wrap pull request bodies.** One line per paragraph and one per list

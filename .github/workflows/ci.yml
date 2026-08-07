@@ -109,3 +109,50 @@ jobs:
 
       - id: deploy
         uses: actions/deploy-pages@v4
+
+  # Versions come from the commits. `feat:` moves the minor, `fix:` the patch,
+  # and the job tags what it bumped, so nobody edits two files by hand and
+  # nobody has to remember which release a change went out in.
+  #
+  # This is only safe because a link is pinned to PROTOCOL_VERSION rather than
+  # to the release: bumping the version no longer refuses a peer, so a rolling
+  # deploy survives a patch release and a bot may do the bumping.
+  #
+  # Dormant until the repository variable AUTORELEASE is set to "true", in the
+  # same spirit as PUBLISH_DOCS above. Publishing to PyPI is deliberately not
+  # here: this job tags, builds and attaches the artifacts to a GitHub release,
+  # and `uv publish` stays a decision somebody makes.
+  release:
+    needs: ci
+    if: >-
+      github.ref == 'refs/heads/main'
+      && github.event_name == 'push'
+      && vars.AUTORELEASE == 'true'
+    runs-on: ubuntu-latest
+    # Its own group, and never cancelled: the workflow-level concurrency
+    # cancels in progress, and a release interrupted between tagging and
+    # publishing leaves a tag nobody built.
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The whole history, because the next version is a function of every
+          # commit since the last tag.
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # The bump commit and the tag are pushed with the built-in token, and a
+      # push made with that token does not trigger workflows. That is what
+      # stops the release from starting this pipeline again.
+      - name: make release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: make release

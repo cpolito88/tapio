@@ -91,6 +91,15 @@ docs-build: ## Build the docs site into site/
 build: ## Build sdist and wheel into dist/
 	$(UV) build
 
+.PHONY: next-version
+next-version: ## Print the version the commits since the last tag would produce
+	$(UV) run semantic-release version --print
+
+.PHONY: release
+release: ## Bump, tag and build from the commits (CI runs this, not you)
+	$(UV) run semantic-release version
+	$(UV) run semantic-release publish
+
 .PHONY: publish
 publish: ## Publish to PyPI (requires UV_PUBLISH_TOKEN)
 	$(UV) publish
