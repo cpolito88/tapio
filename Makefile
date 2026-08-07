@@ -102,7 +102,10 @@ release: ## Bump, tag and build from the commits (CI runs this, not you)
 
 .PHONY: publish
 publish: ## Publish to PyPI (requires UV_PUBLISH_TOKEN)
-	$(UV) publish
+	# --check-url makes a repeat run a no-op rather than an error: an upload
+	# that half succeeded, or a job somebody re-ran, skips the files PyPI
+	# already has instead of failing on all of them.
+	$(UV) publish --check-url https://pypi.org/simple/
 
 .PHONY: ci
 ci: ## What GitHub Actions runs: locked install, then the full gate

@@ -156,3 +156,24 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: make release
+
+      # Separate from the tag on purpose. Tagging is reversible and an upload
+      # is not: PyPI never lets a version be re-used, even after a deletion,
+      # so this waits on its own variable rather than riding on AUTORELEASE.
+      #
+      # The alternative to a token is trusted publishing, where PyPI accepts an
+      # OIDC identity from this workflow and no secret exists to leak. Worth
+      # moving to once the project exists on PyPI.
+      - name: make publish
+        if: vars.PUBLISH_PYPI == 'true'
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          # Checked here rather than in the step `if`, because the secrets
+          # context is not readable from one. A repository with the variable
+          # set and no token should say so, not upload nothing quietly.
+          if [ -z "${UV_PUBLISH_TOKEN:-}" ]; then
+            echo "PUBLISH_PYPI is true but the PYPI_TOKEN secret is not set."
+            exit 1
+          fi
+          make publish
