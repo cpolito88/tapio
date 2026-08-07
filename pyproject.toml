@@ -1,6 +1,9 @@
 [project]
 name = "tapio"
-version = "0.1.0"
+# The version is the tag. There is no number written down in this repository
+# to drift from the release it claims to be, and no commit has to be pushed to
+# a protected branch to change one.
+dynamic = ["version"]
 description = "A Pekko-inspired actor toolkit for Python: typed, asyncio-native actors with supervision."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -37,10 +40,18 @@ Homepage = "https://github.com/cpolito88/tapio"
 Repository = "https://github.com/cpolito88/tapio"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 # The wheel ships src/tapio only; examples/ is a dev-only package.
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+# Written into the wheel at build time, so an installed tapio knows its own
+# version without asking the metadata, and a source checkout falls back to it.
+version-file = "src/tapio/_version.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/tapio"]
 
@@ -58,6 +69,7 @@ dev = [
     "mkdocstrings[python]>=0.25",
     "tapio-examples",
     "python-semantic-release>=9",
+    "hatch-vcs>=0.4",
 ]
 
 # examples/ is importable and type-checked, never shipped.
@@ -127,16 +139,18 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 filterwarnings = ["error"]
 
-# Versions come from the commits, not from a human editing two files and
-# hoping they match. `feat:` moves the minor, `fix:` the patch, and a
-# `BREAKING CHANGE:` footer the minor too while this is 0.x, because promoting
-# to 1.0.0 is a decision somebody makes rather than a side effect of a footer.
+# Versions come from the commits. `feat:` moves the minor, `fix:` the patch,
+# and a `BREAKING CHANGE:` footer the minor too while this is 0.x, because
+# promoting to 1.0.0 is a decision somebody makes rather than a side effect of
+# a footer.
+#
+# Nothing is listed to rewrite, because nothing holds a version: the release is
+# the tag. That is what keeps the bot off `main`, so branch protection needs no
+# exception for it and no credential has to exist to make one.
 #
 # This is only safe because a link is pinned to PROTOCOL_VERSION rather than to
-# this number. Bumping the release no longer refuses a peer, so a bot may do it.
+# the release. Bumping no longer refuses a peer, so a bot may do it.
 [tool.semantic_release]
-version_toml = ["pyproject.toml:project.version"]
-version_variables = ["src/tapio/version.py:__version__"]
 tag_format = "v{version}"
 major_on_zero = false
 allow_zero_version = true

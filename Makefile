@@ -96,8 +96,11 @@ next-version: ## Print the version the commits since the last tag would produce
 	$(UV) run semantic-release version --print
 
 .PHONY: release
-release: ## Bump, tag and build from the commits (CI runs this, not you)
-	$(UV) run semantic-release version
+release: ## Tag and build from the commits (CI runs this, not you)
+	# --no-commit and --no-changelog: the release is the tag, so there is
+	# nothing to write into the tree and nothing to push to a protected
+	# branch. The tag alone is what the build reads its version from.
+	$(UV) run semantic-release version --no-commit --no-changelog
 	$(UV) run semantic-release publish
 
 .PHONY: publish
