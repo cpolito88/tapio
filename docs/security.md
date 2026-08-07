@@ -24,12 +24,20 @@ configuration is running.
 ## The handshake
 
 Before any application frame is read, both sides exchange the system name, the
-canonical address, a **system uid**, the tapio version, and an HMAC of a
-server-supplied nonce with the shared secret. A bad HMAC or a version mismatch
-closes the connection with a logged reason, and nothing further is read.
+canonical address, a **system uid**, the wire protocol version, the tapio
+version, and an HMAC of a server-supplied nonce with the shared secret. A bad
+HMAC or a protocol mismatch closes the connection with a logged reason, and
+nothing further is read.
 
-Version equality is required rather than negotiated. An incompatible wire
+Protocol equality is required rather than negotiated. An incompatible wire
 format that half works is worse than one that refuses.
+
+The **tapio version is not checked**, only reported. It moves for a fixed
+docstring and a faster mailbox, neither of which a peer can observe, so
+pinning a link to it would make every release a flag day: during a rolling
+deploy half the nodes would refuse the other half. Two nodes on different
+releases talk to each other as long as neither release changed the wire. What
+they cannot do is disagree about the protocol.
 
 The system uid is minted per system incarnation, and it is what makes a
 restarted peer a *different* peer rather than the same one returning. An

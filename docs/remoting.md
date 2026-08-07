@@ -126,6 +126,11 @@ A frame is a four-byte big-endian length followed by a JSON object:
 definition addressed to the node that received it. `from` is complete, because
 the receiver may need to dial back.
 
+`v` is the wire protocol version, and the handshake pins it. It is
+deliberately not the tapio version: a release that does not change the wire
+does not change this number, so a fleet can roll from one release to the next
+instead of stopping to swap every node at once.
+
 **`t` is a registry key, never an import path.** Resolving a dotted name that
 arrived on a socket into an importable object is remote code execution.
 `@register_message()` is what puts a class in the registry, and a key nobody

@@ -45,13 +45,25 @@ async def test_a_peer_that_says_who_it_is_gets_a_welcome(beta: ActorSystem):
         await link.close()
 
 
-async def test_the_version_must_match(beta: ActorSystem):
+async def test_the_protocol_must_match(beta: ActorSystem):
     # A wire format that half works is worse than one that refuses.
-    link = await dial(beta, version="99.0.0", welcome=False)
+    link = await dial(beta, protocol=99, welcome=False)
     try:
         assert await closed(link)
         assert beta.remote is not None
         assert beta.remote.associations == ()
+    finally:
+        await link.close()
+
+
+async def test_a_peer_on_another_release_is_welcome(beta: ActorSystem):
+    # The link is pinned to the wire protocol, not to the library version, so
+    # a fleet can roll from one release to the next instead of stopping to
+    # swap every node at once.
+    link = await dial(beta, version="99.0.0")
+    try:
+        assert beta.remote is not None
+        await eventually(lambda: beta.remote.associations != ())  # type: ignore[union-attr]
     finally:
         await link.close()
 
