@@ -234,4 +234,4 @@ and references to Pekko above are descriptive only.
 
 ## License
 
-Apache-2.0 (planned).
+Apache-2.0. Copyright 2026 Carmelo Polito.

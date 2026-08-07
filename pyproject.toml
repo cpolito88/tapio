@@ -1,20 +1,23 @@
 [project]
 name = "tapio"
-version = "0.0.0"
+version = "0.1.0"
 description = "A Pekko-inspired actor toolkit for Python: typed, asyncio-native actors with supervision."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [{ name = "Carmelo Polito", email = "polito.carmelo.88@gmail.com" }]
 keywords = ["actor", "actors", "asyncio", "supervision", "concurrency", "pydantic"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Framework :: AsyncIO",
     "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: Implementation :: CPython",
+    "Operating System :: OS Independent",
     "Topic :: Software Development :: Libraries :: Application Frameworks",
     "Typing :: Typed",
 ]
