@@ -76,6 +76,11 @@ you are already editing.
   going to 1.0.0 is a decision rather than a side effect. Nobody edits a
   version by hand, and `make next-version` says what the current history
   would produce.
+- **Nothing in the repository holds a version number.** It is derived from the
+  git tag at build time, so a release is a tag and nothing else. Do not add a
+  literal version to `pyproject.toml` or `version.py`: the second copy is the
+  one that goes stale, and writing one would put the release job back to
+  pushing commits at a protected branch.
 - **Wrap commit messages at 72 columns.** `git log` does not reflow, so an
   unwrapped paragraph becomes one very long line in a terminal.
 - **Do not wrap pull request bodies.** One line per paragraph and one per list
