@@ -83,7 +83,8 @@ Bad fits, use something else:
 Actors are not microservices. A microservice is a unit of deployment. An actor
 is a unit of concurrency. You will have tens of thousands of actors inside one
 service, each an `asyncio.Task`, so the ceiling is memory rather than a
-cluster. `tapio` structures the inside of that service. It competes with
+cluster: an idle actor costs about 15 KB, so a hundred thousand of them fit in
+1.6 GB. `tapio` structures the inside of that service. It competes with
 `asyncio.Queue` + `TaskGroup` + a `dict` + hand-rolled retries, not with your
 API framework.
 
@@ -144,12 +145,12 @@ to be throttled.
 
 **Every message is a validated Pydantic model.** Messages subclass
 `tapio.Message`, which is frozen and re-validated on delivery rather than only
-at construction. That costs roughly 3–10× the per-message overhead and caps
-local throughput around 10⁴–10⁵ msg/s. In an actor that spends 50 ms on an
-HTTP call, validation is about 0.02% of the message's life, which is
-invisible. In a tight per-record loop it dominates, which is why that workload
-is out of scope above. The check sits behind a single `validate_on_tell`
-setting, and real benchmarks ship with 0.1.0.
+at construction. What that costs depends on the model: about 30% more per
+message for a one-field message, and about 3x for a ten-field one with nested
+models. In an actor that spends 50 ms on an HTTP call it is invisible. In a
+tight per-record loop it dominates, which is why that workload is out of scope
+above. The check sits behind a single `validate_on_tell` setting. The
+[numbers](#numbers) are below.
 
 **Undeliverable messages go to dead letters.** An `ActorRef` stays valid after
 its actor dies, so `tell` never raises for a dead target. The message is
@@ -158,6 +159,59 @@ something died, watch it with `ctx.watch` rather than asking whether it is
 alive. A liveness answer is out of date as soon as you have it.
 
 Requires Python 3.11+ (for `asyncio.timeout()` and `typing.Self`).
+
+## Numbers
+
+Measured with `make bench` and `make bench-scale`, which anybody can run. The
+figures below are the best of twenty rounds on an Intel i7-5600U at 2.6 GHz,
+Python 3.11 and Pydantic 2.13, on a laptop that was doing other things. Take
+the ratios seriously and the absolute numbers as an order of magnitude: a
+current server core is considerably faster than this one.
+
+**Messages per second**, one sender to one actor, ten thousand at a time:
+
+| Message | `validate_on_tell=True` | `validate_on_tell=False` | What validation costs |
+|---|---|---|---|
+| one `int` field | 183,000/s | 241,000/s | 1.3x |
+| ten fields, two of them nested models | 55,000/s | 166,000/s | 3.0x |
+
+That is the design bet of this library, priced. Revalidation on delivery is
+not free and it is not 10x either: it is a property of your message, and the
+setting is there for the case where you have measured it and it matters.
+
+**Everything else, locally:**
+
+| | |
+|---|---|
+| Starting an actor | 105 us |
+| `ask` round trip | 121 us |
+
+**Across a link**, two systems over loopback, so the network itself is nearly
+free and what is left is the codec and the socket:
+
+| | Local | Remote | Ratio |
+|---|---|---|---|
+| Messages per second | 183,000/s | 9,200/s | 20x slower |
+| `ask` round trip | 121 us | 1.2 ms | 10x slower |
+
+JSON on the wire is the cost there, and it is the reason the codec sits behind
+one module with the frame format versioned: a binary codec is an additive
+change rather than a rewrite.
+
+**Resident actors**, idle but able to answer, each measured in its own process:
+
+| Actors | RSS | Per actor | `ask` p50 | `ask` p99 |
+|---|---|---|---|---|
+| 1,000 | 53 MB | 14.9 KB | 89 us | 216 us |
+| 10,000 | 190 MB | 14.8 KB | 93 us | 1,260 us |
+| 100,000 | 1,557 MB | 14.8 KB | 104 us | 597 us |
+
+Memory per actor is flat, and the median round trip to one actor among a
+hundred thousand is the same as to one among a thousand: a mailbox nobody is
+sending to costs nothing to have. The p99 column is the honest part of this
+table. It does not grow with the number of actors, it wanders, because what
+puts a tail on a round trip here is the garbage collector walking a large
+heap rather than anything in the runtime.
 
 ## Development
 

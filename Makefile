@@ -64,6 +64,10 @@ cov: ## Run tests and open-ready HTML coverage in htmlcov/
 bench: ## Run benchmarks (msg/s, spawn cost, ask latency)
 	$(UV) run pytest tests/benchmarks --benchmark-only
 
+.PHONY: bench-scale
+bench-scale: ## Measure RSS and latency at 1e3/1e4/1e5 resident actors
+	$(UV) run python -m tests.benchmarks.resident
+
 .PHONY: examples
 examples: ## Execute every example end to end
 	$(UV) run pytest tests/examples
