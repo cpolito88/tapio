@@ -219,6 +219,10 @@ async def test_a_frame_arriving_before_the_handshake_is_refused(beta: ActorSyste
     with pytest.raises(asyncio.IncompleteReadError):
         await reader.readexactly(1024)
     writer.close()
+    # Awaited, not just asked for: a transport still closing when the loop
+    # goes away is collected unclosed, and this suite turns that warning into
+    # an error at whichever test happens to run next.
+    await writer.wait_closed()
 
 
 async def test_an_idle_association_heartbeats(beta: ActorSystem):

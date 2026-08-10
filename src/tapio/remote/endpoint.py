@@ -37,6 +37,7 @@ from tapio.message import Message
 from tapio.remote.address import Address
 from tapio.remote.association import Association, AssociationMessage
 from tapio.remote.handshake import accept
+from tapio.remote.peers import PeerProvider, StaticPeers
 from tapio.remote.ref import RemoteRef
 from tapio.remote.transport import (
     FrameLink,
@@ -101,7 +102,7 @@ class RemoteEndpoint:
         self._listener = listener
         self._server: asyncio.Server | None = None
         self._associations: dict[Address, Association] = {}
-        self._quarantined: dict[Address, str] = {}
+        self._peers: PeerProvider = StaticPeers()
         self._handshakes: set[asyncio.Task[None]] = set()
         self._names = 0
         self._parent: ActorCell[Any] | None = None
@@ -153,6 +154,16 @@ class RemoteEndpoint:
         return tuple(self._associations)
 
     @property
+    def peers(self) -> PeerProvider:
+        """Who decides which addresses this system may associate with.
+
+        [StaticPeers][tapio.remote.peers.StaticPeers] until something replaces
+        it, which is the v0.1 answer: every address that was written down is a
+        peer, minus the ones a detector here gave up on.
+        """
+        return self._peers
+
+    @property
     def quarantined(self) -> tuple[Address, ...]:
         """The peers this system has given up on and will not dial again.
 
@@ -160,7 +171,7 @@ class RemoteEndpoint:
         point: recovery from a peer declared unreachable is a decision
         somebody made, never something that happened while nobody was looking.
         """
-        return tuple(self._quarantined)
+        return tuple(self._peers.refusals())
 
     def behavior(self) -> Behavior[_EndpointMessage]:
         """Build the `/system/remote` actor: parent of every association."""
@@ -252,16 +263,17 @@ class RemoteEndpoint:
             # later anyway.
             self._close_later(link, peer)
             return
-        if peer in self._quarantined:
-            # This system gave up on that address, and a peer dialling in is
-            # not a reason to change its mind. Recovery is a decision somebody
-            # makes with `reconnect`, because watchers were already told that
-            # actors over there are gone, and resuming quietly would leave two
-            # nodes believing different things with no way to notice.
-            _log.warning("refused a link from quarantined %s", peer)
+        refusal = self._peers.refusal(peer)
+        if refusal is not None:
+            # This system will not talk to that address, and a peer dialling
+            # in is not a reason to change its mind. Recovery is a decision
+            # somebody makes with `reconnect`, because watchers were already
+            # told that actors over there are gone, and resuming quietly would
+            # leave two nodes believing different things with no way to notice.
+            _log.warning("refused a link from %s: %s", peer, refusal)
             self._close_later(link, peer)
             return
-        existing = self._associations.get(peer)
+        existing = self._live(peer)
         if existing is not None:
             if existing.peer_uid not in (0, uid):
                 # A different incarnation answers to that address, so the peer
@@ -334,18 +346,41 @@ class RemoteEndpoint:
         Returns:
             The association. Its link may still be coming up, and sends queue
             behind it rather than waiting, so nothing blocks on a dial.
-            `None` once this system is shutting down, and for a peer it has
-            given up on: neither is a thing to dial, and what was being sent
-            is accounted for instead.
+            `None` once this system is shutting down, and for a peer it
+            refuses: neither is a thing to dial, and what was being sent is
+            accounted for instead.
         """
-        if self._closed or peer in self._quarantined:
+        if self._closed or self._peers.refusal(peer) is not None:
             return None
-        existing = self._associations.get(peer)
+        existing = self._live(peer)
         if existing is not None:
             return existing
         return self._start_association(
             Association(host=self, peer=peer, initiator=self._address)
         )
+
+    def _live(self, peer: Address) -> Association | None:
+        """Return the association for a peer, if it is one that can still work.
+
+        An association that has been asked to stop is still in the table until
+        its actor finishes stopping, and handing that one back would lose
+        whatever was written to it. It is already draining and it will not
+        take a new link, so from here it is the same as no association at
+        all: the caller dials afresh, and `forget` will not disturb the
+        replacement, because it drops an association only if it is the one
+        still recorded.
+
+        Args:
+            peer: The peer's canonical address.
+
+        Returns:
+            The association, or `None` when there is none or the one there is
+            has begun stopping.
+        """
+        existing = self._associations.get(peer)
+        if existing is None or existing.is_closing:
+            return None
+        return existing
 
     def association_for(self, peer: Address) -> Association | None:
         """Return the association for a peer, without dialling one.
@@ -455,11 +490,46 @@ class RemoteEndpoint:
             peer: The peer's canonical address.
             detail: Why, kept for the log and for `reconnect`.
         """
-        self._quarantined[peer] = detail
+        self._peers.give_up(peer, detail)
+
+    def use_peers(self, peers: PeerProvider) -> None:
+        """Hand the question of who may be associated with to somebody else.
+
+        One system decides alone, so it decides from a table of its own. A
+        clustered one decides from membership, where a peer is refused because
+        the cluster downed it rather than because this node stopped hearing
+        from it. The consequences are the same either way, which is why this
+        replaces the answer and nothing else: an association is still refused,
+        watchers are still told, sends still dead-letter.
+
+        Whatever was already refused is carried over, because those refusals
+        were acted on. Watchers were told the actors over there are gone, and
+        a peer that quietly became dialable again on a change of authority
+        would leave two nodes believing different things.
+
+        Args:
+            peers: The new authority.
+        """
+        for peer, detail in self._peers.refusals().items():
+            peers.give_up(peer, detail)
+        self._peers = peers
+
+    def refusal(self, peer: Address) -> str | None:
+        """Why this system will not associate with a peer, if it will not.
+
+        Args:
+            peer: The peer's canonical address.
+
+        Returns:
+            The words that explain the refusal, or `None` when the peer may
+            be dialled. They are what a dead letter carries, so a subscriber
+            reads why the message went nowhere rather than only that it did.
+        """
+        return self._peers.refusal(peer)
 
     def is_quarantined(self, peer: Address) -> bool:
         """Whether this system has given up on an address."""
-        return peer in self._quarantined
+        return self._peers.refusal(peer) is not None
 
     def clear_quarantine(self, peer: Address) -> bool:
         """Take an address off the list this system refuses to talk to.
@@ -483,7 +553,7 @@ class RemoteEndpoint:
         Returns:
             Whether it was quarantined at all.
         """
-        detail = self._quarantined.pop(peer, None)
+        detail = self._peers.relent(peer)
         if detail is None:
             return False
         _log.info("clearing the quarantine on %s: %s", peer, detail)
@@ -634,17 +704,17 @@ class PeerOutbox:
         """Queue a frame with the association for this peer, dialling if needed."""
         association = self._endpoint.outbound(self._peer)
         if association is None:
-            quarantined = self._endpoint.is_quarantined(self._peer)
+            refusal = self._endpoint.refusal(self._peer)
             self._endpoint.dead_letters.publish(
                 message,
                 recipient,
                 DeadLetterReason.QUARANTINED
-                if quarantined
+                if refusal is not None
                 else DeadLetterReason.NO_ASSOCIATION,
                 peer=self._peer,
                 detail=(
-                    "this system gave up on that peer; remote.reconnect clears it"
-                    if quarantined
+                    f"{refusal}; remote.reconnect clears it"
+                    if refusal is not None
                     else "this system is shutting down and holds no links"
                 ),
             )

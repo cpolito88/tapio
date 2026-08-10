@@ -98,6 +98,10 @@ async def test_a_peer_that_writes_nonsense_instead_of_a_hello_is_refused(
             await reader.readexactly(4096)
     finally:
         writer.close()
+        # Awaited, not just asked for: a transport still closing when the loop
+        # goes away is collected unclosed, and this suite turns that warning
+        # into an error at whichever test happens to run next.
+        await writer.wait_closed()
 
 
 async def test_a_peer_that_answers_the_challenge_is_let_in(guarded: ActorSystem):
@@ -150,6 +154,7 @@ async def test_dialling_something_that_is_not_tapio_fails_as_a_handshake(
     # than silently never landing.
     async def rude(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         writer.close()
+        await writer.wait_closed()
 
     listener = await asyncio.start_server(rude, "127.0.0.1", 0)
     port = listener.sockets[0].getsockname()[1]
