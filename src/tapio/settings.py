@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from tapio.actor.mailbox import MailboxConfig, OverflowStrategy
 
-__all__ = ["RemoteSettings", "TLSSettings", "TapioSettings"]
+__all__ = ["ClusterSettings", "RemoteSettings", "TLSSettings", "TapioSettings"]
 
 
 class TLSSettings(BaseSettings):
@@ -120,6 +120,52 @@ class RemoteSettings(BaseSettings):
     receiving actor: nothing in a fire-and-forget wire protocol can offer the
     latter. What overflows here goes to dead letters with the peer named.
     """
+
+
+class ClusterSettings(BaseSettings):
+    """How this node gossips, and how patient it is while joining.
+
+    Passed to [Cluster][tapio.cluster.cluster.Cluster] rather than nested in
+    `TapioSettings`, because a cluster is something an application starts and
+    hands a list of seeds to. Remoting has to be configured before the system
+    exists, since the port settles the canonical address; joining a cluster is
+    an action taken afterwards.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="TAPIO_CLUSTER_", frozen=True)
+
+    roles: frozenset[str] = frozenset()
+    """What this node says it is for. Every cluster-aware feature filters on
+    these, and they are fixed for the life of the member: a role is part of
+    what the rest of the cluster agreed on when it accepted the node."""
+
+    gossip_interval: timedelta = timedelta(seconds=1)
+    """How often this node sends its view to one other member.
+
+    One peer per round, chosen at random, which is what keeps the traffic
+    linear in the number of nodes rather than quadratic."""
+
+    join_retry_interval: timedelta = timedelta(seconds=1)
+    """How often an unjoined node asks the seeds to let it in again.
+
+    Joining is at-most-once like every other send, so it is retried rather
+    than acknowledged. The retries stop as soon as the node sees itself in the
+    gossip it receives."""
+
+    seed_form_after: timedelta = timedelta(seconds=5)
+    """How long the first seed waits before forming a cluster on its own.
+
+    Only the first node in the seed list may do this, and only if it has heard
+    from nobody at all in that time. That is the rule that stops a restart
+    from producing a second cluster that never meets the first, so this has to
+    stay comfortably longer than the time it takes a running seed to answer a
+    join with gossip."""
+
+    join_timeout: timedelta = timedelta(seconds=30)
+    """How long `join_seed_nodes` waits to see this node reach `Up`."""
+
+    leave_timeout: timedelta = timedelta(seconds=30)
+    """How long `leave` waits to see this node reach `Removed` everywhere."""
 
 
 class TapioSettings(BaseSettings):

@@ -20,6 +20,7 @@ __all__ = [
     "AskTypeError",
     "BehaviorRegistrationError",
     "BehaviorTypeError",
+    "ClusterError",
     "FrameTooLargeError",
     "HandshakeError",
     "InsecureRemoteConfig",
@@ -195,3 +196,14 @@ class MailboxFullError(TapioError):
 
 class ActorSystemTerminating(TapioError, RuntimeError):  # noqa: N818 - a state
     """An operation was attempted on an actor or system that is shutting down."""
+
+
+class ClusterError(TapioError):
+    """Clustering was asked for something it cannot do.
+
+    Raised where the caller can act: a system with no address to be dialled
+    at, a join with no seeds to ask, or a join or a leave that did not finish
+    in the time allowed. The last of those does not stop the node trying, so
+    catching it is a decision about how long to wait rather than about whether
+    the cluster is broken.
+    """

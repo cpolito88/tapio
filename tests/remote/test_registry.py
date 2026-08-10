@@ -119,6 +119,68 @@ def test_a_different_incarnation_of_the_same_path_is_not_found():
     assert registry.lookup(path.with_uid(2)) is None
 
 
+def test_a_bare_path_addresses_nothing_by_default():
+    # The incarnation rule, unchanged: a ref written down carries its uid, and
+    # a path on its own reaches nobody.
+    registry = RefRegistry()
+    path = ActorPath.root("sys").child("user").child("worker", uid=1)
+    registry.register(ActorRef(path))
+
+    assert registry.lookup(path.with_uid(0)) is None
+
+
+def test_an_actor_that_asks_for_a_well_known_name_is_reachable_without_a_uid():
+    # For the one case that needs it: a peer named by an address in a
+    # configuration file, which cannot know any uid over there.
+    registry = RefRegistry()
+    path = ActorPath.root("sys").child("system").child("cluster", uid=1)
+    ref: ActorRef[Greeted] = ActorRef(path)
+    registry.register(ref)
+    registry.register_well_known(ref)
+
+    assert registry.lookup(path.with_uid(0)) is ref
+    assert registry.lookup(path) is ref
+
+
+def test_a_stale_uid_still_reaches_nobody_even_with_a_well_known_name():
+    registry = RefRegistry()
+    path = ActorPath.root("sys").child("system").child("cluster", uid=1)
+    ref: ActorRef[Greeted] = ActorRef(path)
+    registry.register(ref)
+    registry.register_well_known(ref)
+
+    assert registry.lookup(path.with_uid(2)) is None
+
+
+def test_a_well_known_name_goes_when_its_actor_does():
+    registry = RefRegistry()
+    path = ActorPath.root("sys").child("system").child("cluster", uid=1)
+    ref: ActorRef[Greeted] = ActorRef(path)
+    registry.register(ref)
+    registry.register_well_known(ref)
+
+    registry.deregister(path)
+
+    assert registry.lookup(path.with_uid(0)) is None
+
+
+def test_a_new_incarnation_keeps_the_name_when_the_old_one_deregisters_late():
+    # The alias belongs to whoever holds it now. A stop that lands after the
+    # next incarnation has published itself must not take the name away.
+    registry = RefRegistry()
+    path = ActorPath.root("sys").child("system").child("cluster", uid=1)
+    first: ActorRef[Greeted] = ActorRef(path)
+    second: ActorRef[Greeted] = ActorRef(path.with_uid(2))
+    registry.register(first)
+    registry.register_well_known(first)
+    registry.register(second)
+    registry.register_well_known(second)
+
+    registry.deregister(path)
+
+    assert registry.lookup(path.with_uid(0)) is second
+
+
 def test_deregistering_a_path_that_was_never_there_is_harmless():
     registry = RefRegistry()
     registry.deregister(ActorPath.root("sys").child("user"))

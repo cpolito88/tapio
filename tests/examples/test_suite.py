@@ -13,6 +13,7 @@ from tapio_examples import (
     ask_timeout,
     blocking_offload,
     chat_sessions,
+    cluster_join,
     counter,
     dead_letters,
     death_watch,
@@ -37,6 +38,7 @@ from tapio_examples import (
 
 ASSERTED = {
     "ask_timeout",
+    "cluster_join",
     "blocking_offload",
     "chat_sessions",
     "counter",
@@ -439,6 +441,29 @@ async def test_worker_pool_remote():
         "orders: 12 items done, and never more than 3 outstanding at one worker",
         "orders: the grant is the backpressure; offer would have waited on "
         "this node's outbound buffer instead",
+    ]
+
+
+async def test_cluster_join():
+    with assert_no_leaked_tasks():
+        lines = await cluster_join.main()
+
+    # Three nodes agree on who is in, on the order they were accepted in, and
+    # on who leads, without any of them being told.
+    assert lines[:3] == [
+        "node1: up, member 1 of 3",
+        "node2: up, member 2 of 3",
+        "node3: up, member 3 of 3",
+    ]
+    assert lines[3].startswith(
+        "every node agrees the leader is tapio://node1@127.0.0.1:"
+    )
+    # The leaving node is the leader here, which is the case worth keeping:
+    # leadership is a function of the membership, so it moves on its own.
+    assert lines[4] == "node1: leaving, at up"
+    assert lines[5:] == [
+        "node2: node1 is removed",
+        "node3: node1 is removed",
     ]
 
 

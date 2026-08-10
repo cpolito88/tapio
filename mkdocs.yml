@@ -48,4 +48,5 @@ nav:
       - Overview: remoting.md
       - When a node stops answering: unreachable.md
       - Security: security.md
+  - Clustering: clustering.md
   - Reference: reference.md
