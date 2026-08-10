@@ -153,9 +153,11 @@ filterwarnings = ["error"]
 tag_format = "v{version}"
 major_on_zero = false
 allow_zero_version = true
-# Built by the release job from the tag it has just created, so the version in
-# the artifact is the tag by construction rather than by agreement.
-build_command = "uv build"
+# No build_command on purpose. semantic-release runs one before it creates the
+# tag, so the build would read an untagged tree and stamp a development
+# version. The `release` target passes --skip-build and builds afterwards
+# instead, which is what makes the version in the artifact the tag by
+# construction rather than by agreement.
 
 [tool.semantic_release.branches.main]
 match = "main"
