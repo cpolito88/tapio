@@ -100,7 +100,15 @@ release: ## Tag and build from the commits (CI runs this, not you)
 	# --no-commit and --no-changelog: the release is the tag, so there is
 	# nothing to write into the tree and nothing to push to a protected
 	# branch. The tag alone is what the build reads its version from.
-	$(UV) run semantic-release version --no-commit --no-changelog
+	#
+	# --skip-build, and the build on the next line instead: semantic-release
+	# runs its own build before it creates the tag, so a build it drives
+	# reads the version from a tree that is still untagged and stamps a
+	# development version. Version 0.1.0 was released that way and the
+	# artifacts came out as 0.1.dev22+g183cb17b6. Building after the tag
+	# exists is what makes the artifact carry the release number.
+	$(UV) run semantic-release version --no-commit --no-changelog --skip-build
+	$(MAKE) build
 	$(UV) run semantic-release publish
 
 .PHONY: publish
