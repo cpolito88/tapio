@@ -1,5 +1,9 @@
 [project]
-name = "tapio"
+# The distribution is `tapio-py` because PyPI refuses `tapio`: its similarity
+# check folds `i` and `l` together, so the name collides with the existing
+# `taplo` project. The import package is still `tapio`, so nothing changes for
+# a reader of the code.
+name = "tapio-py"
 # The version is the tag. There is no number written down in this repository
 # to drift from the release it claims to be, and no commit has to be pushed to
 # a protected branch to change one.
@@ -31,7 +35,7 @@ dependencies = [
 ]
 
 # Registers the fixtures in tapio.testkit.plugin, so a project that installs
-# tapio can ask for `actor_system` with nothing added to its conftest.
+# tapio-py can ask for `actor_system` with nothing added to its conftest.
 [project.entry-points.pytest11]
 tapio = "tapio.testkit.plugin"
 

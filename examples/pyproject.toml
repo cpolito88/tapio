@@ -6,7 +6,7 @@ requires-python = ">=3.11"
 # fastapi and httpx are here rather than in the root dev group because only
 # one example needs them, and the example package is where that fact belongs.
 # Neither reaches the wheel: this package is never shipped.
-dependencies = ["tapio", "fastapi>=0.110", "httpx>=0.27"]
+dependencies = ["tapio-py", "fastapi>=0.110", "httpx>=0.27"]
 
 [build-system]
 requires = ["hatchling"]
@@ -16,4 +16,4 @@ build-backend = "hatchling.build"
 packages = ["tapio_examples"]
 
 [tool.uv.sources]
-tapio = { workspace = true }
+tapio-py = { workspace = true }

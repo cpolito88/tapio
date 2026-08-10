@@ -8,8 +8,8 @@ resolution-markers = [
 
 [manifest]
 members = [
-    "tapio",
     "tapio-examples",
+    "tapio-py",
 ]
 
 [[package]]
@@ -1529,7 +1529,24 @@ wheels = [
 ]
 
 [[package]]
-name = "tapio"
+name = "tapio-examples"
+version = "0.0.0"
+source = { editable = "examples" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "tapio-py" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.110" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "tapio-py", editable = "." },
+]
+
+[[package]]
+name = "tapio-py"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },
@@ -1576,23 +1593,6 @@ dev = [
     { name = "python-semantic-release", specifier = ">=9" },
     { name = "ruff", specifier = ">=0.5" },
     { name = "tapio-examples", editable = "examples" },
-]
-
-[[package]]
-name = "tapio-examples"
-version = "0.0.0"
-source = { editable = "examples" }
-dependencies = [
-    { name = "fastapi" },
-    { name = "httpx" },
-    { name = "tapio" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "fastapi", specifier = ">=0.110" },
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "tapio", editable = "." },
 ]
 
 [[package]]
