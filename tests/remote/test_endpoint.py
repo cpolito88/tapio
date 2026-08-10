@@ -76,6 +76,28 @@ async def test_a_ref_outlives_the_link_it_was_resolved_on(
     await eventually(lambda: seen == [1, 2])
 
 
+async def test_a_send_while_the_old_link_is_still_draining_dials_a_new_one(
+    alpha: ActorSystem, beta: ActorSystem
+):
+    # An association that has been asked to stop stays in the table until its
+    # actor finishes stopping. Sending into that window used to hand the
+    # message to the association that is draining, where it dead-lettered,
+    # which is how `reconnect` could report success and then deliver nothing.
+    seen: list[int] = []
+    ticker = beta.spawn(counting(seen), "ticker")
+    remote = await alpha.resolve(uri(beta, ticker), expect=Tick)
+    remote.tell(Tick(n=1))
+    await eventually(lambda: seen == [1])
+
+    assert alpha.remote is not None
+    alpha.remote.forget_all("the link went away")
+    # No wait for the table to clear: sending now is the case under test.
+    assert alpha.remote.associations == (beta.address,)
+    remote.tell(Tick(n=2))
+
+    await eventually(lambda: seen == [1, 2])
+
+
 async def test_resolving_something_that_is_not_a_ref_says_so(alpha: ActorSystem):
     with pytest.raises(RefResolutionError, match="not an actor ref"):
         await alpha.resolve("not a ref at all", expect=Tick)

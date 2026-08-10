@@ -122,6 +122,8 @@ Generated from the source, so it cannot drift from what is installed.
 
 ::: tapio.remote.failure
 
+::: tapio.remote.peers
+
 ::: tapio.actor.events.EventStream
 
 ::: tapio.actor.events.Subscription
