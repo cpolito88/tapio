@@ -5,7 +5,7 @@ when you are done with it. Everything below is a live example module: the code
 on this page is included from `examples/`, and CI runs it.
 
 ```bash
-uv add tapio
+uv add tapio-py
 ```
 
 ## Hello, world
