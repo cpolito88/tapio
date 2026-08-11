@@ -89,12 +89,51 @@ def test_two_incarnations_of_one_address_are_two_members():
 
 
 def test_the_member_at_an_address_is_the_one_furthest_through_its_life():
-    old = up(ALPHA, uid=1).with_status(MemberStatus.DOWN)
-    new = Member(address=ALPHA, uid=2, status=MemberStatus.JOINING)
+    slow = Member(address=ALPHA, uid=1, status=MemberStatus.JOINING)
+    ahead = up(ALPHA, uid=2)
 
-    state = Gossip(members=(old, new))
+    state = Gossip(members=(slow, ahead))
 
-    assert state.member(ALPHA).status is MemberStatus.DOWN
+    # Both are live, so the question is which one a caller is deciding about,
+    # and that is the one that has got further.
+    assert state.member(ALPHA).uid == 2
+    assert state.member(ALPHA).status is MemberStatus.UP
+
+
+def test_the_member_at_an_address_is_the_live_one_after_a_restart():
+    dead = up(ALPHA, uid=1).with_status(MemberStatus.DOWN)
+    running = Member(address=ALPHA, uid=2, status=MemberStatus.JOINING)
+
+    state = Gossip(members=(dead, running))
+
+    # Ranking on status alone would answer with the downed incarnation, which
+    # is the record nobody is deciding about any more.
+    assert state.member(ALPHA).uid == 2
+    assert state.member(ALPHA).status is MemberStatus.JOINING
+
+
+def test_a_tombstone_never_hides_the_member_that_replaced_it():
+    # The tombstone is kept forever, so ranking on status alone would answer
+    # with it from the restart onwards. What reads this is the daemon deciding
+    # whether a member may start leaving: with the tombstone winning, a node
+    # that has ever restarted is refused for ever and `leave` only times out.
+    tombstone = up(ALPHA, uid=1).with_status(MemberStatus.REMOVED)
+    running = up(ALPHA, uid=2, up_number=3)
+
+    state = Gossip(members=(tombstone, running))
+
+    assert state.member(ALPHA).uid == 2
+    assert state.member(ALPHA).status in (MemberStatus.JOINING, MemberStatus.UP)
+
+
+def test_the_member_at_an_address_falls_back_to_a_tombstone():
+    # Nothing is running there, so the tombstone is the honest answer rather
+    # than None: the address was a member, and it was removed.
+    tombstone = up(ALPHA, uid=1).with_status(MemberStatus.REMOVED)
+
+    state = Gossip(members=(tombstone,))
+
+    assert state.member(ALPHA).status is MemberStatus.REMOVED
 
 
 def test_the_leader_is_the_first_up_member_in_address_order():

@@ -89,14 +89,22 @@ class Gossip(Message):
 
         Returns:
             The member. When two incarnations of one address are known, which
-            happens for as long as it takes to notice a restart, the one that
-            has gone furthest through its life is returned, since that is the
-            one a caller is deciding about.
+            happens whenever a node has restarted, the live one is returned.
+            Among incarnations that are all live, or all gone, the one that
+            has gone furthest through its life wins, since that is the one a
+            caller is deciding about.
+
+            The live one has to win, because a restart leaves a tombstone
+            behind and tombstones are kept forever. Ranking on status alone
+            would answer with the dead incarnation from the restart onwards,
+            and a caller asking about the member at an address is asking about
+            the one that is running.
         """
         found = [m for m in self.members if m.address == address]
         if not found:
             return None
-        return max(found, key=lambda m: (m.rank, m.uid))
+        live = [m for m in found if m.status not in _GONE]
+        return max(live or found, key=lambda m: (m.rank, m.uid))
 
     @property
     def alive(self) -> tuple[Member, ...]:
