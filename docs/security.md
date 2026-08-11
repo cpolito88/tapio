@@ -16,6 +16,12 @@ about it yet.
 `InsecureRemoteConfig` while the system is being constructed, naming both
 settings.
 
+"Anything else" includes the empty string. It reads like a setting nobody
+filled in, which is exactly how it reaches a deployment, and the sockets layer
+reads it as every interface. So `bind_host=""` is `0.0.0.0` written
+differently, and it is refused the same way. Only `127.0.0.1`, the other
+loopback literals, and `localhost` count as loopback.
+
 A misconfigured deployment therefore fails to start instead of quietly serving
 strangers. It happens during construction, before the port is listening and
 before any ref has been handed out, so there is no window in which the wrong
@@ -102,8 +108,8 @@ For anything beyond one machine:
 
 - `secret` set, from the environment or a secret manager, never in the source.
 - `tls` configured, with mutual authentication where both ends are yours.
-- `bind_host` set to the interface you meant, not to `0.0.0.0` because it was
-  easier.
+- `bind_host` set to the interface you meant, not to `0.0.0.0` or `""` because
+  it was easier.
 - The port reachable only from the services that need it, at the network
   level, because tapio has no per-peer allowlist.
 - `max_frame_bytes` no larger than your largest legitimate message.

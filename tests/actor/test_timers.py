@@ -299,3 +299,52 @@ def test_a_negative_duration_is_refused(system: ActorSystem):
 
     with pytest.raises(ValueError, match="cannot be negative"):
         scheduled[0].start_single("t", Tick(), timedelta(milliseconds=-1))
+
+
+def test_a_repeating_timer_refuses_a_zero_interval(system: ActorSystem):
+    # A fixed-rate timer with no gap never reaches its own await: the next
+    # tick is always already due, so the loop spins and no other actor on the
+    # system ever runs again. It is refused where it is scheduled instead.
+    scheduled: list[TimerScheduler[Tick]] = []
+
+    def build(timers: TimerScheduler[Tick]) -> Behavior[Tick]:
+        scheduled.append(timers)
+
+        async def on_message(message: Tick) -> Behavior[Tick]:
+            return Behaviors.same()
+
+        return Behaviors.receive_message(on_message)
+
+    system.spawn(Behaviors.with_timers(build), name="ticker")
+    timers = scheduled[0]
+
+    with pytest.raises(ValueError, match="greater than zero"):
+        timers.start_fixed_rate("rate", Tick(), timedelta(0))
+    with pytest.raises(ValueError, match="greater than zero"):
+        timers.start_fixed_delay("delay", Tick(), timedelta(0))
+
+    # Refused before anything was started, so no task was left behind.
+    assert timers.keys == ()
+
+
+async def test_a_repeating_timer_still_takes_a_zero_initial_delay(
+    system: ActorSystem,
+):
+    # Only the gap between sends has to be positive. Sending the first one at
+    # once is ordinary, and the cluster daemon's join retry depends on it.
+    ticks: list[Tick] = []
+
+    def build(timers: TimerScheduler[Tick]) -> Behavior[Tick]:
+        timers.start_fixed_delay(
+            "t", Tick(), timedelta(seconds=30), initial_delay=timedelta(0)
+        )
+
+        async def on_message(message: Tick) -> Behavior[Tick]:
+            ticks.append(message)
+            return Behaviors.same()
+
+        return Behaviors.receive_message(on_message)
+
+    system.spawn(Behaviors.with_timers(build), name="ticker")
+
+    await eventually(lambda: len(ticks) == 1)

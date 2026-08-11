@@ -164,6 +164,28 @@ def test_a_well_known_name_goes_when_its_actor_does():
     assert registry.lookup(path.with_uid(0)) is None
 
 
+def test_a_well_known_name_is_visible_to_a_leak_check():
+    # paths() reports refs and names() reports aliases, because the two live
+    # in separate maps and one call clears both. A check that read only the
+    # first could not see an alias left behind.
+    registry = RefRegistry()
+    path = ActorPath.root("sys").child("system").child("cluster", uid=1)
+    ref: ActorRef[Greeted] = ActorRef(path)
+    registry.register(ref)
+    registry.register_well_known(ref)
+
+    assert registry.paths() == (path,)
+    assert registry.names() == (path.with_uid(0),)
+    # The alias is a second key onto a ref already counted, never a second ref.
+    assert len(registry) == 1
+    assert "well-known" in repr(registry)
+
+    registry.deregister(path)
+
+    assert registry.paths() == ()
+    assert registry.names() == ()
+
+
 def test_a_new_incarnation_keeps_the_name_when_the_old_one_deregisters_late():
     # The alias belongs to whoever holds it now. A stop that lands after the
     # next incarnation has published itself must not take the name away.

@@ -191,13 +191,32 @@ class RefRegistry:
         return self._named.get(path)
 
     def paths(self) -> tuple[ActorPath, ...]:
-        """Every path currently registered, which is what a leak test reads."""
+        """Every path currently registered, which is what a leak test reads.
+
+        Refs only. A well-known alias is a second key onto a ref that is
+        already here, so counting it would report one actor twice. Read
+        [names][tapio.remote.registry.RefRegistry.names] for the aliases: a
+        leak check wants both, because they are cleared by the same call and
+        a bug in it would leave one of them behind.
+        """
         return tuple(self._refs)
 
+    def names(self) -> tuple[ActorPath, ...]:
+        """Every well-known alias currently published, without its uid.
+
+        The companion to `paths`, and exposed for the same reason. An alias
+        that outlived its actor would hand a peer the next occupant of that
+        path, which is the whole thing the incarnation uid exists to prevent,
+        so a test has to be able to see that the alias went with the actor.
+        """
+        return tuple(self._named)
+
     def __len__(self) -> int:
-        """How many live refs are registered."""
+        """How many live refs are registered, aliases not counted twice."""
         return len(self._refs)
 
     def __repr__(self) -> str:
-        """Render the size, which is what a reader wants to see."""
-        return f"RefRegistry({len(self._refs)} refs)"
+        """Render the size, and the aliases when there are any."""
+        if not self._named:
+            return f"RefRegistry({len(self._refs)} refs)"
+        return f"RefRegistry({len(self._refs)} refs, {len(self._named)} well-known)"

@@ -12,7 +12,9 @@ the same at-most-once delivery every other message in tapio gets, and gossip
 is the one protocol shaped to need nothing more.
 """
 
-from typing import TypeAlias, final
+from typing import Annotated, TypeAlias, final
+
+from pydantic import Field
 
 from tapio.cluster.gossip import Gossip
 from tapio.cluster.member import AddressStr, Member
@@ -94,8 +96,14 @@ class Seeds(Message):
     actor system exists to make unnecessary.
     """
 
-    addresses: tuple[AddressStr, ...]
-    """The seeds, in the order every node lists them."""
+    addresses: Annotated[tuple[AddressStr, ...], Field(min_length=1)]
+    """The seeds, in the order every node lists them.
+
+    At least one. The daemon reads `addresses[0]` to decide whether it is the
+    first seed, which is the node allowed to form a cluster alone, so an empty
+    list has no answer to that question and used to raise inside the receive
+    loop instead of where the message was built.
+    """
 
 
 @final

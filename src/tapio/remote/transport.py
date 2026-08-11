@@ -419,8 +419,15 @@ def verify_bind_security(settings: RemoteSettings) -> None:
     """
     if settings.secret is not None or _is_loopback(settings.bind_host):
         return
+    # An empty host is spelled out, because it reads like a setting nobody
+    # filled in rather than like the every-interface bind it actually is.
+    host = (
+        "'' (which means every interface)"
+        if not settings.bind_host
+        else repr(settings.bind_host)
+    )
     msg = (
-        f"remoting is configured to bind {settings.bind_host!r} with no secret. "
+        f"remoting is configured to bind {host} with no secret. "
         "A port that accepts frames naming actor paths and message types is a "
         "serious surface, so binding beyond loopback requires "
         "RemoteSettings(secret=...); bind 127.0.0.1 instead if this system is "
@@ -430,8 +437,14 @@ def verify_bind_security(settings: RemoteSettings) -> None:
 
 
 def _is_loopback(host: str) -> bool:
-    """Whether a bind host names this machine and nothing else."""
-    if host in {"localhost", ""}:
+    """Whether a bind host names this machine and nothing else.
+
+    The empty string is not one of them, however much it looks like an absent
+    setting. `socket.create_server` reads it as `INADDR_ANY`, so it is
+    `0.0.0.0` written differently, and treating it as loopback let a system
+    listen to the world with nothing for a peer to prove.
+    """
+    if host == "localhost":
         return True
     try:
         return ipaddress.ip_address(host.strip("[]")).is_loopback
