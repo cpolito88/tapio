@@ -4,15 +4,23 @@ A frame is a 4-byte big-endian length followed by a JSON object:
 
 ```json
 {"v": 1, "to": "/user/checkout/session-7#3",
- "from": "tapio://web@10.0.0.9:25520/user/cart#11",
+ "from": "tapio://web@10.0.0.9:25520",
  "t": "orders.protocol.Reserve",
  "p": {"sku": "X-1", "qty": 2,
        "reply_to": "tapio://web@10.0.0.9:25520/user/cart#11"}}
 ```
 
 `to` carries no address, because a frame arriving on a link is addressed to
-the system that received it. `from` is complete, because the receiver may need
-to reply to a system it has not talked to yet.
+the system that received it. `from` is the sending *system*, not a sending
+actor: a `tell` carries no sender, so there is no actor to name, and inventing
+one would be a guess. It is a diagnostic rather than a reply path. Replies go
+to the `reply_to` a message carries, which is a complete ref and is the only
+thing that ever addresses an actor.
+
+`from` is what the sender claimed about itself, so a dead letter can report it
+beside the address the link was actually associated with. Those two agree on a
+healthy pair and disagree on a misconfigured one, which is worth being able to
+see.
 
 `t` is a registry key and never an import path, for the reason
 [tapio.remote.registry][] gives. The length prefix is checked before the body
@@ -27,13 +35,12 @@ wire is validated by construction, strictly, with no way to skip it.
 
 import json
 from dataclasses import dataclass
-from typing import Any, Final, final
+from typing import Final, final
 
 from pydantic import ValidationError
 
 from tapio.actor.dead_letters import DeadLetterOffice, DeadLetterReason
 from tapio.actor.path import ActorPath
-from tapio.actor.ref import ActorRef
 from tapio.errors import (
     FrameTooLargeError,
     MailboxFullError,
@@ -42,7 +49,7 @@ from tapio.errors import (
     RefResolutionError,
 )
 from tapio.message import Message
-from tapio.remote.address import Address, format_ref
+from tapio.remote.address import Address
 from tapio.remote.context import DeserializationContext, use_context
 from tapio.remote.protocol import PROTOCOL_VERSION
 from tapio.remote.registry import registered_key, type_for_key
@@ -81,7 +88,13 @@ class Frame:
     """The recipient, in the receiving system's own path space."""
 
     sender: str | None
-    """The full string form of the sending ref, or `None` if it sent anonymously."""
+    """The sending system's canonical address, or `None` if the frame named none.
+
+    What the sender claimed, not what the link was associated with. A frame
+    that arrived on one association claiming to come from another address is
+    a misconfiguration worth being able to see rather than one to correct
+    silently here.
+    """
 
     key: str
     """The payload's registry key."""
@@ -103,7 +116,12 @@ class UndecodableFrame(Message):
     """The registry key the frame named, when the frame parsed far enough."""
 
     sender: str | None = None
-    """The sending ref's string form, when the frame parsed far enough."""
+    """Where the frame said it came from, when it parsed far enough.
+
+    The sending system's canonical address for a frame this system decoded,
+    and the peer address of the association for one the transport refused
+    before the decoder ever saw it.
+    """
 
     size: int = 0
     """How many bytes arrived, which for a frame refused on its declared length
@@ -114,7 +132,7 @@ def encode(
     message: Message,
     *,
     to: ActorPath,
-    sender: ActorRef[Any] | None = None,
+    sender: Address | None = None,
     max_frame_bytes: int | None = None,
 ) -> bytes:
     """Write a message and its addressing into a length-prefixed frame.
@@ -122,7 +140,10 @@ def encode(
     Args:
         message: The message to send.
         to: The recipient's path, including its incarnation uid.
-        sender: The ref a reply would go to, written out in full.
+        sender: The canonical address of the system sending it, recorded so a
+            dead letter on the far side can name where the frame came from. It
+            is not a reply path: a reply goes to the `reply_to` the message
+            carries.
         max_frame_bytes: Refuse a frame larger than this, if given.
 
     Returns:
@@ -136,7 +157,7 @@ def encode(
     header = {
         "v": PROTOCOL_VERSION,
         "to": format_target(to),
-        "from": format_ref(sender.address, sender.path) if sender else None,
+        "from": str(sender) if sender is not None else None,
         "t": key,
     }
     # Spliced together rather than built as one dict and dumped. The payload
