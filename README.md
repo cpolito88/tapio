@@ -9,9 +9,12 @@ supervision, and Pydantic models throughout.
 > **Status: pre-alpha.** The runtime core runs: actor systems, spawning,
 > typed `tell`, bounded mailboxes, dead letters, a deadline-based shutdown,
 > supervision with backoff, death watch, `ask`, timers, stash, message
-> adapters and a round-robin pool router. Two systems can also talk over a
-> TCP link, with a handshake, optional TLS and messages that carry refs
-> across. Remote death watch and quarantine are still to come.
+> adapters, `run_blocking` and a round-robin pool router. Two systems can also
+> talk over a TCP link, with a handshake, optional TLS and messages that carry
+> refs across, plus watching and asking over the link, a failure detector,
+> quarantine, an explicit reconnect, and starting an actor on another node.
+> Nodes can form a cluster and agree on who is in it. Deciding what to do
+> about a member that has stopped answering is still to come.
 
 > **Why this exists.** `tapio` is a testbed for AI agentic development. The
 > point of the project is to find out what coding agents can carry on their
@@ -38,21 +41,34 @@ trees. It keeps the mythological lineage of Akka (Sámi) and Apache Pekko
 - **Death watch**: learn when a child dies, without polling
 - **Ask, timers, stash, routers**: the patterns you would otherwise hand-roll
 - **Remoting**: two systems on a TCP link, sending each other typed messages
+- **Membership**: nodes gossip a view of the cluster that they all converge
+  on, with a leader that is computed rather than elected
 
 It is a **library, not infrastructure**. Pip-install it into the service you
-already have. There is no cluster to operate.
+already have. Nodes find each other from a seed list you deploy with them, so
+there is no broker, no coordinator and no separate cluster process to run.
 
 ## What it is not
 
 This is *inspired by* Pekko, not a port, and shares no code with it.
 Deliberately out of scope, permanently:
 
-- **Clustering, sharding and distributed data.** Reimplementing gossip and
-  split-brain resolution in Python is a multi-year project with a high
-  bug-severity floor. Remoting here means one system dialling another it was
-  told about, and nothing more. If you need a cluster, use
-  [Ray](https://www.ray.io/) or put a broker between your nodes.
+- **Sharding and distributed data.** Placing an entity on one node, moving it
+  when that node goes away, or replicating state so that two nodes can write
+  it, is a much larger problem than agreeing on who is in the cluster. If you
+  need either, use [Ray](https://www.ray.io/) or put a broker between your
+  nodes.
 - **Competing with the JVM on throughput.** See below.
+
+Clustering as a whole used to be on that list, and the reason given was that
+reimplementing gossip and split-brain resolution in Python is a multi-year
+project with a high bug-severity floor. That reason was right about the second
+half. Membership is here because the merge two nodes run to agree is a pure
+function with three laws behind it, so it can be tested as one, and it is.
+Deciding what to do about a member that has stopped answering is the part with
+the high bug-severity floor, and it is not here. A cluster today agrees on who
+joined and who left gracefully, and it stops making decisions when a member
+goes quiet rather than guessing which side of a partition should survive.
 
 Remoting does give you location transparency in the narrow sense: an actor
 holding a ref just sends, and does not need to know which node the target is
