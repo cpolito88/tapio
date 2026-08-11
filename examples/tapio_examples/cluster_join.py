@@ -22,11 +22,17 @@ The three systems run in this one process on loopback ports the OS picks, so
 the example needs no orchestration and no second machine.
 
 What to watch in the output: the last two lines. The node that leaves is
-`node1`, which is both the first seed and the leader, and the other two still
-agree it is `removed`. They report that from their own view rather than by
+`node1`, which is both the first seed and the leader, and the other two end up
+agreeing it is `removed`. They report that from their own view rather than by
 asking anybody, and leadership moved to `node2` on the way without a handover,
 because the leader is a function of the membership rather than a post somebody
 holds.
+
+They agree in the end rather than at once. `leave` returns when the leaving
+node is `removed` in its own view, and the others hear about it on their next
+gossip round, so the example waits for each of them instead of reading them
+straight away. That wait is the honest shape for anything that watches another
+node, and leaving it out is a race that shows up about once in fifteen runs.
 
 Run it with:
 
@@ -39,7 +45,7 @@ import asyncio
 from datetime import timedelta
 
 from tapio import ActorSystem, RemoteSettings, TapioSettings
-from tapio.cluster import Cluster
+from tapio.cluster import Cluster, MemberStatus
 from tapio.settings import ClusterSettings
 
 __all__ = ["main"]
@@ -61,6 +67,35 @@ def gossiping() -> ClusterSettings:
         join_retry_interval=timedelta(milliseconds=50),
         seed_form_after=timedelta(milliseconds=200),
     )
+
+
+async def until_removed(cluster: Cluster, address: str) -> MemberStatus:
+    """Wait for one node to see another written off.
+
+    `leave` returns as soon as the leaving node is `removed` in its own view.
+    Every other node finds out on its next gossip round, so anybody reading
+    another node's view waits for it rather than assuming. Reading straight
+    after `leave` returns catches a node still at `exiting` often enough to
+    matter, which is a race in the reader rather than in the cluster.
+
+    Args:
+        cluster: The node doing the watching.
+        address: The member it is waiting to see written off.
+
+    Returns:
+        The status it settled on, which is `removed`.
+
+    Raises:
+        TimeoutError: If the removal has not reached this node in five
+            seconds. Gossip here runs every 50ms, so that is long enough to
+            mean something is wrong rather than slow.
+    """
+    async with asyncio.timeout(5.0):
+        while True:
+            member = cluster.state.member(address)
+            if member is not None and member.status is MemberStatus.REMOVED:
+                return member.status
+            await asyncio.sleep(0.005)
 
 
 async def main() -> list[str]:
@@ -106,9 +141,8 @@ async def main() -> list[str]:
         await leaving.leave()
 
         for system, cluster in zip(systems[1:], staying, strict=True):
-            member = cluster.state.member(leaving.address)
-            assert member is not None
-            lines.append(f"{system.name}: node1 is {member.status}")
+            status = await until_removed(cluster, leaving.address)
+            lines.append(f"{system.name}: node1 is {status}")
 
     for line in lines:
         print(line)
