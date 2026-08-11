@@ -133,9 +133,15 @@ async def test_a_graceful_leave_reaches_removed_on_every_node():
                     ),
                     within=5.0,
                 )
-                # The tombstone stays. Dropping it would let a peer holding an
-                # older view put the member back by merging it in again.
+                # It is out of the live membership, which is what an
+                # application reads.
                 assert leaving.address not in [m.address for m in node.cluster.members]
+                # And the tombstone stays behind it. Dropping the record would
+                # let a peer holding an older view put the member back, since
+                # a merge unions the members it is given.
+                assert leaving.address in [
+                    m.address for m in node.cluster.state.members
+                ]
 
 
 async def test_leaving_something_this_node_never_joined_says_so():
@@ -165,27 +171,31 @@ async def test_a_system_with_remoting_off_cannot_be_clustered():
 async def test_a_clustered_system_still_leaves_an_empty_registry_behind():
     # The daemon publishes a well-known name, which is an entry in the same
     # registry the leak checks read. It has to go when the actor does.
-    async with cluster_of(2) as nodes:
-        seeds = seeds_of(nodes)
-        await asyncio.gather(*(n.cluster.join_seed_nodes(seeds) for n in nodes))
-        for node in nodes:
-            await node.system.terminate()
+    with assert_no_leaked_tasks():
+        async with cluster_of(2) as nodes:
+            seeds = seeds_of(nodes)
+            await asyncio.gather(*(n.cluster.join_seed_nodes(seeds) for n in nodes))
+            for node in nodes:
+                await node.system.terminate()
 
-        for node in nodes:
-            assert node.system.refs.paths() == ()
-            assert node.system.refs.lookup(_daemon_path(node)) is None
+            for node in nodes:
+                assert node.system.refs.paths() == ()
+                assert node.system.refs.lookup(_daemon_path(node)) is None
 
 
 async def test_a_peer_addresses_the_daemon_without_knowing_its_incarnation():
     # This is what makes a seed list usable: an address in a configuration
     # file names the daemon over there, and nothing else could.
-    async with cluster_of(2) as nodes:
-        first, second = nodes
+    with assert_no_leaked_tasks():
+        async with cluster_of(2) as nodes:
+            first, second = nodes
 
-        ref = await first.system.resolve(daemon_uri(second.address), expect=WireMessage)
+            ref = await first.system.resolve(
+                daemon_uri(second.address), expect=WireMessage
+            )
 
-        assert ref.path.uid == 0
-        assert str(ref.path) == f"tapio://{second.system.name}/system/cluster"
+            assert ref.path.uid == 0
+            assert str(ref.path) == f"tapio://{second.system.name}/system/cluster"
 
 
 def _daemon_path(node: Node) -> ActorPath:
