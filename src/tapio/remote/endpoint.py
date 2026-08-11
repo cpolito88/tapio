@@ -103,6 +103,7 @@ class RemoteEndpoint:
         self._server: asyncio.Server | None = None
         self._associations: dict[Address, Association] = {}
         self._peers: PeerProvider = StaticPeers()
+        self._listening: asyncio.Task[None] | None = None
         self._handshakes: set[asyncio.Task[None]] = set()
         self._names = 0
         self._parent: ActorCell[Any] | None = None
@@ -197,7 +198,14 @@ class RemoteEndpoint:
             cell: The endpoint's actor, which parents every association.
         """
         self._parent = cell
-        self.dispatcher.spawn_task(self._serve(), name="tapio-remote-listener")
+        # Held, not discarded. This task and `close` are the only two owners of
+        # the socket, so `close` has to be able to stop it before it touches
+        # the socket; otherwise the two race and the loser works on a closed
+        # fd. It is the endpoint actor's task in the same sense the handshakes
+        # below are: started here, cancelled in the termination sequence.
+        self._listening = self.dispatcher.spawn_task(
+            self._serve(), name="tapio-remote-listener"
+        )
 
     async def _serve(self) -> None:
         """Accept on the socket that was bound at construction."""
@@ -642,12 +650,14 @@ class RemoteEndpoint:
         """Stop listening, and let the tree stop the links.
 
         The associations are children of this endpoint's actor, so the sweep
-        that reached here is already stopping them. What is left is the socket
-        and any connection still mid-handshake, which nobody else owns.
+        that reached here is already stopping them. What is left is the
+        listener, the socket, and any connection still mid-handshake, which
+        nobody else owns.
         """
         if self._closed:
             return
         self._closed = True
+        await self._stop_listening()
         server = self._server
         self._server = None
         if server is not None:
@@ -662,6 +672,36 @@ class RemoteEndpoint:
             with contextlib.suppress(asyncio.CancelledError, HandshakeError, OSError):
                 await task
         self._handshakes.clear()
+
+    async def _stop_listening(self) -> None:
+        """Stop the accept task, before anything closes the socket under it.
+
+        It runs first in `close` for two reasons. A task still on its way to
+        `asyncio.start_server` would otherwise wake up to a closed socket and
+        raise `OSError` where nobody is waiting for it, which asyncio reports
+        at collection time rather than as a failure anyone can act on. And a
+        task suspended *inside* `start_server` would go on to publish a
+        running server into `self._server` after `close` had already read it,
+        leaving a listening port behind that nothing will ever shut.
+
+        Its result is awaited rather than dropped, so an accept loop that
+        ended badly is reported here instead of surfacing as an unhandled
+        exception long afterwards.
+        """
+        listening = self._listening
+        self._listening = None
+        if listening is None:
+            return
+        listening.cancel()
+        try:
+            await listening
+        except asyncio.CancelledError:
+            # The listener's, not this caller's: `close` runs in the endpoint
+            # actor's own task, and cancelling that one does not come through
+            # here.
+            pass
+        except OSError as error:
+            _log.warning("the listener on %s ended: %s", self._address, error)
 
     def __repr__(self) -> str:
         """Render the address and how many peers are associated."""

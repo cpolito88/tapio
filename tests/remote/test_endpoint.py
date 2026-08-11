@@ -1,6 +1,7 @@
 """Tests for the endpoint: resolving, addressing and shutdown."""
 
 import asyncio
+import gc
 
 import pytest
 
@@ -227,6 +228,41 @@ async def test_a_system_that_never_associated_still_closes_its_port():
         assert port is not None
         await system.terminate()
 
+    await refused(port)
+
+
+async def test_closing_the_endpoint_stops_its_listener():
+    # close() and the accept task are the only two owners of the socket, so
+    # close() has to stop the task before it closes the socket under it. This
+    # exercises the interleaving where close() wins: nothing has awaited since
+    # the system was constructed, so the accept task has had no turn yet.
+    loop = asyncio.get_running_loop()
+    reported: list[str] = []
+    previous = loop.get_exception_handler()
+    loop.set_exception_handler(
+        lambda _loop, context: reported.append(str(context.get("exception")))
+    )
+    try:
+        with assert_no_leaked_tasks():
+            system = ActorSystem("alpha", remoting())
+            endpoint = system.remote
+            assert endpoint is not None
+            port = system.address.port
+            assert port is not None
+
+            await endpoint.close()
+            # A turn for anything the close left pending to misbehave in.
+            await asyncio.sleep(0)
+            await system.terminate()
+
+        gc.collect()
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(previous)
+
+    # A listener left running would have woken up to a closed socket and
+    # raised where nobody was waiting, which asyncio reports here.
+    assert reported == []
     await refused(port)
 
 
