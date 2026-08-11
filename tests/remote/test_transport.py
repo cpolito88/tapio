@@ -119,6 +119,23 @@ def test_binding_anywhere_else_without_a_secret_is_refused():
         verify_bind_security(remote(bind_host="0.0.0.0"))
 
 
+def test_an_empty_bind_host_is_not_loopback():
+    # It reads like a setting nobody filled in, and create_server reads it as
+    # INADDR_ANY. Treating it as loopback was the one way past this check.
+    with pytest.raises(InsecureRemoteConfig, match="every interface"):
+        verify_bind_security(remote(bind_host=""))
+
+
+def test_an_empty_bind_host_binds_every_interface():
+    # Which is what makes the refusal above the right answer rather than a
+    # pedantic one.
+    listener = bind(remote(bind_host="", bind_port=0, secret="shh"))
+    try:
+        assert listener.getsockname()[0] == "0.0.0.0"
+    finally:
+        listener.close()
+
+
 def test_a_name_that_is_not_an_address_literal_is_not_assumed_to_be_loopback():
     # It might resolve to loopback, it might not. Guessing wrong leaves an
     # open port, so it does not guess.
