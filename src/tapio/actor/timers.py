@@ -102,18 +102,20 @@ class TimerScheduler(Generic[T]):
         Args:
             key: What to call this timer.
             message: What to send, checked now as for `start_single`.
-            interval: How long to wait between sends.
+            interval: How long to wait between sends. Greater than zero: a
+                repeating timer with no gap is a busy loop, not a schedule.
             initial_delay: How long to wait before the first send. The interval
-                when omitted.
+                when omitted. Zero is fine here, and means send at once.
 
         Raises:
             MessageTypeError: If the message does not match this actor's
                 declared message type.
-            ValueError: If either duration is negative.
+            ValueError: If the interval is not positive, or the initial delay
+                is negative.
             pydantic.ValidationError: If content validation is on and the
                 message does not satisfy its own model.
         """
-        every = _seconds(interval, "interval")
+        every = _interval_seconds(interval)
         first = every if initial_delay is None else _seconds(initial_delay, "delay")
         self._cell.validate(message)
         self._start(key, self._fixed_delay(message, every, first))
@@ -138,18 +140,21 @@ class TimerScheduler(Generic[T]):
         Args:
             key: What to call this timer.
             message: What to send, checked now as for `start_single`.
-            interval: The scheduled gap between sends.
+            interval: The scheduled gap between sends. Greater than zero: with
+                no gap every tick is already due, so the timer would never
+                yield and no other actor would run again.
             initial_delay: How long to wait before the first send. The interval
-                when omitted.
+                when omitted. Zero is fine here, and means send at once.
 
         Raises:
             MessageTypeError: If the message does not match this actor's
                 declared message type.
-            ValueError: If either duration is negative.
+            ValueError: If the interval is not positive, or the initial delay
+                is negative.
             pydantic.ValidationError: If content validation is on and the
                 message does not satisfy its own model.
         """
-        every = _seconds(interval, "interval")
+        every = _interval_seconds(interval)
         first = every if initial_delay is None else _seconds(initial_delay, "delay")
         self._cell.validate(message)
         self._start(key, self._fixed_rate(message, every, first))
@@ -256,5 +261,36 @@ def _seconds(duration: timedelta, what: str) -> float:
     seconds = duration.total_seconds()
     if seconds < 0:
         msg = f"a timer {what} cannot be negative, got {duration}"
+        raise ValueError(msg)
+    return seconds
+
+
+def _interval_seconds(duration: timedelta) -> float:
+    """Convert a repeating timer's interval to seconds, refusing zero.
+
+    Zero is refused rather than approximated. A repeating timer with no gap
+    between sends is a busy loop whatever the schedule means, and under
+    `start_fixed_rate` it is worse than that: the next tick is always already
+    due, so the coroutine never reaches its own `await` and the event loop
+    never runs anything else again. An actor that wants to run as fast as it
+    can should send itself a message from its handler, where the mailbox
+    applies and a stop can still be read.
+
+    Args:
+        duration: The interval to convert.
+
+    Returns:
+        The interval in seconds.
+
+    Raises:
+        ValueError: If it is zero or negative.
+    """
+    seconds = _seconds(duration, "interval")
+    if seconds == 0:
+        msg = (
+            "a repeating timer's interval must be greater than zero, got "
+            f"{duration}. Use start_single for a one-off, or send from the "
+            "handler to run without a gap"
+        )
         raise ValueError(msg)
     return seconds
