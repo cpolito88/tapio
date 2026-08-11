@@ -106,6 +106,11 @@ class DeadLetterReason:
     this message. Which message that is depends on the strategy: the arriving
     one under `DROP_NEW`, the oldest queued one under `DROP_OLDEST`."""
 
+    ADAPTER_RELEASED = "adapter-released"
+    """The message reached an adapter its owner had released. The actor behind
+    it may well be running: what is gone is the translation, so there is
+    nothing to turn the message into and nobody expecting it."""
+
     UNKNOWN_RECIPIENT = "unknown-recipient"
     """No live actor answers to that path and incarnation uid. Either nothing
     was ever there, or the ref is stale: the actor it named has stopped, and

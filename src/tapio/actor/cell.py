@@ -374,7 +374,7 @@ class ActorCell(Generic[T]):
         self._children: dict[str, ActorCell[Any]] = {}
         self._anonymous = itertools.count(1)
         self._adapters = itertools.count(1)
-        self._adapter_paths: list[ActorPath] = []
+        self._adapter_paths: set[ActorPath] = set()
         # Both sides of every watch, so that neither a watcher nor a watched
         # actor leaves an entry behind in the other when it stops. Not every
         # watcher is a cell: an ask's promise watches its target too.
@@ -591,6 +591,12 @@ class ActorCell(Generic[T]):
         handed out keep working. An adapter is bound to the actor, not to the
         incarnation that created it, so a restart does not turn replies into
         dead letters for someone still holding a ref.
+
+        That also means nothing releases one on its own. An adapter per
+        protocol, made in `setup`, costs one registry entry for the life of
+        the actor and is what most actors want. An adapter per request wants
+        `AdapterRef.release`, or the entries accumulate for as long as the
+        actor runs.
         """
         resolved = resolve_handler_msg_type(
             adapt, explicit=msg_type, message_param_index=0
@@ -610,8 +616,22 @@ class ActorCell(Generic[T]):
         # to a peer resolves on the way back. It lives and dies with its owner,
         # which is why the owner is what deregisters it.
         self._runtime.refs.register(ref)
-        self._adapter_paths.append(path)
+        self._adapter_paths.add(path)
         return ref
+
+    def release_adapter(self, path: ActorPath) -> None:
+        """Take one adapter out of the registry, leaving this actor running.
+
+        Called by `AdapterRef.release`. Releasing one that is not this actor's,
+        or one that has already gone, does nothing: the ref keeps its own
+        released flag, so the call stays idempotent from either side.
+
+        Args:
+            path: The adapter's path.
+        """
+        if path in self._adapter_paths:
+            self._adapter_paths.discard(path)
+            self._runtime.refs.deregister(path)
 
     async def run_blocking(
         self, fn: Callable[..., B], /, *args: Any, **kwargs: Any
