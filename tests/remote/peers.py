@@ -1,7 +1,10 @@
 """Messages, behaviors and a fake peer, shared by the remoting tests."""
 
+import asyncio
+import contextlib
 import hmac
 import json
+from collections.abc import AsyncIterator, Callable
 from hashlib import sha256
 
 from tapio import Message
@@ -17,7 +20,7 @@ from tapio.actor import (
 from tapio.remote.address import Address, format_ref
 from tapio.remote.protocol import PROTOCOL_VERSION
 from tapio.remote.registry import register_message
-from tapio.remote.transport import FrameLink, connect, framed
+from tapio.remote.transport import FrameLink, Link, LinkFrame, connect, framed
 from tapio.settings import RemoteSettings, TapioSettings
 from tapio.version import __version__
 
@@ -240,3 +243,110 @@ def _proof(secret: str | None, nonce: str) -> str:
     if secret is None:
         return ""
     return hmac.new(secret.encode(), nonce.encode(), sha256).hexdigest()
+
+
+class _WriteFaultLink:
+    """A link whose writes break or stall once a few have gone through.
+
+    Deliberately not part of `tapio.testkit.remote`. `LinkFaults` there loses
+    frames and never raises, because that is what a partition looks like: the
+    whole difficulty is that nothing tells you anything. These two faults are
+    the opposite case, a socket reporting its own failure and a peer that
+    accepts nothing, and they exist to exercise the write paths rather than
+    the detector.
+
+    The filter is installed before any association forms and the handshake
+    runs unwrapped, so `after` counts only the frames the association itself
+    writes. `after=0` breaks the flush that `_open` does, `after=1` leaves the
+    flush alone and breaks the first ordinary send.
+    """
+
+    __slots__ = ("_after", "_link", "_stall", "_written")
+
+    def __init__(self, link: FrameLink, after: int, stall: bool) -> None:
+        self._link = link
+        self._after = after
+        self._stall = stall
+        self._written = 0
+
+    @property
+    def peer(self) -> str:
+        return self._link.peer
+
+    async def read_frame(self) -> bytes:
+        return await self._link.read_frame()
+
+    async def write_frame(self, data: bytes) -> None:
+        if self._written >= self._after:
+            if self._stall:
+                # Never returns, and never raises. This is a peer holding the
+                # connection open while reading nothing, which is what parks a
+                # real `drain` for good.
+                await asyncio.Event().wait()
+            raise OSError(107, "Transport endpoint is not connected")
+        self._written += 1
+        await self._link.write_frame(data)
+
+    async def write_link(self, message: LinkFrame) -> None:
+        await self.write_frame(framed(message.model_dump_json().encode()))
+
+    async def close(self) -> None:
+        await self._link.close()
+
+    def __repr__(self) -> str:
+        state = "stalling" if self._stall else "failing"
+        return f"_WriteFaultLink({self._link.peer!r}, {state} after {self._after})"
+
+
+def failing_writes(after: int = 0) -> Callable[[FrameLink], Link]:
+    """A link filter whose writes raise `OSError` once `after` have succeeded."""
+    return lambda link: _WriteFaultLink(link, after, stall=False)
+
+
+def stalled_writes(after: int = 0) -> Callable[[FrameLink], Link]:
+    """A link filter whose writes never return once `after` have succeeded."""
+    return lambda link: _WriteFaultLink(link, after, stall=True)
+
+
+@contextlib.asynccontextmanager
+async def silent_peer() -> AsyncIterator[Address]:
+    """A peer that accepts a connection and then says nothing at all.
+
+    A dial to it hangs until `handshake_timeout`, which is the window in which
+    an association holds frames rather than writing them. That is the only way
+    to fill the hold buffer on purpose.
+
+    The accepting tasks are cancelled on the way out. `Server.close` does not
+    touch them on 3.11, and one left waiting is a leaked task that the suite's
+    own check would report against whichever test ran next.
+
+    Yields:
+        The address to resolve against.
+    """
+    handlers: set[asyncio.Task[None]] = set()
+
+    async def accept(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        task = asyncio.current_task()
+        if task is not None:
+            handlers.add(task)
+        try:
+            # No server-hello, ever. The dialling side waits out its handshake
+            # deadline, which is exactly the state under test.
+            await asyncio.Event().wait()
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(accept, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        yield Address(system="silent", host="127.0.0.1", port=port)
+    finally:
+        for task in handlers:
+            task.cancel()
+        for task in handlers:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        server.close()
+        await server.wait_closed()
