@@ -96,6 +96,34 @@ Generated from the source, so it cannot drift from what is installed.
 
 ::: tapio.remote.protocol
 
+## Clustering
+
+::: tapio.cluster.cluster.Cluster
+
+::: tapio.cluster.member.Member
+
+::: tapio.cluster.member.MemberStatus
+
+::: tapio.cluster.gossip.Gossip
+
+::: tapio.cluster.gossip.leader_actions
+
+::: tapio.cluster.clock.VectorClock
+
+::: tapio.cluster.clock.Ordering
+
+::: tapio.cluster.reachability.Reachability
+
+::: tapio.cluster.reachability.ReachabilityRecord
+
+::: tapio.cluster.reachability.ReachabilityStatus
+
+::: tapio.cluster.messages
+
+::: tapio.cluster.daemon.ClusterDaemon
+
+::: tapio.settings.ClusterSettings
+
 ## Remote spawning
 
 ::: tapio.remote.spawner.remote_behavior

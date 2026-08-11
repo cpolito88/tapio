@@ -510,6 +510,40 @@ class ActorSystem:
         self._reject_if_terminating("an anonymous actor")
         return self._user.spawn_anonymous(behavior, mailbox)
 
+    def spawn_system_actor(
+        self,
+        behavior: Behavior[T],
+        name: str,
+        mailbox: MailboxConfig | None = None,
+    ) -> ActorRef[T]:
+        """Start an actor under `/system`, beside remoting.
+
+        For the runtime's own extensions rather than for application actors.
+        Clustering uses it, as remoting does: those actors are part of how the
+        system works, they must not collide with names a user chose, and a
+        failure in one is not the user tree's business.
+
+        Application actors belong under `/user`, through `spawn`. An actor
+        started here does not sit under the user guardian, so it does not
+        share the shutdown ordering or the escalation behaviour that the rest
+        of an application relies on.
+
+        Args:
+            behavior: What the actor does.
+            name: Its name, unique among system actors.
+            mailbox: Capacity and overflow behaviour. The system's default when
+                omitted.
+
+        Returns:
+            A ref to the new actor.
+
+        Raises:
+            ActorSystemTerminating: If the system is shutting down.
+            ActorNameError: If a live system actor already has that name.
+        """
+        self._reject_if_terminating(name)
+        return self._system.spawn(behavior, name, mailbox)
+
     def _reject_if_terminating(self, name: str) -> None:
         """Refuse a spawn once shutdown has begun."""
         if self._terminating:

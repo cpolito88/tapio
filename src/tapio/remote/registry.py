@@ -11,6 +11,16 @@ Cells register when they start and deregister when they stop, so the registry
 holds exactly the live actors. A uid that no longer matches resolves to
 nothing rather than to whoever holds that path now. A system that has
 terminated leaves an empty registry behind, which the tests check.
+
+**Well-known names.** An actor may also ask to be reachable by its bare path,
+with no uid. That is the opposite of the guarantee above, so it is opt-in and
+it exists for one situation: a peer that has to address something before it
+can know any uid. Bootstrapping a cluster is that situation, since a seed node
+is named by an address in a configuration file and nothing else. A ref that
+was written down always carries its uid, so nothing becomes bare by accident,
+and asking for a well-known name is a decision an actor makes about itself.
+The alias is dropped when its actor stops, in the same call that deregisters
+the ref, so the registry stays exactly as empty as it was before.
 """
 
 from collections.abc import Callable
@@ -130,27 +140,55 @@ class RefRegistry:
     one process share nothing, so each keeps its own.
     """
 
-    __slots__ = ("_refs",)
+    __slots__ = ("_named", "_refs")
 
     def __init__(self) -> None:
         """Create an empty registry."""
         self._refs: dict[ActorPath, ActorRef[Any]] = {}
+        self._named: dict[ActorPath, ActorRef[Any]] = {}
 
     def register(self, ref: ActorRef[Any]) -> None:
         """Record a ref as the live occupant of its path and uid."""
         self._refs[ref.path] = ref
 
+    def register_well_known(self, ref: ActorRef[Any]) -> None:
+        """Also reach this actor by its bare path, whatever its incarnation.
+
+        For an actor a peer has to address before it can know any uid, which
+        in practice means a bootstrap endpoint named in configuration. It is
+        deliberately narrow: only actors that ask for it are reachable this
+        way, and a ref written down elsewhere still carries its uid and still
+        addresses one incarnation only.
+
+        Args:
+            ref: The actor to publish. The name is its own path without the
+                uid, so an actor cannot claim somebody else's.
+        """
+        self._named[ref.path.with_uid(0)] = ref
+
     def deregister(self, path: ActorPath) -> None:
-        """Forget a path, whether or not anything was registered under it."""
+        """Forget a path, whether or not anything was registered under it.
+
+        Any well-known name this actor held goes with it, so an alias cannot
+        outlive the actor it names or survive into the next incarnation.
+        """
         self._refs.pop(path, None)
+        name = path.with_uid(0)
+        named = self._named.get(name)
+        if named is not None and named.path == path:
+            del self._named[name]
 
     def lookup(self, path: ActorPath) -> ActorRef[Any] | None:
         """Return the live ref at a path and uid, or `None`.
 
         `None` covers both cases: nothing was ever there, or what was there
-        has stopped and its uid will never be used again.
+        has stopped and its uid will never be used again. A path with no uid
+        finds only an actor that published itself as a well-known name.
         """
-        return self._refs.get(path)
+        found = self._refs.get(path)
+        if found is not None or path.uid:
+            return found
+        return self._named.get(path)
 
     def paths(self) -> tuple[ActorPath, ...]:
         """Every path currently registered, which is what a leak test reads."""

@@ -95,16 +95,18 @@ the writer is, or accept that a false positive costs you a rebuild.
 
 ## What changes this
 
-This is a known temporary position, not a permanent one. v0.2 changes it in
-two ways, and the v0.1 defaults are chosen to survive the upgrade unchanged:
+This is a known temporary position, not a permanent one. Two things change it,
+and today's defaults are chosen to survive both unchanged:
 
 - **A phi-accrual failure detector** replaces the fixed timeout, which cuts the
   false-positive rate by treating a peer that is late as a probability rather
-  than a deadline.
+  than a deadline. This is still ahead.
 - **Membership with a downing strategy** makes the surviving side a fact
   rather than a guess. With a lease, the side that holds it keeps working and
   the other side stops, which is a real answer rather than two contradictory
-  local ones.
+  local ones. [Membership](clustering.md) has landed; the downing strategy
+  that acts on it has not, so a member that goes quiet blocks the cluster
+  instead of being written off.
 
 Two nodes is the worst case for every deterministic strategy and the best case
 for a lease, which is worth saying plainly, since two nodes is where most
