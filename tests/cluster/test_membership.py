@@ -9,10 +9,12 @@ import asyncio
 from datetime import timedelta
 
 import pytest
+from pydantic import ValidationError
 
 from tapio.actor import ActorPath, ActorSystem
 from tapio.cluster import Cluster, MemberStatus, WireMessage
 from tapio.cluster.daemon import daemon_uri
+from tapio.cluster.messages import Seeds
 from tapio.errors import ClusterError
 from tapio.testkit import assert_no_leaked_tasks
 from tests.cluster.conftest import Node, cluster_of, seeds_of
@@ -168,6 +170,16 @@ async def test_a_system_with_remoting_off_cannot_be_clustered():
             await system.terminate()
 
 
+def test_a_seed_list_cannot_be_empty():
+    # The daemon reads addresses[0] to decide whether it is the first seed,
+    # the one node allowed to form a cluster alone. An empty list has no
+    # answer to that, and it used to raise inside the daemon's receive loop
+    # and stop it. Refusing where the message is built keeps the failure with
+    # whoever wrote the list.
+    with pytest.raises(ValidationError):
+        Seeds(addresses=())
+
+
 async def test_a_clustered_system_still_leaves_an_empty_registry_behind():
     # The daemon publishes a well-known name, which is an entry in the same
     # registry the leak checks read. It has to go when the actor does.
@@ -180,6 +192,10 @@ async def test_a_clustered_system_still_leaves_an_empty_registry_behind():
 
             for node in nodes:
                 assert node.system.refs.paths() == ()
+                # Read directly rather than only through lookup: the alias
+                # lives in its own map, so this is the assertion that would
+                # catch one left behind.
+                assert node.system.refs.names() == ()
                 assert node.system.refs.lookup(_daemon_path(node)) is None
 
 
