@@ -5,10 +5,24 @@ prove they hold the shared secret. Three link frames, one round trip and a
 half:
 
 ```
-server -> client   server-hello   name, address, uid, protocol, version, nonce
+server -> client   server-hello   protocol, nonce
 client -> server   client-hello   name, address, uid, protocol, version, nonce, proof
-server -> client   welcome        proof
+server -> client   welcome        name, address, uid, version, proof
 ```
+
+**The side that was dialled says almost nothing first.** A listening port
+answers anything that can reach it, so whatever the first frame carries is
+readable by a scanner for the cost of one connection. It carries a challenge
+and the protocol number, and the name, address, incarnation and release travel
+in the welcome, which is written only after the dialler has answered that
+challenge. Before this the server volunteered all four to anyone, which handed
+over the deployment's identity and the exact library release it runs.
+
+The dialler still names itself in its answer, so the exposure is not
+symmetrical. It is not the same exposure either: a dialler chose that address,
+where a listener chose nobody. Closing the remaining half means a fourth frame
+and a second round trip on every connection, which is a real cost for a case
+that begins with dialling somewhere you did not mean to.
 
 Both proofs are HMACs of the other side's nonce, so neither end can be
 replayed at the other, and a peer holding no secret cannot pass for one that
@@ -74,14 +88,15 @@ class PeerIdentity:
 
 
 class _ServerHello(LinkFrame):
-    """What a listening system says first, including its challenge."""
+    """What a listening system says first: a challenge, and nothing about itself.
+
+    The protocol number is here so a peer speaking a different one is refused
+    before either side spends anything on crypto, and so the dialler refuses
+    without having named itself. Everything identifying is in the welcome.
+    """
 
     link: str = "server-hello"
-    system: str
-    address: str
-    uid: int
     protocol: int
-    version: str
     nonce: str
 
 
@@ -99,9 +114,18 @@ class _ClientHello(LinkFrame):
 
 
 class _Welcome(LinkFrame):
-    """The server's proof, which is what makes the authentication mutual."""
+    """The server's proof and its identity, written once the dialler has answered.
+
+    The proof is what makes the authentication mutual. The rest is what the
+    server-hello used to volunteer, moved to the first point at which the peer
+    reading it has proved it holds the secret.
+    """
 
     link: str = "welcome"
+    system: str
+    address: str
+    uid: int
+    version: str
     proof: str
 
 
@@ -133,26 +157,27 @@ async def accept(
         TimeoutError: If the peer stopped talking part-way through.
     """
     nonce = secrets.token_hex(_NONCE_BYTES)
-    await link.write_link(
-        _ServerHello(
-            system=address.system,
-            address=str(address),
-            uid=uid,
-            protocol=PROTOCOL_VERSION,
-            version=__version__,
-            nonce=nonce,
-        )
-    )
+    await link.write_link(_ServerHello(protocol=PROTOCOL_VERSION, nonce=nonce))
     hello = _read(_ClientHello, await link.read_link(timeout), "client-hello")
     _check_protocol(hello.protocol, hello.version)
     _check_proof(secret, nonce, hello.proof, who="the peer that dialled in")
     # Every reason to refuse a peer is checked before the welcome is sent. A
     # welcome followed by a close would look like a peer that vanished, when
-    # what really happened was a refusal with a reason.
+    # what really happened was a refusal with a reason. It is also what keeps
+    # this system's name, address, incarnation and release from reaching
+    # anything that has not answered the challenge.
     identity = _identify(
         hello.system, hello.address, hello.uid, hello.protocol, hello.version
     )
-    await link.write_link(_Welcome(proof=_proof(secret, hello.nonce)))
+    await link.write_link(
+        _Welcome(
+            system=address.system,
+            address=str(address),
+            uid=uid,
+            version=__version__,
+            proof=_proof(secret, hello.nonce),
+        )
+    )
     return identity
 
 
@@ -185,7 +210,10 @@ async def introduce(
         TimeoutError: If the peer stopped talking part-way through.
     """
     hello = _read(_ServerHello, await link.read_link(timeout), "server-hello")
-    _check_protocol(hello.protocol, hello.version)
+    # Checked before this system names itself, so a peer speaking a protocol
+    # this one does not is refused without having been told who dialled it.
+    # The peer's release is not known yet, which is the point of the change.
+    _check_protocol(hello.protocol, None)
     nonce = secrets.token_hex(_NONCE_BYTES)
     await link.write_link(
         _ClientHello(
@@ -200,8 +228,10 @@ async def introduce(
     )
     welcome = _read(_Welcome, await link.read_link(timeout), "welcome")
     _check_proof(secret, nonce, welcome.proof, who="the peer that was dialled")
+    # From the welcome, since the hello no longer carries any of it. The
+    # protocol is the one the hello declared and this system already agreed to.
     return _identify(
-        hello.system, hello.address, hello.uid, hello.protocol, hello.version
+        welcome.system, welcome.address, welcome.uid, hello.protocol, welcome.version
     )
 
 
@@ -236,7 +266,7 @@ def _check_proof(secret: SecretStr | None, nonce: str, proof: str, *, who: str) 
     raise HandshakeError(msg)
 
 
-def _check_protocol(protocol: int, version: str) -> None:
+def _check_protocol(protocol: int, version: str | None) -> None:
     """Refuse a peer that speaks a different wire protocol.
 
     The tapio version is not checked, only reported. Two nodes on different
@@ -245,19 +275,22 @@ def _check_protocol(protocol: int, version: str) -> None:
 
     Args:
         protocol: What the peer says it speaks.
-        version: What release the peer runs, for the error message.
+        version: What release the peer runs, for the error message, or `None`
+            when it has not said yet. A dialler checks the protocol against a
+            server-hello, which deliberately carries no release: naming it to
+            anything that opens a connection is what this frame stopped doing.
 
     Raises:
         HandshakeError: If the protocols differ.
     """
     if protocol == PROTOCOL_VERSION:
         return
+    runs = f"the peer runs tapio {version}, " if version is not None else ""
     msg = (
         f"the peer speaks wire protocol {protocol} and this system speaks "
-        f"{PROTOCOL_VERSION} (the peer runs tapio {version}, this system runs "
-        f"{__version__}). Both ends of a link speak the same protocol: a wire "
-        "format that half matches would corrupt a session rather than refuse "
-        "one."
+        f"{PROTOCOL_VERSION} ({runs}this system runs tapio {__version__}). "
+        "Both ends of a link speak the same protocol: a wire format that half "
+        "matches would corrupt a session rather than refuse one."
     )
     raise HandshakeError(msg)
 

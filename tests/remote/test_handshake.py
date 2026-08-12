@@ -2,16 +2,18 @@
 
 import asyncio
 import contextlib
+import json
 from collections.abc import AsyncIterator
 
 import pytest
 
-from tapio.actor import ActorSystem
+from tapio.actor import ActorSystem, DeadLetter
 from tapio.remote.address import Address
 from tapio.remote.codec import encode
-from tapio.remote.transport import FrameLink
+from tapio.remote.transport import FrameLink, connect, framed
+from tapio.version import __version__
 from tests.failures import eventually
-from tests.remote.peers import Tick, counting, dial, remoting
+from tests.remote.peers import GHOST, Tick, counting, dial, remoting
 
 
 @pytest.fixture
@@ -170,3 +172,112 @@ async def test_dialling_something_that_is_not_tapio_fails_as_a_handshake(
     finally:
         listener.close()
         await listener.wait_closed()
+
+
+async def test_the_first_frame_names_nothing_about_the_system(beta: ActorSystem):
+    # A listening port answers anything that can reach it, so whatever it says
+    # first is readable for the cost of one connection. It used to volunteer
+    # the system name, the canonical address, the incarnation uid and the exact
+    # release, which is a deployment's identity handed to a scanner.
+    port = beta.address.port
+    assert port is not None
+    link = await connect("127.0.0.1", port, max_frame_bytes=65536, ssl_context=None)
+    try:
+        hello = await link.read_link(2.0)
+
+        assert hello["link"] == "server-hello"
+        assert set(hello) == {"link", "protocol", "nonce"}
+        # Said another way, so that a field added later without thought fails
+        # this rather than passing it.
+        said = json.dumps(hello)
+        assert beta.name not in said
+        assert str(beta.address) not in said
+        assert str(beta.uid) not in said
+        assert __version__ not in said
+    finally:
+        await link.close()
+
+
+async def test_the_welcome_names_the_system_once_the_peer_has_answered(
+    beta: ActorSystem,
+):
+    # The identity is not withheld, only deferred to the first point at which
+    # the peer reading it has proved it holds the secret.
+    port = beta.address.port
+    assert port is not None
+    link = await connect("127.0.0.1", port, max_frame_bytes=65536, ssl_context=None)
+    try:
+        hello = await link.read_link(2.0)
+        await link.write_frame(
+            framed(
+                json.dumps(
+                    {
+                        "link": "client-hello",
+                        "system": "ghost",
+                        "address": str(GHOST),
+                        "uid": 99,
+                        "protocol": hello["protocol"],
+                        "version": __version__,
+                        "nonce": "0" * 32,
+                        "proof": "",
+                    }
+                ).encode()
+            )
+        )
+
+        welcome = await link.read_link(2.0)
+
+        assert welcome["link"] == "welcome"
+        assert welcome["system"] == beta.name
+        assert welcome["address"] == str(beta.address)
+        assert welcome["uid"] == beta.uid
+        assert welcome["version"] == __version__
+    finally:
+        await link.close()
+
+
+async def test_a_dialler_refuses_a_protocol_mismatch_before_naming_itself(
+    alpha: ActorSystem,
+):
+    # The check runs against the server-hello, so a peer speaking something
+    # else never learns who dialled it. The refusal has to survive not knowing
+    # the peer's release, since the hello no longer carries one.
+    said: list[bytes] = []
+
+    async def wrong_protocol(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        try:
+            writer.write(
+                framed(
+                    json.dumps(
+                        {"link": "server-hello", "protocol": 99, "nonce": "0" * 32}
+                    ).encode()
+                )
+            )
+            await writer.drain()
+            # Returns empty as soon as the dialler gives up, which is the
+            # assertion: it closed without having written anything.
+            with contextlib.suppress(asyncio.IncompleteReadError, ConnectionError):
+                said.append(await reader.read(4096))
+        finally:
+            writer.close()
+            with contextlib.suppress(OSError, asyncio.CancelledError):
+                await writer.wait_closed()
+
+    server = await asyncio.start_server(wrong_protocol, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        peer = Address(system="stranger", host="127.0.0.1", port=port)
+        letters: list[DeadLetter] = []
+        alpha.dead_letters.subscribe(letters.append)
+        remote = await alpha.resolve(f"{peer}/user/ticker#1", expect=Tick)
+        remote.tell(Tick(n=1))
+
+        # The dial is refused and the message accounted for.
+        await eventually(lambda: bool(letters))
+        # And nothing this system knows about itself went out with it.
+        assert alpha.name.encode() not in b"".join(said)
+    finally:
+        server.close()
+        await server.wait_closed()

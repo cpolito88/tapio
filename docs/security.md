@@ -35,6 +35,18 @@ version, and an HMAC of a server-supplied nonce with the shared secret. A bad
 HMAC or a protocol mismatch closes the connection with a logged reason, and
 nothing further is read.
 
+**The side that was dialled says almost nothing first.** Its opening frame is a
+challenge and the protocol number. The name, address, incarnation and release
+travel in the welcome, which is written only once the dialler has answered that
+challenge. A listening port answers anything that can reach it, so a first
+frame carrying those four would hand a scanner the deployment's identity and
+the exact release it runs for the cost of one connection.
+
+The dialler still names itself in its answer, so this is not symmetrical. It is
+not the same exposure either: a dialler chose the address it dialled, where a
+listener chose nobody. Closing the other half would need a fourth frame and a
+second round trip on every connection.
+
 Protocol equality is required rather than negotiated. An incompatible wire
 format that half works is worse than one that refuses.
 
