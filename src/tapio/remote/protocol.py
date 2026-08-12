@@ -34,4 +34,19 @@ PROTOCOL_VERSION: Final = 1
 
 It appears in every frame as `v`, and in both hellos, and a peer that answers
 with a different number is refused before anything else is read.
+
+**One contract change has happened without raising this**, deliberately, and it
+is recorded here because the rule above says it should have. The handshake
+stopped volunteering a system's identity to anything that could open a
+connection: the name, address, incarnation uid and release moved out of the
+server-hello and into the welcome. By the rule that is a contract change, since
+a reader has to know where those fields now are. The number stayed at 1 because
+nothing was deployed to be incompatible with, so the bump would have announced
+a break to nobody.
+
+The cost is that two nodes on either side of that change both say 1 and fail at
+the frame rather than at the number: a `malformed server-hello` or a
+`malformed welcome`, instead of a protocol mismatch naming both versions. If
+you are reading this while debugging exactly that, the answer is that one end
+predates the change. The next contract change raises the number.
 """

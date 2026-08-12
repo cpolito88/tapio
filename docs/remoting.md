@@ -117,14 +117,17 @@ A frame is a four-byte big-endian length followed by a JSON object:
 
 ```json
 {"v": 1, "to": "/user/checkout/session-7#f3a1c8",
- "from": "tapio://web@10.0.0.9:25520/system/promises/8bd2#8bd2",
+ "from": "tapio://web@10.0.0.9:25520",
  "t": "orders.protocol.Reserve",
  "p": {"sku": "X-1", "qty": 2}}
 ```
 
 `to` omits the address, because a frame arriving on an association is by
-definition addressed to the node that received it. `from` is complete, because
-the receiver may need to dial back.
+definition addressed to the node that received it. `from` is the sending
+*system* rather than a sending actor: a `tell` carries no sender, so there is
+none to name. It is a diagnostic, so a dead letter can say which node produced
+a frame it could not read. Replies go to the `reply_to` a message carries,
+which is a complete ref and the only thing that ever addresses an actor.
 
 `v` is the wire protocol version, and the handshake pins it. It is
 deliberately not the tapio version: a release that does not change the wire
