@@ -36,6 +36,7 @@ from tapio.remote.codec import (
     encode,
     frame_length,
 )
+from tapio.remote.protocol import PROTOCOL_VERSION
 from tapio.remote.registry import register_message
 from tapio.settings import RemoteSettings, TapioSettings
 from tapio.testkit import assert_no_leaked_tasks
@@ -110,6 +111,16 @@ def reserving(seen: list[Reserve]) -> Behavior[Reserve]:
         return Behaviors.same()
 
     return Behaviors.receive_message(on_message, msg_type=Reserve)
+
+
+def _body(fields: bytes) -> bytes:
+    """A frame body at the protocol this system speaks, plus the fields given.
+
+    The version is read rather than written out. These tests are about a
+    malformed body, not about the number, and one that restated it would fail
+    on the next protocol bump for a reason that has nothing to do with it.
+    """
+    return b'{"v":' + str(PROTOCOL_VERSION).encode() + b"," + fields + b"}"
 
 
 def tamper(frame: bytes, old: bytes, new: bytes) -> bytes:
@@ -363,17 +374,17 @@ def test_a_body_that_is_not_an_object_is_refused():
 
 def test_a_frame_missing_a_field_is_refused():
     with pytest.raises(MessageDecodingError, match="malformed frame"):
-        decode(framed(b'{"v":1,"to":"/user/x"}'), system="beta")
+        decode(framed(_body(b'"to":"/user/x"')), system="beta")
 
 
 def test_a_type_key_that_is_not_a_string_is_refused():
-    body = b'{"v":1,"to":"/user/x","t":17,"p":{}}'
+    body = _body(b'"to":"/user/x","t":17,"p":{}')
     with pytest.raises(MessageDecodingError, match="type key is a string"):
         decode(framed(body), system="beta")
 
 
 def test_a_recipient_that_is_not_a_path_is_refused():
-    body = b'{"v":1,"to":"user/x","t":"k","p":{}}'
+    body = _body(b'"to":"user/x","t":"k","p":{}')
     with pytest.raises(MessageDecodingError, match="an absolute path"):
         decode(framed(body), system="beta")
 
@@ -450,7 +461,8 @@ async def test_a_frame_from_a_future_version_dead_letters(
     beta: ActorSystem, letters: list[DeadLetter]
 ):
     stock = beta.spawn(reserving([]), "stock")
-    frame = tamper(encode(Reserved(sku="X-1"), to=stock.path), b'"v":1', b'"v":99')
+    speaks = f'"v":{PROTOCOL_VERSION}'.encode()
+    frame = tamper(encode(Reserved(sku="X-1"), to=stock.path), speaks, b'"v":99')
 
     beta.deliver_frame(frame)
 
