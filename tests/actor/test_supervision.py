@@ -19,6 +19,7 @@ from tapio.actor import (
     Signal,
     SupervisorStrategy,
 )
+from tapio.errors import BehaviorTypeError
 from tapio.testkit import assert_no_leaked_tasks
 from tests.failures import BoomError, Job, OtherError, eventually, recording
 
@@ -448,3 +449,71 @@ def test_restart_limits_belong_to_restart_alone():
 def test_a_strategy_reads_back_as_the_call_that_made_it():
     assert repr(SupervisorStrategy.stop()) == "SupervisorStrategy.stop()"
     assert "max_restarts=2" in repr(SupervisorStrategy.restart(max_restarts=2))
+
+
+async def test_a_restart_whose_behavior_cannot_be_rebuilt_stops_the_actor(
+    system: ActorSystem,
+):
+    # The restart runs the factory again, so a factory that worked once and
+    # fails the second time leaves nothing to restart into. Failing the same
+    # way forever is a loop, and stopping is the honest end of it.
+    builds: list[int] = []
+
+    def build(ctx: ActorContext[Job]) -> Behavior[Job]:
+        builds.append(len(builds))
+        if len(builds) > 1:
+            raise OtherError("the factory cannot build this twice")
+
+        async def on_message(message: Job) -> Behavior[Job]:
+            raise BoomError("boom")
+
+        return Behaviors.receive_message(on_message)
+
+    ref = system.spawn(
+        Behaviors.supervise(Behaviors.setup(build)).on_failure(RESTART, on=BoomError),
+        name="fragile",
+    )
+    ref.tell(Job(item=1))
+
+    # Built twice: once at spawn and once for the restart that then failed.
+    await eventually(lambda: len(builds) == 2)
+    # Stopped rather than restarted again, so the registry lets go of it.
+    await eventually(lambda: system.refs.lookup(ref.path) is None)
+
+
+async def test_a_restart_into_a_stopped_behavior_stops_the_actor(system: ActorSystem):
+    # Deferred construction is allowed to decide there is nothing to run. On a
+    # restart that means the actor goes rather than coming back inert.
+    builds: list[int] = []
+
+    def build(ctx: ActorContext[Job]) -> Behavior[Job]:
+        builds.append(len(builds))
+        if len(builds) > 1:
+            return Behaviors.stopped()
+
+        async def on_message(message: Job) -> Behavior[Job]:
+            raise BoomError("boom")
+
+        return Behaviors.receive_message(on_message)
+
+    ref = system.spawn(
+        Behaviors.supervise(Behaviors.setup(build)).on_failure(RESTART, on=BoomError),
+        name="giving-up",
+    )
+    ref.tell(Job(item=1))
+
+    await eventually(lambda: len(builds) == 2)
+    await eventually(lambda: system.refs.lookup(ref.path) is None)
+
+
+async def test_deferred_construction_that_never_settles_is_refused(
+    system: ActorSystem,
+):
+    # A setup returning another setup forever would spin at spawn time. It is
+    # called a loop after a bounded number of rounds and raises at the spawn,
+    # which is where somebody can act on it.
+    def build(ctx: ActorContext[Job]) -> Behavior[Job]:
+        return Behaviors.setup(build)
+
+    with pytest.raises(BehaviorTypeError, match="deferred construction"):
+        system.spawn(Behaviors.setup(build), name="never-settles")

@@ -418,11 +418,22 @@ class Association:
             )
             return
         self._watching_there.setdefault(watchee, {})[watcher.path] = watcher
-        self._write_link(
+        if self._write_link(
             Watch(
                 watchee=format_target(watchee),
                 watcher=format_target(watcher.path),
             )
+        ):
+            return
+        # The frame did not get queued, so the peer will never register this
+        # watch and no `Terminated` is coming from over there. Holding the
+        # entry anyway would leave the watcher waiting on a signal nothing is
+        # left to send, which is the failure death watch exists to prevent, so
+        # it is answered now instead.
+        self._forget_watch(watchee, watcher)
+        watcher.notify_unreachable(
+            self._host.peer_ref(self._peer, watchee),
+            f"the watch on {watchee} could not be sent to {self._peer}",
         )
 
     def unwatch(self, watchee: ActorPath, watcher: Watcher) -> None:
@@ -435,11 +446,8 @@ class Association:
             watchee: The actor over there.
             watcher: Who was watching.
         """
-        watchers = self._watching_there.get(watchee)
-        if watchers is None or watchers.pop(watcher.path, None) is None:
+        if not self._forget_watch(watchee, watcher):
             return
-        if not watchers:
-            del self._watching_there[watchee]
         if self._closing:
             return
         self._write_link(
@@ -448,6 +456,19 @@ class Association:
                 watcher=format_target(watcher.path),
             )
         )
+
+    def _forget_watch(self, watchee: ActorPath, watcher: Watcher) -> bool:
+        """Drop one local watcher of an actor over there.
+
+        Returns:
+            Whether there was one to drop.
+        """
+        watchers = self._watching_there.get(watchee)
+        if watchers is None or watchers.pop(watcher.path, None) is None:
+            return False
+        if not watchers:
+            del self._watching_there[watchee]
+        return True
 
     def adopt(self, link: Link, uid: int) -> None:
         """Take over a link the peer opened, in place of the one in hand.
@@ -523,14 +544,32 @@ class Association:
         """
         await asyncio.wait_for(asyncio.shield(self._ready), timeout)
 
-    def _write_link(self, frame: LinkFrame) -> None:
-        """Queue one of the transport's own frames behind the traffic in front."""
+    def _write_link(self, frame: LinkFrame) -> bool:
+        """Queue one of the transport's own frames behind the traffic in front.
+
+        Returns:
+            Whether it was queued. A `False` matters: a watch the peer never
+            hears about is a watch this end must not go on believing in, so
+            the caller has to be able to tell.
+        """
         ref = self._ref
         if ref is None:  # pragma: no cover - the endpoint binds before any send
-            return
+            return False
         body = framed(frame.model_dump_json().encode())
-        with contextlib.suppress(MailboxFullError):
-            ref.tell(LinkOut(frame=body, kind=type(frame).__name__))
+        kind = type(frame).__name__
+        try:
+            ref.tell(LinkOut(frame=body, kind=kind))
+        except MailboxFullError:
+            # Logged rather than swallowed. There is no user message to
+            # dead-letter, so this line is the only trace a dropped watch
+            # leaves, and it used to leave none at all.
+            _log.warning(
+                "dropped a %s frame for %s: the outbound buffer is full",
+                kind,
+                self._peer,
+            )
+            return False
+        return True
 
     def _with_heartbeat(
         self, timers: TimerScheduler[AssociationMessage]
@@ -569,14 +608,46 @@ class Association:
             await self._release()
         return Behaviors.same()
 
+    def _write_budget(self) -> float:
+        """How long a write has to reach a peer before the peer counts as gone.
+
+        The silence window, reused rather than configured twice. A peer this
+        system cannot get bytes into for as long as it would tolerate hearing
+        nothing is unreachable by the same standard, and a second setting
+        would only be a way for the two to disagree.
+        """
+        return self._host.settings.unreachable_after.total_seconds()
+
     async def _write(self, outbound: Outbound | LinkOut) -> None:
-        """Write one frame, or hold it until there is a link to write it to."""
+        """Write one frame, or hold it until there is a link to write it to.
+
+        The write is bounded. `drain` waits for the peer's receive window, and
+        a peer that holds a connection open while never reading would
+        otherwise park this actor here for good: the mailbox fills behind it,
+        the heartbeat tick that would notice never gets handled, and the
+        failure detector is never consulted. The deadline is what breaks that,
+        so the actor is always the one that gets its loop back.
+        """
         link = self._link
         if link is None:
             self._hold(outbound)
             return
         try:
-            await link.write_frame(outbound.frame)
+            async with asyncio.timeout(self._write_budget()):
+                await link.write_frame(outbound.frame)
+        except TimeoutError:
+            # Before OSError, which TimeoutError subclasses. A peer that
+            # accepts no bytes is a different diagnosis from a link that
+            # broke, and only this one means the peer should be given up on.
+            stalled = f"{self._peer} accepted no bytes for {self._write_budget():g}s"
+            if isinstance(outbound, Outbound):
+                self._dead_letter(
+                    outbound.payload,
+                    outbound.recipient,
+                    DeadLetterReason.LINK_FAILED,
+                    detail=stalled,
+                )
+            await self._declare_unreachable(stalled)
         except OSError as error:
             if isinstance(outbound, Outbound):
                 self._dead_letter(
@@ -615,13 +686,22 @@ class Association:
     async def _beat(self) -> None:
         """Tell a silent peer this end is still here, and judge its silence."""
         link = self._link
-        if link is None:
-            return
-        try:
-            await link.write_link(Heartbeat())
-        except OSError as error:
-            self.close(f"the link failed while heartbeating: {error}")
-            return
+        if link is not None:
+            try:
+                async with asyncio.timeout(self._write_budget()):
+                    await link.write_link(Heartbeat())
+            except TimeoutError:
+                await self._declare_unreachable(
+                    f"{self._peer} accepted no heartbeat for {self._write_budget():g}s"
+                )
+                return
+            except OSError as error:
+                self.close(f"the link failed while heartbeating: {error}")
+                return
+        # Judged whether or not there was a link to write to. Having no
+        # writable link is not a reason to skip the question: it is most of
+        # the reason to ask it, and skipping it meant an association stuck
+        # without a link was never given up on at all.
         await self._judge()
 
     async def _judge(self) -> None:
@@ -635,10 +715,28 @@ class Association:
         """
         if self._detector.is_available(self._host.dispatcher.now()):
             return
+        await self._declare_unreachable(
+            f"nothing has arrived from {self._peer} inside the silence window"
+        )
+
+    async def _declare_unreachable(self, why: str) -> None:
+        """Put a peer to the decider, and act on a decision to give up on it.
+
+        Two things reach this: silence, which the detector judges, and a write
+        that never drained, which needs no detector because it is direct
+        evidence. Both are the same verdict about the peer and both go through
+        the decider, so a clustered deployment changes how the answer is
+        reached in one place rather than two.
+
+        Args:
+            why: What prompted the question, for the log. The words that
+                travel to the quarantine and the dead letters are the
+                decider's, since it is the one that decided.
+        """
         decision = await self._decider.decide(self._peer)
         if not decision.down or self._closing:
             return
-        _log.warning("%s is unreachable: %s", self._peer, decision.detail)
+        _log.warning("%s is unreachable (%s): %s", self._peer, why, decision.detail)
         self._quarantined = True
         self._host.quarantine(self._peer, decision.detail)
         self.close(decision.detail)

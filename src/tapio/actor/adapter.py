@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Annotated, Any, TypeAlias, TypeVar, cast
 
 from pydantic import PlainSerializer, PlainValidator
 
-from tapio.actor.dead_letters import Carrier
+from tapio.actor.dead_letters import Carrier, DeadLetterReason
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
 from tapio.message import Message
@@ -114,9 +114,16 @@ class AdapterRef(ActorRef[U]):
 
     It is not an actor. It has no mailbox, no cell and no children, so it
     cannot be watched or asked. Watch the actor that owns it instead.
+
+    An adapter lives until its owner stops, or until somebody calls
+    [release][tapio.actor.adapter.AdapterRef.release]. Most actors want one
+    adapter per foreign protocol, made once in `setup`, and never release it.
+    An actor that makes one per request wants `release`, since otherwise every
+    request leaves an entry in the system's ref registry for as long as the
+    actor runs.
     """
 
-    __slots__ = ("_adapt", "_cell", "_validate")
+    __slots__ = ("_adapt", "_cell", "_released", "_validate")
 
     def __init__(
         self,
@@ -139,6 +146,38 @@ class AdapterRef(ActorRef[U]):
         self._cell = cell
         self._adapt = adapt
         self._validate = validate
+        self._released = False
+
+    @property
+    def is_released(self) -> bool:
+        """Whether this adapter has been released and now delivers nothing."""
+        return self._released
+
+    def release(self) -> None:
+        """Stop this adapter, without stopping the actor behind it.
+
+        For an actor that hands out an adapter per request rather than one per
+        protocol. Each adapter is addressable, so each is an entry in the
+        system's ref registry, and nothing releases one on its own: they are
+        bound to the actor rather than to an incarnation, which is what keeps
+        a restart from turning replies into dead letters. That is the right
+        default and the wrong one for a short-lived adapter, so this is the
+        way out of it.
+
+        Afterwards the ref stops resolving and what is told to it becomes a
+        dead letter, exactly as sending to a stopped actor does. Calling it
+        twice is harmless.
+        """
+        if self._released:
+            return
+        self._released = True
+        self._cell.release_adapter(self.path)
+
+    def _released_letter(self, message: Message) -> None:
+        """Account for a message that arrived after the adapter was released."""
+        self._cell.runtime.dead_letters.publish(
+            message, self.path, DeadLetterReason.ADAPTER_RELEASED
+        )
 
     @property
     def address(self) -> Address:
@@ -175,6 +214,12 @@ class AdapterRef(ActorRef[U]):
                 message does not satisfy its own model.
         """
         self._validate(message)
+        if self._released:
+            # Checked after validation, so the split holds either way: an
+            # error about the message still belongs to whoever wrote it, and
+            # a recipient that is gone is still a dead letter.
+            self._released_letter(message)
+            return
         envelope = AdaptedMessage(payload=message, adapt=self._adapt)
         cell = self._cell
         dispatcher = cell.runtime.dispatcher
@@ -203,6 +248,9 @@ class AdapterRef(ActorRef[U]):
                 message does not satisfy its own model.
         """
         self._validate(message)
+        if self._released:
+            self._released_letter(message)
+            return
         cell = self._cell
         if not cell.runtime.dispatcher.is_current():
             msg = (

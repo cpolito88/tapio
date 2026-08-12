@@ -18,7 +18,7 @@ from tapio import (
     SupervisorStrategy,
 )
 from tapio.actor import ActorContext, ActorRef, LocalActorRef
-from tapio.actor.adapter import AdaptedMessage
+from tapio.actor.adapter import AdaptedMessage, AdapterRef
 from tapio.errors import BehaviorTypeError
 from tests.failures import BoomError, eventually
 
@@ -395,3 +395,101 @@ def test_the_wrapper_and_the_adapter_render_what_they_are():
     # A dump renders the function by name rather than raising, which is all
     # anyone needs from one.
     assert wrapper.model_dump()["adapt"].endswith("as_quoted")
+
+
+async def test_a_released_adapter_leaves_the_registry_and_stops_delivering(
+    system: ActorSystem,
+):
+    # An adapter is bound to the actor, so nothing releases one on its own.
+    # That is right for the adapter-per-protocol case and wrong for an actor
+    # that hands one out per request, which would otherwise leave an entry in
+    # the registry for every request it ever served.
+    seen: list[str] = []
+    handed_out: list[ActorRef[Price]] = []
+
+    def build(ctx: ActorContext[Shop]) -> Behavior[Shop]:
+        handed_out.append(ctx.message_adapter(lambda p: Quoted(cents=p.cents), Price))
+
+        async def on_message(message: Shop) -> Behavior[Shop]:
+            if isinstance(message, Quoted):
+                seen.append(f"quoted {message.cents}")
+            return Behaviors.same()
+
+        return Behaviors.receive_message(on_message)
+
+    system.spawn(Behaviors.setup(build), name="shop")
+    await eventually(lambda: len(handed_out) == 1)
+    adapter = handed_out[0]
+
+    # It works, and it is addressable, exactly as before.
+    assert system.refs.lookup(adapter.path) is adapter
+    adapter.tell(Price(cents=100))
+    await eventually(lambda: seen == ["quoted 100"])
+
+    letters: list[DeadLetter] = []
+    system.dead_letters.subscribe(letters.append)
+    assert isinstance(adapter, AdapterRef)
+    adapter.release()
+
+    # The registry entry is gone, so a ref that crossed a link resolves to
+    # nothing rather than to whoever holds that path next.
+    assert system.refs.lookup(adapter.path) is None
+    assert adapter.is_released
+
+    # And what is told to it is accounted for rather than delivered, even
+    # though the actor behind it is still running.
+    adapter.tell(Price(cents=200))
+    await eventually(lambda: bool(letters))
+    assert letters[0].reason == DeadLetterReason.ADAPTER_RELEASED
+    assert letters[0].message == Price(cents=200)
+
+    # `offer` goes the same way. There is no capacity to wait for once the
+    # translation is gone, so it accounts for the message rather than parking.
+    await adapter.offer(Price(cents=300))
+    await eventually(lambda: len(letters) == 2)
+    assert letters[1].reason == DeadLetterReason.ADAPTER_RELEASED
+    assert seen == ["quoted 100"]
+
+
+async def test_releasing_an_adapter_twice_is_harmless(system: ActorSystem):
+    handed_out: list[ActorRef[Price]] = []
+
+    def build(ctx: ActorContext[Shop]) -> Behavior[Shop]:
+        handed_out.append(ctx.message_adapter(lambda p: Quoted(cents=p.cents), Price))
+
+        async def on_message(message: Shop) -> Behavior[Shop]:
+            return Behaviors.same()
+
+        return Behaviors.receive_message(on_message)
+
+    system.spawn(Behaviors.setup(build), name="shop")
+    await eventually(lambda: len(handed_out) == 1)
+
+    adapter = handed_out[0]
+    assert isinstance(adapter, AdapterRef)
+    adapter.release()
+    adapter.release()
+
+    assert system.refs.lookup(adapter.path) is None
+
+
+async def test_an_actor_that_stops_still_releases_the_adapters_it_kept(
+    system: ActorSystem,
+):
+    # Releasing is for the per-request case. The ordinary one, an adapter made
+    # in setup and never released, must still leave nothing behind.
+    handed_out: list[ActorRef[Price]] = []
+
+    def build(ctx: ActorContext[Shop]) -> Behavior[Shop]:
+        handed_out.append(ctx.message_adapter(lambda p: Quoted(cents=p.cents), Price))
+
+        async def on_message(message: Shop) -> Behavior[Shop]:
+            return Behaviors.stopped()
+
+        return Behaviors.receive_message(on_message)
+
+    ref = system.spawn(Behaviors.setup(build), name="shop")
+    await eventually(lambda: len(handed_out) == 1)
+    ref.tell(Ask())
+
+    await eventually(lambda: system.refs.lookup(handed_out[0].path) is None)

@@ -274,7 +274,15 @@ class RemoteRef(ActorRef[T]):
             FrameTooLargeError: If the frame is over the size limit.
         """
         try:
-            return encode(message, to=self.path, max_frame_bytes=self._max_frame_bytes)
+            # The sending system, not a sending actor. A `tell` carries no
+            # sender, so there is none to name, and this is what lets a dead
+            # letter over there say which node produced the frame.
+            return encode(
+                message,
+                to=self.path,
+                sender=self._runtime.address,
+                max_frame_bytes=self._max_frame_bytes,
+            )
         except MessageRegistrationError as error:
             raise MessageEncodingError(str(error)) from error
         except PydanticSerializationError as error:

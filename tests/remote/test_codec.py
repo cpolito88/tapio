@@ -29,7 +29,13 @@ from tapio.errors import (
     RefResolutionError,
 )
 from tapio.remote.address import Address, format_ref
-from tapio.remote.codec import LENGTH_PREFIX, decode, encode, frame_length
+from tapio.remote.codec import (
+    LENGTH_PREFIX,
+    UndecodableFrame,
+    decode,
+    encode,
+    frame_length,
+)
 from tapio.remote.registry import register_message
 from tapio.settings import RemoteSettings, TapioSettings
 from tapio.testkit import assert_no_leaked_tasks
@@ -177,12 +183,21 @@ async def test_a_frame_names_its_recipient_without_an_address(alpha: ActorSystem
     assert decoded.to == stock.path
 
 
-async def test_a_frame_names_its_sender_in_full(alpha: ActorSystem):
-    # The sender needs a full address, since the receiver may have to dial a
-    # system it has never talked to.
+async def test_a_frame_names_the_system_that_sent_it(alpha: ActorSystem):
+    # The sending system, not a sending actor. A `tell` carries no sender, so
+    # there is no actor to name; what this is for is letting a dead letter on
+    # the far side say which node produced the frame.
     stock = alpha.spawn(collecting([]), "stock")
-    frame = encode(Reserved(sku="X-1"), to=stock.path, sender=stock)
-    assert decode(frame, system="alpha").sender == format_ref(alpha.address, stock.path)
+    frame = encode(Reserved(sku="X-1"), to=stock.path, sender=alpha.address)
+    assert decode(frame, system="alpha").sender == str(alpha.address)
+
+
+async def test_a_frame_with_no_sender_decodes_to_none(alpha: ActorSystem):
+    # Nothing requires the field, and a peer that omits it is readable.
+    stock = alpha.spawn(collecting([]), "stock")
+    assert decode(
+        encode(Reserved(sku="X-1"), to=stock.path), system="alpha"
+    ).sender is (None)
 
 
 async def test_a_type_key_is_a_registry_key_and_not_an_import_path(alpha: ActorSystem):
@@ -213,7 +228,11 @@ async def test_a_message_encoded_on_one_system_arrives_on_the_other(
     cart = alpha.spawn(collecting([]), "cart")
 
     beta.deliver_frame(
-        encode(Reserve(sku="X-1", qty=2, reply_to=cart), to=stock.path, sender=cart),
+        encode(
+            Reserve(sku="X-1", qty=2, reply_to=cart),
+            to=stock.path,
+            sender=alpha.address,
+        ),
         peer=alpha.address,
     )
 
@@ -231,7 +250,11 @@ async def test_a_reply_to_that_crossed_a_frame_reaches_the_original_actor(
     link(beta, alpha)
 
     beta.deliver_frame(
-        encode(Reserve(sku="X-1", qty=2, reply_to=cart), to=stock.path, sender=cart),
+        encode(
+            Reserve(sku="X-1", qty=2, reply_to=cart),
+            to=stock.path,
+            sender=alpha.address,
+        ),
         peer=alpha.address,
     )
 
@@ -249,7 +272,11 @@ async def test_a_reply_can_travel_back_as_a_frame_too(
     cart = alpha.spawn(collecting(answers), "cart")
 
     beta.deliver_frame(
-        encode(Reserve(sku="X-1", qty=2, reply_to=cart), to=stock.path, sender=cart),
+        encode(
+            Reserve(sku="X-1", qty=2, reply_to=cart),
+            to=stock.path,
+            sender=alpha.address,
+        ),
         peer=alpha.address,
     )
     await eventually(lambda: len(requests) == 1)
@@ -555,3 +582,20 @@ async def test_two_systems_terminate_leaving_nothing_behind():
 
     assert one.refs.paths() == ()
     assert two.refs.paths() == ()
+
+
+async def test_a_dead_letter_names_the_system_a_bad_frame_came_from(
+    alpha: ActorSystem, beta: ActorSystem, letters: list[DeadLetter]
+):
+    # The point of carrying `from` at all. A frame refused for its type key
+    # has no message to report, so without it a subscriber learns that
+    # something arrived and nothing about where from.
+    stock = beta.spawn(collecting([]), "stock")
+    frame = encode(Reserved(sku="X-1"), to=stock.path, sender=alpha.address)
+
+    beta.deliver_frame(tamper(frame, f"{__name__}.Reserved".encode(), b"nope.Nope"))
+
+    assert len(letters) == 1
+    assert letters[0].reason == DeadLetterReason.UNKNOWN_MESSAGE_TYPE
+    assert isinstance(letters[0].message, UndecodableFrame)
+    assert letters[0].message.sender == str(alpha.address)
