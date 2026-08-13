@@ -349,9 +349,7 @@ class RemoteEndpoint:
         caller is a handshake that has nothing left to say. The task is held
         until it finishes, since the loop would not hold it for us.
         """
-        task = self.dispatcher.spawn_task(
-            link.close(), name=f"tapio-link-close:{peer}"
-        )
+        task = self.dispatcher.spawn_task(link.close(), name=f"tapio-link-close:{peer}")
         self._closing_links.add(task)
         task.add_done_callback(self._closing_links.discard)
 

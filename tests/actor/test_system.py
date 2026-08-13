@@ -213,7 +213,7 @@ async def test_the_shutdown_after_a_guardian_failure_is_a_task_the_system_holds(
         with pytest.raises(BoomError):
             await system.when_terminated()
 
-        held = system._terminator  # noqa: SLF001
+        held = system._terminator
         assert held is not None
         assert held.done()
 
