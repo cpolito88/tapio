@@ -22,11 +22,7 @@ answering their own callers while they say it. Then note that healing the
 network on its own repairs nothing: the last two lines only happen because
 somebody asked for them.
 
-Run it with:
-
-```
-uv run python -m tapio_examples.partition
-```
+Run it with `uv run python -m tapio_examples.partition`.
 """
 
 import asyncio

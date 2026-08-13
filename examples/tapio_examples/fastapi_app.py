@@ -31,11 +31,7 @@ Before that, twenty requests arrive at once and the count is exactly right,
 with no lock in the application code, because one actor handles one message at
 a time.
 
-Run it with:
-
-```
-uv run python -m tapio_examples.fastapi_app
-```
+Run it with `uv run python -m tapio_examples.fastapi_app`.
 """
 
 import asyncio

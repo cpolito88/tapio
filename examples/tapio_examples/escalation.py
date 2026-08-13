@@ -25,11 +25,7 @@ What to watch in the output: the ticker keeps counting across the restart, and
 the second scenario ends with the original error, carrying the path it climbed
 through.
 
-Run it with:
-
-```
-uv run python -m tapio_examples.escalation
-```
+Run it with `uv run python -m tapio_examples.escalation`.
 """
 
 import asyncio

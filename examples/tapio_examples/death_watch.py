@@ -18,11 +18,7 @@ one actor can know about another it does not supervise.
 What to watch in the output: the registry never checks whether a session is
 alive. It is told, and the count afterwards shows the entry is gone.
 
-Run it with:
-
-```
-uv run python -m tapio_examples.death_watch
-```
+Run it with `uv run python -m tapio_examples.death_watch`.
 """
 
 import asyncio

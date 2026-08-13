@@ -28,11 +28,7 @@ worker ever had more than the three it granted waiting on it. That number is
 chosen by the workers and obeyed by the producer, and nothing in the transport
 enforces it.
 
-Run it with:
-
-```
-uv run python -m tapio_examples.worker_pool_remote
-```
+Run it with `uv run python -m tapio_examples.worker_pool_remote`.
 """
 
 import asyncio

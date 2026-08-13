@@ -11,11 +11,7 @@ What to watch in the output: the reply reports 3, not 1. Messages sent to one
 actor from one place arrive in order, so all three increments are applied
 before the query behind them.
 
-Run it with:
-
-```
-uv run python -m tapio_examples.counter
-```
+Run it with `uv run python -m tapio_examples.counter`.
 """
 
 import asyncio

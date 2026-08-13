@@ -21,11 +21,7 @@ What to watch in the output: greetings 1 and 2 arrived before the template and
 stash is what makes that true. Without it the first two would have been
 answered wrongly, or not at all.
 
-Run it with:
-
-```
-uv run python -m tapio_examples.stash_on_startup
-```
+Run it with `uv run python -m tapio_examples.stash_on_startup`.
 """
 
 import asyncio

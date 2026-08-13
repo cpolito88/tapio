@@ -20,11 +20,7 @@ What to watch in the output: the node name in front of every line. The request
 is written by `home`, handled by `away`, and the reply arrives back at `home`
 without either actor knowing there is a link between them.
 
-Run it with:
-
-```
-uv run python -m tapio_examples.two_nodes
-```
+Run it with `uv run python -m tapio_examples.two_nodes`.
 """
 
 import asyncio

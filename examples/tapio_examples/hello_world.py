@@ -12,11 +12,7 @@ What to watch in the output: the greeter's line comes first, then the
 listener's, because the reply is a second message and cannot overtake the
 handler that sends it. Both actors stop when the system terminates.
 
-Run it with:
-
-```
-uv run python -m tapio_examples.hello_world
-```
+Run it with `uv run python -m tapio_examples.hello_world`.
 """
 
 import asyncio
