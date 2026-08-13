@@ -171,6 +171,11 @@ class ActorSystem:
         self._log: ActorLogAdapter = actor_logger(self._root)
         self._terminating = False
         self._terminated: asyncio.Event = asyncio.Event()
+        # A guardian failure terminates the tree from a task nobody awaits.
+        # The loop holds only a weak reference to a task, so the system holds
+        # this one: a shutdown sweep collected halfway through would leave the
+        # tree half-stopped with nothing to say so.
+        self._terminator: asyncio.Task[None] | None = None
         self._failure: BaseException | None = None
 
         self._user: ActorCell[_GuardianMessage] = self._guardian_cell("user")
@@ -570,7 +575,7 @@ class ActorSystem:
             self._failure = error
         if self._terminating:
             return
-        self._runtime.dispatcher.spawn_task(
+        self._terminator = self._runtime.dispatcher.spawn_task(
             self.terminate(), name=f"tapio-terminate:{path}"
         )
 

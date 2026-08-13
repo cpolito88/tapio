@@ -211,6 +211,10 @@ class AssociationHost(Protocol):
         """Drop an association that has stopped, so the next send dials afresh."""
         ...
 
+    def close_link_later(self, link: Link, peer: Address) -> None:
+        """Close a link nobody is going to use, in a task the endpoint holds."""
+        ...
+
 
 class Association:
     """One link to one peer: the actor's state, and the reader behind it.
@@ -484,9 +488,10 @@ class Association:
             uid: The peer's incarnation uid, as that handshake established it.
         """
         if self._closing:
-            self._host.dispatcher.spawn_task(
-                link.close(), name=f"tapio-link-close:{self._peer}"
-            )
+            # This association is going away and will not adopt anything, but
+            # the link still has to be released. The endpoint closes it, since
+            # it outlives every association and drains these in its own close.
+            self._host.close_link_later(link, self._peer)
             return
         self._uid = uid
         # The writer waits until the new link has caught up with what is

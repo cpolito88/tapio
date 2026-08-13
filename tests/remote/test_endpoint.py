@@ -8,6 +8,7 @@ import pytest
 from tapio.actor import ActorContext, ActorSystem, Behavior, Behaviors
 from tapio.errors import InsecureRemoteConfig, MessageTypeError, RefResolutionError
 from tapio.remote.address import Address
+from tapio.remote.transport import LinkFrame
 from tapio.settings import RemoteSettings, TapioSettings
 from tapio.testkit import assert_no_leaked_tasks
 from tests.failures import eventually
@@ -278,3 +279,72 @@ async def refused(port: int) -> None:
     """Assert that nothing answers on a port."""
     with pytest.raises(ConnectionRefusedError):
         await asyncio.open_connection("127.0.0.1", port)
+
+
+async def test_a_refused_link_is_closed_by_a_task_the_endpoint_holds():
+    # The event loop keeps only a weak reference to a task, so a close running
+    # with nobody holding it can be collected before the socket is released.
+    closed: list[str] = []
+
+    with assert_no_leaked_tasks():
+        system = ActorSystem("alpha", remoting())
+        endpoint = system.remote
+        assert endpoint is not None
+
+        endpoint.close_link_later(_SlowClosingLink(0.05, closed), _elsewhere())
+        await asyncio.sleep(0)
+        # Nothing outside the endpoint refers to the task at this point.
+        gc.collect()
+
+        await system.terminate()
+
+    assert closed == ["closed"]
+
+
+async def test_closing_the_endpoint_waits_for_a_link_it_is_still_releasing():
+    # The tree stops the associations, but a refused link belongs to nobody,
+    # so the endpoint's own close is the last chance to finish releasing it.
+    # The close here takes long enough that the turns close() would take
+    # anyway are not enough: it has to actually wait.
+    closed: list[str] = []
+
+    with assert_no_leaked_tasks():
+        system = ActorSystem("alpha", remoting())
+        endpoint = system.remote
+        assert endpoint is not None
+
+        endpoint.close_link_later(_SlowClosingLink(0.2, closed), _elsewhere())
+        await endpoint.close()
+
+        assert closed == ["closed"]
+        await system.terminate()
+
+
+def _elsewhere() -> Address:
+    """An address to name in a close, which nothing dials."""
+    return Address(system="beta", host="127.0.0.1", port=1)
+
+
+class _SlowClosingLink:
+    """A link whose close takes long enough to outlast an incidental turn."""
+
+    def __init__(self, takes: float, closed: list[str]) -> None:
+        self._takes = takes
+        self._closed = closed
+
+    @property
+    def peer(self) -> str:
+        return "127.0.0.1:1"
+
+    async def read_frame(self) -> bytes:
+        raise AssertionError("a refused link is never read")
+
+    async def write_frame(self, data: bytes) -> None:
+        raise AssertionError("a refused link is never written")
+
+    async def write_link(self, message: LinkFrame) -> None:
+        raise AssertionError("a refused link is never written")
+
+    async def close(self) -> None:
+        await asyncio.sleep(self._takes)
+        self._closed.append("closed")
