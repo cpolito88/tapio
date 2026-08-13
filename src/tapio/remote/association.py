@@ -708,7 +708,7 @@ class Association:
         """Ask whether a peer that has stopped answering should be given up on.
 
         The detector says how it looks and the decider says what to do, and
-        neither decision is made inline here. In v0.1 the first is a fixed
+        neither decision is made inline here. Today the first is a fixed
         timeout and the second is always yes. Both are interfaces because
         clustering replaces them, and the association is written against the
         interfaces so that nothing here changes when it does.

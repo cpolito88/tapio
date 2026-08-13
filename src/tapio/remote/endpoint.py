@@ -159,8 +159,8 @@ class RemoteEndpoint:
         """Who decides which addresses this system may associate with.
 
         [StaticPeers][tapio.remote.peers.StaticPeers] until something replaces
-        it, which is the v0.1 answer: every address that was written down is a
-        peer, minus the ones a detector here gave up on.
+        it: every address that was written down is a peer, minus the ones a
+        detector here gave up on.
         """
         return self._peers
 

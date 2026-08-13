@@ -4,7 +4,7 @@ This is the part of remoting that cannot be made to feel local. A partition, a
 long pause and a peer that died all look the same from one node: the frames
 stop. So a system has to guess, and every guess it makes can be wrong.
 
-The guess is split in two, because v0.2 replaces each half separately:
+The guess is split in two, so that each half can be replaced on its own:
 
 * A [FailureDetector][tapio.remote.failure.FailureDetector] says whether a
   peer still looks alive from here. Today that is a fixed timeout. Clustering
@@ -20,10 +20,11 @@ so the day the answer stops being a constant, nothing above it changes.
 
 **The verdict can be false and there is no fix for that inside one node.**
 Both sides of a partition will declare the other dead and both will be locally
-correct. Resolving it needs membership and a quorum. v0.1 chooses to fail fast
-and stay failed: for request/response and work distribution, wrongly deciding
-a peer is dead costs a retry, which is recoverable, and waiting forever costs
-availability, which often is not.
+correct. Resolving it needs membership and a quorum, which a single system does
+not have, so it fails fast and stays failed instead. For request/response and
+work distribution that is the better trade: wrongly deciding a peer is dead
+costs a retry, which is recoverable, and waiting forever costs availability,
+which often is not.
 """
 
 from typing import Protocol, final, runtime_checkable
@@ -69,11 +70,11 @@ class FailureDetector(Protocol):
 class DeadlineDetector:
     """A fixed timeout: alive until nothing has arrived for long enough.
 
-    The simplest detector that can work, and the honest one for v0.1. It has
-    no opinion about how variable a network is, so the timeout has to be set
-    well above the peer's heartbeat interval or a slow moment reads as a dead
-    peer. Phi-accrual, which learns the distribution instead of being told a
-    number, arrives with clustering and fits behind the same interface.
+    The simplest detector that can work, and an honest one to start from. It
+    has no opinion about how variable a network is, so the timeout has to be
+    set well above the peer's heartbeat interval or a slow moment reads as a
+    dead peer. Phi-accrual, which learns the distribution instead of being told
+    a number, fits behind the same interface.
     """
 
     __slots__ = ("_last", "_window")
