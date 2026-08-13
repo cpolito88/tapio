@@ -20,6 +20,7 @@ from collections.abc import Coroutine
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
+from tapio.logging import runtime_logger
 from tapio.message import Message
 
 if TYPE_CHECKING:
@@ -28,6 +29,24 @@ if TYPE_CHECKING:
 __all__ = ["TimerScheduler"]
 
 T = TypeVar("T", bound=Message)
+
+_log = runtime_logger("runtime")
+
+_MAX_CATCH_UP = 10
+"""How many missed ticks a fixed-rate timer sends in one burst after a stall.
+
+Catching up is the whole point of a fixed rate, but only over the gaps it was
+meant for: a slow handler, a busy loop, a moment of scheduling noise. A process
+suspended for an hour leaves a one-second timer thousands of ticks behind, and
+sending all of them floods the actor's mailbox with work whose moment has
+passed. On a bounded lane most of it becomes dead letters anyway.
+
+So a stall longer than this many intervals is treated as a gap rather than as a
+debt. The ticks that fit are sent, the rest are dropped with a log line saying
+how many, and the schedule resynchronises to the clock. An actor that must
+account for every interval should read the clock in its handler rather than
+count ticks, because a tick can always be lost to an overflowing mailbox.
+"""
 
 
 class TimerScheduler(Generic[T]):
@@ -137,6 +156,11 @@ class TimerScheduler(Generic[T]):
         keeping up. Prefer `start_fixed_delay` unless something downstream is
         really counting the ticks.
 
+        The burst is capped at ten ticks. A longer stall drops what it missed,
+        logs how many, and picks the schedule up from the clock, because
+        thousands of ticks whose moment has passed are worth less to the actor
+        than the mailbox space they take.
+
         Args:
             key: What to call this timer.
             message: What to send, checked now as for `start_single`.
@@ -157,7 +181,7 @@ class TimerScheduler(Generic[T]):
         every = _interval_seconds(interval)
         first = every if initial_delay is None else _seconds(initial_delay, "delay")
         self._cell.validate(message)
-        self._start(key, self._fixed_rate(message, every, first))
+        self._start(key, self._fixed_rate(key, message, every, first))
 
     def cancel(self, key: str) -> None:
         """Stop a timer. Cancelling one that is not running is harmless.
@@ -215,19 +239,57 @@ class TimerScheduler(Generic[T]):
             self._fire(message)
             await asyncio.sleep(interval)
 
-    async def _fixed_rate(self, message: T, interval: float, initial: float) -> None:
+    async def _fixed_rate(
+        self, key: str, message: T, interval: float, initial: float
+    ) -> None:
         """Send against a schedule, catching up on ticks a stall cost."""
         clock = self._cell.runtime.dispatcher
         next_at = clock.now() + initial
+        late = 0
         while True:
             delay = next_at - clock.now()
             if delay > 0:
                 await asyncio.sleep(delay)
+                late = 0
+            else:
+                late += 1
+                if late > _MAX_CATCH_UP:
+                    next_at = self._give_up_catching_up(key, next_at, interval)
+                    late = 0
+                else:
+                    # A yield between catch-up ticks. Without one the whole
+                    # burst runs in a single loop iteration, and every other
+                    # actor on this loop waits for it.
+                    await asyncio.sleep(0)
             self._fire(message)
             # Advancing the schedule rather than the clock is what makes this
             # a rate. After a stall the next delay is negative, and the missed
-            # ticks go out one after another.
+            # ticks go out one after another, up to the cap.
             next_at += interval
+
+    def _give_up_catching_up(self, key: str, next_at: float, interval: float) -> float:
+        """Abandon the ticks a long stall cost and resynchronise to the clock.
+
+        Args:
+            key: The timer, for the log line.
+            next_at: When the tick now due was scheduled for.
+            interval: The scheduled gap between sends.
+
+        Returns:
+            The schedule to carry on from, which is now.
+        """
+        now = self._cell.runtime.dispatcher.now()
+        dropped = int((now - next_at) / interval)
+        if dropped > 0:
+            _log.warning(
+                "%s: timer %r fell %d ticks behind and dropped them; "
+                "the first %d were sent",
+                self._cell.path,
+                key,
+                dropped,
+                _MAX_CATCH_UP,
+            )
+        return now
 
     def _fire(self, message: T) -> None:
         """Put one tick on the actor's own user lane.

@@ -140,6 +140,27 @@ class ActorSystem:
             if self._settings.remote is not None
             else None
         )
+        try:
+            self._build(name)
+        except BaseException:
+            # The port is bound by now, and nothing else has a reference to
+            # this half-built system to close it later. Leaving it open means
+            # the next attempt on a fixed port fails to bind, which reads as a
+            # configuration problem rather than as the failure that caused it.
+            if self._listener is not None:
+                self._listener.close()
+            raise
+
+    def _build(self, name: str) -> None:
+        """Finish construction, with the listening socket already bound.
+
+        Split out so that `__init__` has one place to close that socket if any
+        of this raises. `Dispatcher.from_running_loop` alone is enough reason:
+        it runs after the bind and raises when there is no running loop.
+
+        Args:
+            name: The system name, and the authority in every path below it.
+        """
         self._address = _canonical_address(name, self._settings.remote, self._listener)
         dispatcher = Dispatcher.from_running_loop()
         self._dead_letters = DeadLetterOffice(
@@ -171,6 +192,11 @@ class ActorSystem:
         self._log: ActorLogAdapter = actor_logger(self._root)
         self._terminating = False
         self._terminated: asyncio.Event = asyncio.Event()
+        # A guardian failure terminates the tree from a task nobody awaits.
+        # The loop holds only a weak reference to a task, so the system holds
+        # this one: a shutdown sweep collected halfway through would leave the
+        # tree half-stopped with nothing to say so.
+        self._terminator: asyncio.Task[None] | None = None
         self._failure: BaseException | None = None
 
         self._user: ActorCell[_GuardianMessage] = self._guardian_cell("user")
@@ -570,7 +596,7 @@ class ActorSystem:
             self._failure = error
         if self._terminating:
             return
-        self._runtime.dispatcher.spawn_task(
+        self._terminator = self._runtime.dispatcher.spawn_task(
             self.terminate(), name=f"tapio-terminate:{path}"
         )
 

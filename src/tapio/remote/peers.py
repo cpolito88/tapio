@@ -6,7 +6,7 @@ dialable, and the only reason to refuse one is that this system decided the
 peer is gone (`quarantine`, see
 [failure][tapio.remote.failure]). That is what
 [StaticPeers][tapio.remote.peers.StaticPeers] implements, and it is the whole
-of the v0.1 answer.
+answer for a system that has no membership to consult.
 
 Clustering answers the same question from membership instead: a member that
 the cluster has downed is refused, and it is refused for a reason every node
@@ -79,10 +79,10 @@ class PeerProvider(Protocol):
 class StaticPeers:
     """Every address is a peer, until this system gives up on one.
 
-    The v0.1 answer, and the right one for a pair of systems that were told
-    about each other. There is no membership to consult, so the only peers
-    that are refused are the ones a failure detector here gave up on, and the
-    only way back is for somebody to say so.
+    The right answer for a pair of systems that were told about each other
+    rather than joined into a cluster. There is no membership to consult, so
+    the only peers that are refused are the ones a failure detector here gave
+    up on, and the only way back is for somebody to say so.
     """
 
     __slots__ = ("_refused",)

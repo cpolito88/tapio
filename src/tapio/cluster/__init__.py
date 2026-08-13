@@ -8,7 +8,8 @@ The answer is eventually consistent membership merged pairwise between nodes.
 There is no consensus algorithm here and there will not be one. The leader is
 `sorted(members)[0]` computed locally from a converged view, so no election
 protocol exists and none can be wrong. What genuinely needs agreement, which
-side of a partition survives, is a later milestone with strategies of its own.
+side of a partition survives, is not decided here and needs strategies of its
+own.
 
 Unlike [remote][tapio.remote], this package re-exports its public names,
 because nothing in the runtime imports it: clustering depends on the actor

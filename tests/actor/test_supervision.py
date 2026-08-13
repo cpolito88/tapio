@@ -517,3 +517,113 @@ async def test_deferred_construction_that_never_settles_is_refused(
 
     with pytest.raises(BehaviorTypeError, match="deferred construction"):
         system.spawn(Behaviors.setup(build), name="never-settles")
+
+
+def layered(seen: list[str], strict: SupervisorStrategy) -> Behavior[Job]:
+    """An actor with two restart strategies, one per exception type.
+
+    `Job(fail=True)` raises `BoomError`, governed by `strict`. `Job(item=-1)`
+    raises `OtherError`, governed by a strategy generous enough never to stop
+    the actor itself. The outer wrapper is checked first, so `strict` is the
+    outer one.
+    """
+
+    def build(ctx: ActorContext[Job]) -> Behavior[Job]:
+        seen.append("setup")
+
+        async def on_message(message: Job) -> Behavior[Job]:
+            if message.fail:
+                raise BoomError("boom")
+            if message.item < 0:
+                raise OtherError("other")
+            return Behaviors.same()
+
+        async def on_signal(ctx: ActorContext[Job], signal: Signal) -> Behavior[Job]:
+            seen.append(type(signal).__name__)
+            return Behaviors.same()
+
+        return Behaviors.receive_message(on_message, on_signal=on_signal)
+
+    lenient = Behaviors.supervise(Behaviors.setup(build)).on_failure(
+        SupervisorStrategy.restart(max_restarts=50, window=timedelta(milliseconds=40)),
+        on=OtherError,
+    )
+    return Behaviors.supervise(lenient).on_failure(strict, on=BoomError)
+
+
+async def test_one_strategys_restarts_do_not_spend_anothers_allowance(
+    system: ActorSystem,
+):
+    seen: list[str] = []
+    strict = SupervisorStrategy.restart(max_restarts=3, window=timedelta(minutes=10))
+    actor = system.spawn(layered(seen, strict), name="worker")
+
+    # Three failures of the type the other layer governs.
+    for _ in range(3):
+        actor.tell(Job(item=-1))
+    await eventually(lambda: seen.count("setup") == 4)
+
+    # The first failure of the strict type. Its own budget is untouched, so
+    # it must restart. Sharing one deque across layers stopped the actor here.
+    actor.tell(Job(fail=True))
+    await eventually(lambda: seen.count("setup") == 5)
+
+    actor.tell(Job(item=1))
+    await asyncio.sleep(0.05)
+    assert "PostStop" not in seen
+
+
+async def test_a_short_window_does_not_prune_another_strategys_restarts(
+    system: ActorSystem,
+):
+    seen: list[str] = []
+    strict = SupervisorStrategy.restart(max_restarts=2, window=timedelta(minutes=10))
+    actor = system.spawn(layered(seen, strict), name="worker")
+
+    # Two strict failures spend the strict budget exactly.
+    actor.tell(Job(fail=True))
+    actor.tell(Job(fail=True))
+    await eventually(lambda: seen.count("setup") == 3)
+
+    # Long enough that those two are outside the other layer's 40ms window,
+    # then a failure that layer governs. Pruning by the failure's own window
+    # against a shared deque threw the strict timestamps away here.
+    await asyncio.sleep(0.06)
+    actor.tell(Job(item=-1))
+    await eventually(lambda: seen.count("setup") == 4)
+
+    # A third strict failure, still inside the strict ten-minute window and
+    # over its limit of two. It must stop the actor.
+    actor.tell(Job(fail=True))
+    await eventually(lambda: "PostStop" in seen)
+
+    assert seen.count("setup") == 4
+
+
+async def test_a_backoff_counts_only_the_restarts_its_own_layer_made(
+    system: ActorSystem,
+):
+    seen: list[str] = []
+    strict = SupervisorStrategy.restart(
+        backoff=Backoff(
+            min_backoff=timedelta(milliseconds=50),
+            max_backoff=timedelta(seconds=10),
+            random_factor=0.0,
+        )
+    )
+    actor = system.spawn(layered(seen, strict), name="worker")
+
+    # Three restarts belonging to the other layer.
+    for _ in range(3):
+        actor.tell(Job(item=-1))
+    await eventually(lambda: seen.count("setup") == 4)
+
+    # The strict layer has restarted nothing yet, so its first backoff is the
+    # minimum. Counting every layer's restarts made the exponent 3 here, and
+    # this first wait eight times as long.
+    started = asyncio.get_running_loop().time()
+    actor.tell(Job(fail=True))
+    await eventually(lambda: seen.count("setup") == 5)
+    waited = asyncio.get_running_loop().time() - started
+
+    assert 0.05 <= waited < 0.2

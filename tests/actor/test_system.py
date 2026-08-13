@@ -15,8 +15,9 @@ from tapio import (
     Behaviors,
     TapioSettings,
 )
-from tapio.actor import ActorContext
+from tapio.actor import ActorContext, SupervisorStrategy
 from tapio.testkit import assert_no_leaked_tasks
+from tests.failures import BoomError
 from tests.messages import Increment
 
 
@@ -193,3 +194,34 @@ async def test_terminate_is_idempotent_and_reported():
 async def test_a_system_needs_a_running_loop():
     with pytest.raises(RuntimeError):
         await asyncio.to_thread(ActorSystem, "off-loop")
+
+
+async def test_the_shutdown_after_a_guardian_failure_is_a_task_the_system_holds():
+    # A guardian failure terminates the tree from a task nobody awaits. The
+    # loop keeps only a weak reference to a task, so the system has to keep
+    # the strong one or a sweep can be collected halfway through. Asserted on
+    # the attribute because a garbage collection this test could force would
+    # not reliably reclaim it: the point is that nothing has to.
+    with assert_no_leaked_tasks():
+        system = ActorSystem("escalating")
+        actor = system.spawn(
+            Behaviors.supervise(failing()).on_failure(SupervisorStrategy.escalate()),
+            name="worker",
+        )
+        actor.tell(Increment())
+
+        with pytest.raises(BoomError):
+            await system.when_terminated()
+
+        held = system._terminator
+        assert held is not None
+        assert held.done()
+
+
+def failing() -> Behavior[Increment]:
+    """An actor that raises on the first message it gets."""
+
+    async def on_message(message: Increment) -> Behavior[Increment]:
+        raise BoomError("boom")
+
+    return Behaviors.receive_message(on_message)

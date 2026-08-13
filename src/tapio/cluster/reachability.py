@@ -12,7 +12,7 @@ said "unreachable" is the only one that can say "reachable again", and it says
 so with a higher number.
 
 Nothing writes into this table yet. Ring-based monitoring and the accrual
-detector that will fill it in are the next milestone, and the merge is here now
+detector that will fill it in are not built, and the merge is here already
 because the merge is the part that has to be right before anything depends on
 it.
 """

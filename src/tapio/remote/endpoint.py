@@ -105,6 +105,11 @@ class RemoteEndpoint:
         self._peers: PeerProvider = StaticPeers()
         self._listening: asyncio.Task[None] | None = None
         self._handshakes: set[asyncio.Task[None]] = set()
+        # A link this endpoint decided not to use still has to be closed, and
+        # the task doing it is nobody's child. The event loop holds only a
+        # weak reference to a task, so without this set one can be collected
+        # mid-close and leave the socket open.
+        self._closing_links: set[asyncio.Task[None]] = set()
         self._names = 0
         self._parent: ActorCell[Any] | None = None
         self._closed = False
@@ -159,8 +164,8 @@ class RemoteEndpoint:
         """Who decides which addresses this system may associate with.
 
         [StaticPeers][tapio.remote.peers.StaticPeers] until something replaces
-        it, which is the v0.1 answer: every address that was written down is a
-        peer, minus the ones a detector here gave up on.
+        it: every address that was written down is a peer, minus the ones a
+        detector here gave up on.
         """
         return self._peers
 
@@ -269,7 +274,7 @@ class RemoteEndpoint:
             # The system is going away, so closing is the whole answer. The
             # peer sees the link drop, which is what it would see a moment
             # later anyway.
-            self._close_later(link, peer)
+            self.close_link_later(link, peer)
             return
         refusal = self._peers.refusal(peer)
         if refusal is not None:
@@ -279,7 +284,7 @@ class RemoteEndpoint:
             # told that actors over there are gone, and resuming quietly would
             # leave two nodes believing different things with no way to notice.
             _log.warning("refused a link from %s: %s", peer, refusal)
-            self._close_later(link, peer)
+            self.close_link_later(link, peer)
             return
         existing = self._live(peer)
         if existing is not None:
@@ -299,7 +304,7 @@ class RemoteEndpoint:
                 existing.close(f"{peer} restarted as incarnation {uid}")
             elif _wins(existing.initiator, peer):
                 _log.debug("closing a second link from %s; ours won", peer)
-                self._close_later(link, peer)
+                self.close_link_later(link, peer)
                 return
             else:
                 _log.debug("taking the link %s dialled; theirs won", peer)
@@ -337,13 +342,16 @@ class RemoteEndpoint:
         """
         self._link_filter = wrap
 
-    def _close_later(self, link: Link, peer: Address) -> None:
+    def close_link_later(self, link: Link, peer: Address) -> None:
         """Close a link this endpoint is not going to use.
 
         It gets its own task because closing waits for the transport, and the
-        caller is a handshake that has nothing left to say.
+        caller is a handshake that has nothing left to say. The task is held
+        until it finishes, since the loop would not hold it for us.
         """
-        self.dispatcher.spawn_task(link.close(), name=f"tapio-link-close:{peer}")
+        task = self.dispatcher.spawn_task(link.close(), name=f"tapio-link-close:{peer}")
+        self._closing_links.add(task)
+        task.add_done_callback(self._closing_links.discard)
 
     def outbound(self, peer: Address) -> Association | None:
         """Return the association for a peer, dialling if there is none.
@@ -651,8 +659,8 @@ class RemoteEndpoint:
 
         The associations are children of this endpoint's actor, so the sweep
         that reached here is already stopping them. What is left is the
-        listener, the socket, and any connection still mid-handshake, which
-        nobody else owns.
+        listener, the socket, any connection still mid-handshake, and any link
+        this endpoint refused and is still closing. Nobody else owns those.
         """
         if self._closed:
             return
@@ -672,6 +680,12 @@ class RemoteEndpoint:
             with contextlib.suppress(asyncio.CancelledError, HandshakeError, OSError):
                 await task
         self._handshakes.clear()
+        # Awaited rather than cancelled: these are already closing, and
+        # cancelling one would leave the socket it was releasing open.
+        for task in list(self._closing_links):
+            with contextlib.suppress(asyncio.CancelledError, OSError):
+                await task
+        self._closing_links.clear()
 
     async def _stop_listening(self) -> None:
         """Stop the accept task, before anything closes the socket under it.

@@ -17,7 +17,6 @@ import asyncio
 import contextlib
 import itertools
 import random
-from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -42,6 +41,7 @@ from tapio.actor.events import EventStream
 from tapio.actor.mailbox import Envelope, Mailbox, MailboxConfig
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
+from tapio.actor.restarts import RestartLog
 from tapio.actor.signals import ChildFailed, PostStop, PreRestart, Signal, Terminated
 from tapio.actor.stash import StashBuffer, UnstashBehavior
 from tapio.actor.supervision import Decision, SupervisorStrategy
@@ -106,6 +106,14 @@ class _Supervisor:
 
     strategy: SupervisorStrategy
     """What it decides about them."""
+
+
+_UNSUPERVISED = _Supervisor(on=Exception, strategy=_STOP)
+"""The layer a failure nobody wrote a strategy for falls back to.
+
+A layer rather than a bare strategy so that every failure has a key to be
+counted under, even though this one stops and so never records a restart.
+"""
 
 
 @dataclass(eq=False)
@@ -363,11 +371,10 @@ class ActorCell(Generic[T]):
         self._initial = behavior
         self._behavior: Behavior[T] = behavior
         self._supervisors: tuple[_Supervisor, ...] = ()
-        # Timestamps of recent restarts, for the window. The count is kept
-        # separately, because the backoff exponent is about how many times
-        # this actor has failed, not how many are still inside the window.
-        self._restarts: deque[float] = deque()
-        self._restart_count = 0
+        # Per supervisor, not per actor. Each layer brings its own limit,
+        # window and backoff, and they are separate budgets: one layer's
+        # failures must not spend, prune or count against another's.
+        self._restarts = RestartLog()
         self._mailbox = Mailbox(
             mailbox if mailbox is not None else runtime.settings.default_mailbox
         )
@@ -932,7 +939,8 @@ class ActorCell(Generic[T]):
             )
             return
 
-        strategy = self._strategy_for(error)
+        supervisor = self._supervisor_for(error)
+        strategy = supervisor.strategy
         match strategy.decision:
             case Decision.RESUME:
                 self._log.warning(
@@ -941,7 +949,7 @@ class ActorCell(Generic[T]):
                     exc_info=error,
                 )
             case Decision.RESTART:
-                await self._restart(error, strategy)
+                await self._restart(error, supervisor)
             case Decision.STOP:
                 self._log.error(
                     "stopping after a failure in %s",
@@ -952,14 +960,19 @@ class ActorCell(Generic[T]):
             case Decision.ESCALATE:
                 await self._escalate(error)
 
-    def _strategy_for(self, error: Exception) -> SupervisorStrategy:
-        """Find the strategy governing a failure, outermost wrapper first."""
+    def _supervisor_for(self, error: Exception) -> _Supervisor:
+        """Find the layer governing a failure, outermost wrapper first.
+
+        The layer rather than its strategy, because it is also the key a
+        restart is counted under. Two layers can decide the same thing and
+        still hold separate budgets.
+        """
         for supervisor in self._supervisors:
             if isinstance(error, supervisor.on):
-                return supervisor.strategy
-        return _STOP
+                return supervisor
+        return _UNSUPERVISED
 
-    async def _restart(self, error: Exception, strategy: SupervisorStrategy) -> None:
+    async def _restart(self, error: Exception, supervisor: _Supervisor) -> None:
         """Rebuild this actor from the behavior it was spawned with.
 
         Every part of this is a deliberate choice. Children are stopped, and
@@ -968,7 +981,10 @@ class ActorCell(Generic[T]):
         because the ref, the path and the uid are unchanged, and only the
         incarnation behind them is new.
         """
-        if not self._within_restart_limit(strategy):
+        strategy = supervisor.strategy
+        if not self._restarts.record(
+            supervisor, strategy, self._runtime.dispatcher.now()
+        ):
             self._log.error(
                 "restart limit of %d in %s is exhausted; stopping",
                 strategy.max_restarts,
@@ -990,7 +1006,9 @@ class ActorCell(Generic[T]):
         await self._stop_children(self._own_deadline())
 
         if strategy.backoff is not None:
-            delay = strategy.backoff.delay(self._restart_count, jitter=random.random())
+            delay = strategy.backoff.delay(
+                self._restarts.count(supervisor), jitter=random.random()
+            )
             self._log.debug("backing off for %.3fs before restarting", delay)
             if not await self._backoff(delay):
                 return
@@ -1006,24 +1024,6 @@ class ActorCell(Generic[T]):
             return
         if directive_of(self._behavior) is Directive.STOPPED:
             await self._stop_self()
-
-    def _within_restart_limit(self, strategy: SupervisorStrategy) -> bool:
-        """Record this restart and say whether it is still inside the limit.
-
-        Timestamps are kept only when there is a limit to count them against.
-        An actor restarting for a month under an unlimited strategy does not
-        accumulate a month of them.
-        """
-        self._restart_count += 1
-        if strategy.max_restarts is None:
-            return True
-        now = self._runtime.dispatcher.now()
-        if strategy.window is not None:
-            horizon = now - strategy.window.total_seconds()
-            while self._restarts and self._restarts[0] < horizon:
-                self._restarts.popleft()
-        self._restarts.append(now)
-        return len(self._restarts) <= strategy.max_restarts
 
     async def _backoff(self, seconds: float) -> bool:
         """Wait out a backoff window, staying responsive to a stop.
