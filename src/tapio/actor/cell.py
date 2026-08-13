@@ -46,7 +46,7 @@ from tapio.actor.signals import ChildFailed, PostStop, PreRestart, Signal, Termi
 from tapio.actor.stash import StashBuffer, UnstashBehavior
 from tapio.actor.supervision import Decision, SupervisorStrategy
 from tapio.actor.timers import TimerScheduler
-from tapio.actor.watch import Watcher, WatchTarget
+from tapio.actor.watch import DeathWatch, Watcher, WatchTarget
 from tapio.dispatch.blocking import BlockingPool, describe_blocking
 from tapio.dispatch.dispatcher import Dispatcher
 from tapio.errors import (
@@ -385,8 +385,7 @@ class ActorCell(Generic[T]):
         # Both sides of every watch, so that neither a watcher nor a watched
         # actor leaves an entry behind in the other when it stops. Not every
         # watcher is a cell: an ask's promise watches its target too.
-        self._watchers: dict[ActorPath, Watcher] = {}
-        self._watching: dict[ActorPath, WatchTarget] = {}
+        self._watch = DeathWatch()
         self._log = actor_logger(path)
         # Both are owned by the cell rather than by a behavior, and both
         # outlive an incarnation. A restart empties them and hands the same
@@ -433,7 +432,7 @@ class ActorCell(Generic[T]):
         Exposed so a test can assert that the watch was released. A map that
         outlives the actor it names is the leak death watch exists to prevent.
         """
-        return tuple(self._watchers)
+        return self._watch.watchers
 
     @property
     def timers(self) -> TimerScheduler[T]:
@@ -706,7 +705,7 @@ class ActorCell(Generic[T]):
             self._mailbox.put_system(Terminated(ref))
             return
         target.add_watcher(self)
-        self._watching[target.path] = target
+        self._watch.watching(target)
 
     def unwatch(self, ref: ActorRef[Any]) -> None:
         """Stop being told when another actor stops.
@@ -717,7 +716,7 @@ class ActorCell(Generic[T]):
         Args:
             ref: The actor to stop watching.
         """
-        target = self._watching.pop(ref.path, None)
+        target = self._watch.stop_watching(ref.path)
         if target is not None:
             target.remove_watcher(self)
 
@@ -726,11 +725,11 @@ class ActorCell(Generic[T]):
 
         Keyed by path, so watching twice still delivers exactly one signal.
         """
-        self._watchers[watcher.path] = watcher
+        self._watch.add_watcher(watcher)
 
     def remove_watcher(self, watcher: Watcher) -> None:
         """Deregister a watcher."""
-        self._watchers.pop(watcher.path, None)
+        self._watch.remove_watcher(watcher)
 
     def child_failed(self, child: ActorRef[Any], error: Exception) -> None:
         """Take a child's escalated failure as this actor's own.
@@ -1225,16 +1224,11 @@ class ActorCell(Generic[T]):
         actor it names is a leak, which is what death watch exists to save
         users from writing themselves.
         """
-        for watcher in list(self._watchers.values()):
-            watcher.notify_terminated(self._ref)
-        self._watchers.clear()
-        for target in list(self._watching.values()):
-            target.remove_watcher(self)
-        self._watching.clear()
+        self._watch.release(self, self._ref)
 
     def notify_terminated(self, ref: ActorRef[Any]) -> None:
         """Take delivery of a watched actor's death, on the system lane."""
-        self._watching.pop(ref.path, None)
+        self._watch.stop_watching(ref.path)
         if self._alive:
             self._mailbox.put_system(Terminated(ref))
 
