@@ -112,11 +112,24 @@ release: ## Tag and build from the commits (CI runs this, not you)
 	$(UV) run semantic-release publish
 
 .PHONY: publish
-publish: ## Publish to PyPI (requires UV_PUBLISH_TOKEN)
+publish: ## Publish to PyPI, if this commit is a release (needs UV_PUBLISH_TOKEN)
+	# A release is a tag, so an untagged HEAD is not one. Pushing a commit
+	# that bumps no version (a `refactor:`, a `docs:`, a `chore:`) leaves the
+	# tag where it was, and the build then derives a development version with
+	# a local segment, like 0.6.2.dev1+g36a482722. PyPI rejects local versions
+	# outright, so without this the job failed with a 400 over a commit that
+	# was never meant to ship. Skipping is the honest answer: there is no
+	# release here to publish.
+	#
 	# --check-url makes a repeat run a no-op rather than an error: an upload
 	# that half succeeded, or a job somebody re-ran, skips the files PyPI
 	# already has instead of failing on all of them.
-	$(UV) publish --check-url https://pypi.org/simple/
+	@if git describe --exact-match --tags HEAD >/dev/null 2>&1; then \
+		echo "$(UV) publish --check-url https://pypi.org/simple/"; \
+		$(UV) publish --check-url https://pypi.org/simple/; \
+	else \
+		echo "HEAD is not tagged, so this commit is not a release. Nothing to publish."; \
+	fi
 
 .PHONY: ci
 ci: ## What GitHub Actions runs: locked install, then the full gate
