@@ -21,8 +21,9 @@ inside a handler. A sender that knows nothing about the adapter must not have
 the owner's bug raised into it.
 """
 
+import itertools
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Annotated, Any, TypeAlias, TypeVar, cast
+from typing import TYPE_CHECKING, Annotated, Any, TypeAlias, TypeVar, cast, final
 
 from pydantic import PlainSerializer, PlainValidator
 
@@ -31,12 +32,13 @@ from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
 from tapio.message import Message
 from tapio.remote.address import Address
+from tapio.remote.registry import RefRegistry
 from tapio.validation import MessageValidator
 
 if TYPE_CHECKING:
     from tapio.actor.cell import ActorCell
 
-__all__ = ["AdaptedMessage", "AdapterRef"]
+__all__ = ["AdaptedMessage", "AdapterRef", "AdapterRegistry"]
 
 T = TypeVar("T", bound=Message)
 U = TypeVar("U", bound=Message)
@@ -263,3 +265,74 @@ class AdapterRef(ActorRef[U]):
     def __repr__(self) -> str:
         """Render the adapter, its owner, and what it translates with."""
         return f"AdapterRef({str(self.path)!r}, adapt={_describe_adapt(self._adapt)})"
+
+
+@final
+class AdapterRegistry:
+    """The adapters one actor has handed out, and their entries in the refs.
+
+    An adapter is addressable, so it has a path and an entry in the system's
+    ref registry, and that entry is what a ref arriving from a peer resolves
+    through. Nothing releases one on its own: an adapter belongs to the actor
+    rather than to the incarnation that made it, so it survives a restart and
+    is released either by its own `release` or by the actor stopping.
+
+    That makes this the actor's list of registry entries to clean up, which is
+    the whole reason it is kept. Holding it here rather than in the cell means
+    the termination sequence asks for the cleanup instead of walking the paths
+    itself.
+    """
+
+    __slots__ = ("_names", "_paths", "_refs")
+
+    def __init__(self, refs: RefRegistry) -> None:
+        """Bind the registry to the refs its adapters are registered in.
+
+        Args:
+            refs: The live refs of this system, which adapters are added to
+                and taken out of.
+        """
+        self._refs = refs
+        self._names = itertools.count(1)
+        self._paths: set[ActorPath] = set()
+
+    @property
+    def paths(self) -> tuple[ActorPath, ...]:
+        """The adapters this actor currently has registered."""
+        return tuple(self._paths)
+
+    def next_name(self) -> str:
+        """Return the name for the next adapter, unique within this actor."""
+        return f"$adapter-{next(self._names)}"
+
+    def register(self, ref: ActorRef[Any]) -> None:
+        """Put an adapter in the refs, and keep it for the cleanup.
+
+        Args:
+            ref: The adapter, already built and named.
+        """
+        self._refs.register(ref)
+        self._paths.add(ref.path)
+
+    def release(self, path: ActorPath) -> None:
+        """Take one adapter out of the refs, leaving the actor running.
+
+        Releasing one that is not this actor's, or one that has already gone,
+        does nothing, so the call is idempotent from either side.
+
+        Args:
+            path: The adapter's path.
+        """
+        if path in self._paths:
+            self._paths.discard(path)
+            self._refs.deregister(path)
+
+    def release_all(self) -> None:
+        """Take every adapter out of the refs, because the actor is stopping.
+
+        An entry left behind would let a stale ref address whoever holds that
+        path next.
+        """
+        for path in self._paths:
+            self._refs.deregister(path)
+        self._paths.clear()
