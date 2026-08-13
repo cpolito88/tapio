@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Generic, TypeAlias, TypeVar, cast
 
-from tapio.actor.adapter import AdaptedMessage, AdapterRef
+from tapio.actor.adapter import AdaptedMessage, AdapterRef, AdapterRegistry
 from tapio.actor.ask import ask as run_ask
 from tapio.actor.behavior import (
     Behavior,
@@ -380,8 +380,10 @@ class ActorCell(Generic[T]):
         )
         self._children: dict[str, ActorCell[Any]] = {}
         self._anonymous = itertools.count(1)
-        self._adapters = itertools.count(1)
-        self._adapter_paths: set[ActorPath] = set()
+        # The adapters this actor has handed out. They outlive an
+        # incarnation, so releasing them is the actor's job and not a
+        # behavior's, and the registry is what the stop sweep asks.
+        self._adapters = AdapterRegistry(runtime.refs)
         # Both sides of every watch, so that neither a watcher nor a watched
         # actor leaves an entry behind in the other when it stops. Not every
         # watcher is a cell: an ask's promise watches its target too.
@@ -608,7 +610,7 @@ class ActorCell(Generic[T]):
             adapt, explicit=msg_type, message_param_index=0
         )
         path = self._path.child(
-            f"$adapter-{next(self._adapters)}", uid=self._runtime.next_uid()
+            self._adapters.next_name(), uid=self._runtime.next_uid()
         )
         ref: AdapterRef[U] = AdapterRef(
             cell=self,
@@ -621,8 +623,7 @@ class ActorCell(Generic[T]):
         # An adapter is addressable like the actor behind it, so a ref handed
         # to a peer resolves on the way back. It lives and dies with its owner,
         # which is why the owner is what deregisters it.
-        self._runtime.refs.register(ref)
-        self._adapter_paths.add(path)
+        self._adapters.register(ref)
         return ref
 
     def release_adapter(self, path: ActorPath) -> None:
@@ -635,9 +636,7 @@ class ActorCell(Generic[T]):
         Args:
             path: The adapter's path.
         """
-        if path in self._adapter_paths:
-            self._adapter_paths.discard(path)
-            self._runtime.refs.deregister(path)
+        self._adapters.release(path)
 
     async def run_blocking(
         self, fn: Callable[..., B], /, *args: Any, **kwargs: Any
@@ -1211,11 +1210,8 @@ class ActorCell(Generic[T]):
         An entry left behind would let a stale ref address whoever holds that
         path next.
         """
-        refs = self._runtime.refs
-        refs.deregister(self._path)
-        for path in self._adapter_paths:
-            refs.deregister(path)
-        self._adapter_paths.clear()
+        self._runtime.refs.deregister(self._path)
+        self._adapters.release_all()
 
     def _release_watches(self) -> None:
         """Tell the watchers, and leave nothing behind in the watched.

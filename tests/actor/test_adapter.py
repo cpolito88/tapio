@@ -18,8 +18,10 @@ from tapio import (
     SupervisorStrategy,
 )
 from tapio.actor import ActorContext, ActorRef, LocalActorRef
-from tapio.actor.adapter import AdaptedMessage, AdapterRef
+from tapio.actor.adapter import AdaptedMessage, AdapterRef, AdapterRegistry
+from tapio.actor.path import ActorPath
 from tapio.errors import BehaviorTypeError
+from tapio.remote.registry import RefRegistry
 from tests.failures import BoomError, eventually
 
 
@@ -493,3 +495,83 @@ async def test_an_actor_that_stops_still_releases_the_adapters_it_kept(
     ref.tell(Ask())
 
     await eventually(lambda: system.refs.lookup(handed_out[0].path) is None)
+
+
+class StandInRef:
+    """Something registrable, so the registry can be tested without a cell."""
+
+    def __init__(self, path: ActorPath) -> None:
+        """Give it the one thing a registry keys it by."""
+        self.path = path
+
+
+def registry_pair() -> tuple[RefRegistry, AdapterRegistry]:
+    """A ref registry and an adapter registry writing into it."""
+    refs = RefRegistry()
+    return refs, AdapterRegistry(refs)
+
+
+def test_each_adapter_gets_its_own_name():
+    _, adapters = registry_pair()
+
+    names = [adapters.next_name() for _ in range(3)]
+
+    # Unique within the actor, so two adapters never share a path.
+    assert names == ["$adapter-1", "$adapter-2", "$adapter-3"]
+
+
+def test_a_registered_adapter_is_reachable_and_remembered():
+    refs, adapters = registry_pair()
+    path = ActorPath.root("test").child("worker").child("$adapter-1", uid=7)
+
+    adapters.register(StandInRef(path))
+
+    assert refs.lookup(path) is not None
+    assert adapters.paths == (path,)
+
+
+def test_releasing_an_adapter_takes_it_out_of_the_refs():
+    refs, adapters = registry_pair()
+    path = ActorPath.root("test").child("worker").child("$adapter-1", uid=7)
+    adapters.register(StandInRef(path))
+
+    adapters.release(path)
+
+    # An entry left behind would let a stale ref address whoever holds that
+    # path next.
+    assert refs.lookup(path) is None
+    assert adapters.paths == ()
+
+
+def test_releasing_an_adapter_twice_or_a_stranger_does_nothing():
+    refs, adapters = registry_pair()
+    mine = ActorPath.root("test").child("worker").child("$adapter-1", uid=7)
+    theirs = ActorPath.root("test").child("other").child("$adapter-1", uid=9)
+    adapters.register(StandInRef(mine))
+    adapters.register(StandInRef(theirs))
+    # Registered through a different actor's registry, as far as this one
+    # is concerned.
+    other = AdapterRegistry(refs)
+
+    other.release(mine)
+    adapters.release(mine)
+    adapters.release(mine)
+
+    # Only its own release took effect, and only once.
+    assert refs.lookup(mine) is None
+    assert refs.lookup(theirs) is not None
+
+
+def test_stopping_releases_every_adapter_at_once():
+    refs, adapters = registry_pair()
+    paths = [
+        ActorPath.root("test").child("worker").child(adapters.next_name(), uid=uid)
+        for uid in (1, 2, 3)
+    ]
+    for path in paths:
+        adapters.register(StandInRef(path))
+
+    adapters.release_all()
+
+    assert [refs.lookup(path) for path in paths] == [None, None, None]
+    assert adapters.paths == ()
