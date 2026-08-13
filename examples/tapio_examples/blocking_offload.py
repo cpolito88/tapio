@@ -20,11 +20,7 @@ and the rest of the system processed nothing in one case and dozens of
 messages in the other. The elapsed times are printed for interest and asserted
 by nothing: they depend on how loaded the machine is, and the count does not.
 
-Run it with:
-
-```
-uv run python -m tapio_examples.blocking_offload
-```
+Run it with `uv run python -m tapio_examples.blocking_offload`.
 """
 
 import asyncio

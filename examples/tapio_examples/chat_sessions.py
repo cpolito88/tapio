@@ -20,11 +20,7 @@ That is not a bug to fix with a bigger timeout: a crash is not a reply, and it
 never will be. The session asked again, the restarted model answered, and the
 turn count shows the session's own state was never touched.
 
-Run it with:
-
-```
-uv run python -m tapio_examples.chat_sessions
-```
+Run it with `uv run python -m tapio_examples.chat_sessions`.
 """
 
 import asyncio

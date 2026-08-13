@@ -21,11 +21,7 @@ about the same amount of time, for entirely different reasons. The last line
 is the point of the whole example: the actor that "disappeared" answers a
 question the moment the network is repaired.
 
-Run it with:
-
-```
-uv run python -m tapio_examples.remote_ask
-```
+Run it with `uv run python -m tapio_examples.remote_ask`.
 """
 
 import asyncio

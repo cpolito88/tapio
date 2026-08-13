@@ -22,11 +22,7 @@ rather than a half-finished one. The step that never ran is not compensated,
 which is why the list of what to undo is built as the saga goes rather than
 written out in advance.
 
-Run it with:
-
-```
-uv run python -m tapio_examples.order_saga
-```
+Run it with `uv run python -m tapio_examples.order_saga`.
 """
 
 import asyncio

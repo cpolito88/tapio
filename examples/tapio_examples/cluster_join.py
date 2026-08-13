@@ -34,11 +34,7 @@ gossip round, so the example waits for each of them instead of reading them
 straight away. That wait is the honest shape for anything that watches another
 node, and leaving it out is a race that shows up about once in fifteen runs.
 
-Run it with:
-
-```
-uv run python -m tapio_examples.cluster_join
-```
+Run it with `uv run python -m tapio_examples.cluster_join`.
 """
 
 import asyncio

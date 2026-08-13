@@ -20,11 +20,7 @@ What to watch in the output: the third line. The coordinator does not retry
 against the node that is gone. It starts a worker it owns and finishes the
 job there, which is the difference between a failover and a stall.
 
-Run it with:
-
-```
-uv run python -m tapio_examples.node_failure
-```
+Run it with `uv run python -m tapio_examples.node_failure`.
 """
 
 import asyncio

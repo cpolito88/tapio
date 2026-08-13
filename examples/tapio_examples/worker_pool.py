@@ -22,11 +22,7 @@ it does not survive, and the pool carries on with two. The router was told its
 routee stopped and stopped routing to it, rather than sending work to an
 address nobody reads.
 
-Run it with:
-
-```
-uv run python -m tapio_examples.worker_pool
-```
+Run it with `uv run python -m tapio_examples.worker_pool`.
 """
 
 import asyncio

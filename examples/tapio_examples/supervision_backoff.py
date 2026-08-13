@@ -23,11 +23,7 @@ What to watch in the output: item 1 fails, and items 2 and 3 were sent while
 nobody was there to receive them, yet all three are accounted for. The doomed
 actor stops itself after its second failure instead of retrying forever.
 
-Run it with:
-
-```
-uv run python -m tapio_examples.supervision_backoff
-```
+Run it with `uv run python -m tapio_examples.supervision_backoff`.
 """
 
 import asyncio

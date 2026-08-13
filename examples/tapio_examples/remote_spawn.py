@@ -24,11 +24,7 @@ to one, which is the only trace of it here. Nothing was reported, because
 nothing had to be: the restart was decided a process boundary away from the
 actor rather than a network away.
 
-Run it with:
-
-```
-uv run python -m tapio_examples.remote_spawn
-```
+Run it with `uv run python -m tapio_examples.remote_spawn`.
 """
 
 import asyncio

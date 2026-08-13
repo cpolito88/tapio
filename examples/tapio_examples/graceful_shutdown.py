@@ -21,11 +21,7 @@ but do not make correctness depend on it running.
 What to watch in the output: the two connections stop before the pool that
 owns them, and the pool's own line is last.
 
-Run it with:
-
-```
-uv run python -m tapio_examples.graceful_shutdown
-```
+Run it with `uv run python -m tapio_examples.graceful_shutdown`.
 """
 
 import asyncio

@@ -18,11 +18,7 @@ What to watch in the output: three dead letters, each naming the message, the
 actor it was addressed to, and why it did not arrive. The reasons differ, and
 that difference is the useful part.
 
-Run it with:
-
-```
-uv run python -m tapio_examples.dead_letters
-```
+Run it with `uv run python -m tapio_examples.dead_letters`.
 """
 
 import asyncio

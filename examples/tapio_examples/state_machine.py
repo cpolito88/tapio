@@ -28,11 +28,7 @@ What to watch in the output: the `Send` that arrives while connecting is
 refused rather than queued, and the identical `Send` after authentication goes
 through. Same message, same actor, different state.
 
-Run it with:
-
-```
-uv run python -m tapio_examples.state_machine
-```
+Run it with `uv run python -m tapio_examples.state_machine`.
 """
 
 import asyncio

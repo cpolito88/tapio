@@ -22,11 +22,7 @@ dead letter instead. The fourth line is the fast failure: the desk closes
 while a reader is waiting, and the reader hears about it immediately even
 though it asked for thirty seconds of patience.
 
-Run it with:
-
-```
-uv run python -m tapio_examples.ask_timeout
-```
+Run it with `uv run python -m tapio_examples.ask_timeout`.
 """
 
 import asyncio

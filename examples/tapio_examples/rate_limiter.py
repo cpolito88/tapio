@@ -26,11 +26,7 @@ holding two, and the other three are refused. That is the limiter working, not
 failing. Then one tick of the refill puts a permit back and the next request
 is allowed.
 
-Run it with:
-
-```
-uv run python -m tapio_examples.rate_limiter
-```
+Run it with `uv run python -m tapio_examples.rate_limiter`.
 """
 
 import asyncio

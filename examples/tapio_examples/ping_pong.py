@@ -12,11 +12,7 @@ which is the cheapest kind of state an actor system has.
 What to watch in the output: hops alternate strictly, ping then pong, and the
 last line is ping stopping itself once the rally is over.
 
-Run it with:
-
-```
-uv run python -m tapio_examples.ping_pong
-```
+Run it with `uv run python -m tapio_examples.ping_pong`.
 """
 
 import asyncio
