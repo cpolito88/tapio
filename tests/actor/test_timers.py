@@ -6,6 +6,8 @@ reach a stopped actor or a later incarnation.
 """
 
 import asyncio
+import logging
+import time
 from datetime import timedelta
 
 import pytest
@@ -348,3 +350,46 @@ async def test_a_repeating_timer_still_takes_a_zero_initial_delay(
     system.spawn(Behaviors.with_timers(build), name="ticker")
 
     await eventually(lambda: len(ticks) == 1)
+
+
+async def test_a_fixed_rate_timer_caps_the_burst_after_a_long_stall(caplog):
+    """A stall of thousands of intervals does not become thousands of ticks.
+
+    The stall here blocks the loop rather than awaiting, which is what a
+    suspended process or a long pause looks like from the timer's side: it
+    gets no turn at all, then wakes up far behind the schedule.
+    """
+    seen: list[str] = []
+    released = asyncio.Event()
+
+    def build(timers: TimerScheduler[Tick | Start]) -> Behavior[Tick | Start]:
+        async def on_message(message: Tick | Start) -> Behavior[Tick | Start]:
+            if isinstance(message, Start):
+                timers.start_fixed_rate(
+                    "t", Tick(), timedelta(milliseconds=1), initial_delay=timedelta(0)
+                )
+                return Behaviors.same()
+            seen.append("tick")
+            if len(seen) == 1:
+                # Synchronous on purpose, and after the timer is already
+                # running: nothing else on this loop gets a turn, so the timer
+                # wakes up about two hundred intervals behind its schedule.
+                time.sleep(0.2)  # noqa: ASYNC251 - blocking the loop is the point
+                released.set()
+            return Behaviors.same()
+
+        return Behaviors.receive_message(on_message)
+
+    with caplog.at_level(logging.WARNING, logger="tapio.runtime"):
+        async with ActorSystem("capped") as system:
+            ref = system.spawn(Behaviors.with_timers(build), name="ticker")
+            ref.tell(Start())
+            await released.wait()
+            await asyncio.sleep(0.02)
+            scheduler_of(ref).cancel("t")
+
+    # The capped burst plus the ordinary 1ms ticks of the 20ms that followed.
+    # Uncapped this was every missed interval, so about two hundred.
+    assert len(seen) < 60
+    assert "fell" in caplog.text
+    assert "ticks behind and dropped them" in caplog.text
