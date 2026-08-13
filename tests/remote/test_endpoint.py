@@ -2,6 +2,8 @@
 
 import asyncio
 import gc
+import socket
+import sys
 
 import pytest
 
@@ -348,3 +350,34 @@ class _SlowClosingLink:
     async def close(self) -> None:
         await asyncio.sleep(self._takes)
         self._closed.append("closed")
+
+
+def test_a_construction_that_fails_after_the_bind_releases_the_port():
+    # The socket is bound inside __init__, before the guardians exist, so
+    # nothing else holds a reference that could close it afterwards. This
+    # takes the raise path that is already there: Dispatcher.from_running_loop
+    # runs just after the bind and needs a running loop.
+    port = _free_port()
+    settings = TapioSettings(
+        _env_file=None, remote=RemoteSettings(_env_file=None, bind_port=port)
+    )
+
+    held = None
+    try:
+        ActorSystem("off-loop", settings)
+    except RuntimeError:
+        # Kept, so the partly built system stays reachable. Without it the
+        # socket is closed by refcounting and the leak hides itself.
+        held = sys.exc_info()[2]
+    assert held is not None
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", port))
+
+
+def _free_port() -> int:
+    """A port nothing is listening on, for a bind that is meant to fail later."""
+    with socket.socket() as finder:
+        finder.bind(("127.0.0.1", 0))
+        chosen: int = finder.getsockname()[1]
+    return chosen
