@@ -38,6 +38,7 @@ __all__ = [
     "DownDecider",
     "DownDecision",
     "FailureDetector",
+    "PeerReachable",
     "PeerUnreachable",
 ]
 
@@ -194,3 +195,28 @@ class PeerUnreachable(Message):
     there and nothing dialled until `remote.reconnect` says so. `False` when
     the link merely ended, in which case the next send dials again.
     """
+
+
+@final
+class PeerReachable(Message):
+    """Published when a link to a peer comes up and can carry traffic.
+
+    The counterpart to
+    [PeerUnreachable][tapio.remote.failure.PeerUnreachable], and the only
+    thing that can retract one. It says a link is open, which is a weaker
+    claim than the actors over there being the ones you remember: a peer that
+    restarted comes back with a new incarnation uid, and `uid` is how a
+    subscriber tells that apart from a link that merely reconnected.
+
+    It is published every time a link opens, including the first, so a
+    subscriber that only cares about recovery has to know whether it had
+    written the peer off. Publishing only after an unreachability would need
+    the association to remember a verdict that closed it, and the association
+    that comes back is a new one.
+    """
+
+    peer: str
+    """The peer's canonical address."""
+
+    uid: int
+    """The incarnation on the other end, as the handshake established it."""

@@ -51,6 +51,14 @@ start anything registered, on request, is a capability handed to whoever can
 reach the port. The allowlist is checked at construction, so a spawner that
 offers a key nobody registered fails where it is written rather than when a
 peer asks.
+
+**The factory registry is append-only for the life of the process**, like the
+message registry it mirrors. Nothing deregisters, nothing overrides, and a
+duplicate key raises at import. A key names what a peer will be given when it
+asks, so a key that could be rebound would let a later import decide what an
+earlier allowlist actually permits, and a spawner checked at construction
+would no longer be checked at all. Retire a factory by removing it and its
+allowlist entry together, not by replacing what its key points at.
 """
 
 import inspect

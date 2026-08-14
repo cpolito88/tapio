@@ -22,7 +22,9 @@ from typing import final
 
 from tapio.actor.behavior import Behavior, Behaviors
 from tapio.actor.context import ActorContext
+from tapio.actor.events import EventStream, Subscription
 from tapio.actor.ref import ActorRef
+from tapio.actor.signals import PostStop, Signal
 from tapio.actor.timers import TimerScheduler
 from tapio.cluster.clock import Ordering
 from tapio.cluster.gossip import Gossip, leader_actions
@@ -34,11 +36,14 @@ from tapio.cluster.messages import (
     Join,
     JoinTick,
     Leave,
+    LinkChanged,
     Seeds,
     Tick,
     WireMessage,
 )
+from tapio.cluster.reachability import ReachabilityStatus
 from tapio.logging import runtime_logger
+from tapio.remote.failure import PeerReachable, PeerUnreachable
 from tapio.remote.registry import RefRegistry
 from tapio.settings import ClusterSettings
 
@@ -77,6 +82,7 @@ class ClusterDaemon:
         address: str,
         uid: int,
         refs: RefRegistry,
+        events: EventStream,
         settings: ClusterSettings,
         choose: Callable[[Sequence[str]], str] = random.choice,
     ) -> None:
@@ -88,6 +94,8 @@ class ClusterDaemon:
                 identifies the member.
             refs: This system's ref registry, where the daemon publishes its
                 well-known name.
+            events: This system's event stream, where remoting says that a
+                peer went out of reach or came back.
             settings: How often to gossip, and how patient to be.
             choose: Picks the peer to gossip to this round. Injected so a test
                 can make a round deterministic; the default is uniformly at
@@ -97,7 +105,9 @@ class ClusterDaemon:
         self._address = address
         self._settings = settings
         self._refs = refs
+        self._events = events
         self._choose = choose
+        self._subscription: Subscription | None = None
         self._self = Member(address=address, uid=uid, roles=settings.roles)
         self._state = Gossip()
         self._seeds: tuple[str, ...] = ()
@@ -144,13 +154,23 @@ class ClusterDaemon:
                 timers.start_fixed_delay(
                     _GOSSIP_TIMER, Tick(), self._settings.gossip_interval
                 )
+                self._watch_the_links(ctx.self_ref)
 
                 async def on_message(
                     ctx: ActorContext[ClusterMessage], message: ClusterMessage
                 ) -> Behavior[ClusterMessage]:
                     return await self._receive(ctx, timers, message)
 
-                return Behaviors.receive(on_message, ClusterMessage)
+                async def on_signal(
+                    ctx: ActorContext[ClusterMessage], signal: Signal
+                ) -> Behavior[ClusterMessage]:
+                    if isinstance(signal, PostStop):
+                        self._stop_watching_the_links()
+                    return Behaviors.same()
+
+                return Behaviors.receive(
+                    on_message, ClusterMessage, on_signal=on_signal
+                )
 
             return Behaviors.setup(build)
 
@@ -178,6 +198,8 @@ class ClusterDaemon:
                 await self._merge(ctx, message)
             case Leave():
                 self._start_leaving(message.address)
+            case LinkChanged():
+                self._link_changed(message)
 
         self._lead()
         if (
@@ -195,6 +217,77 @@ class ClusterDaemon:
             timers.cancel(_JOIN_TIMER)
             timers.cancel(_FORM_TIMER)
         return Behaviors.same()
+
+    def _watch_the_links(self, me: ActorRef[ClusterMessage]) -> None:
+        """Take what remoting says about peers into this actor's mailbox.
+
+        The handler runs wherever the event was published, which is inside an
+        association, so it does the least it can: it turns the event into a
+        message. Every change to the state is then made by the daemon in its
+        own turn, like every other one.
+
+        Args:
+            me: This daemon's own ref, which the handlers send to.
+        """
+
+        def lost(event: PeerUnreachable) -> None:
+            me.tell(LinkChanged(peer=event.peer, reachable=False))
+
+        def found(event: PeerReachable) -> None:
+            me.tell(LinkChanged(peer=event.peer, reachable=True))
+
+        unreachable = self._events.subscribe(PeerUnreachable, lost)
+        reachable = self._events.subscribe(PeerReachable, found)
+
+        def cancel_both() -> None:
+            unreachable.unsubscribe()
+            reachable.unsubscribe()
+
+        self._subscription = Subscription(cancel_both)
+
+    def _stop_watching_the_links(self) -> None:
+        """Stop listening, because this daemon is going away.
+
+        A subscription left behind would send into a stopped actor's mailbox
+        for as long as the system ran, which is a dead letter per link event
+        and a reference to an actor nobody can reach.
+        """
+        if self._subscription is not None:
+            self._subscription.unsubscribe()
+            self._subscription = None
+
+    def _link_changed(self, message: LinkChanged) -> None:
+        """Record what the transport saw, if it is news about a member.
+
+        Two things are deliberately narrow here. Only members are recorded,
+        because a peer this system talks to but has not clustered with is
+        nobody's business and its observations would never be cleaned up. And
+        only a change is recorded, because `PeerReachable` is published every
+        time a link opens, and writing the same opinion again would bump the
+        version and gossip a round for no news.
+
+        The observation is this node's alone. It says the link from here is
+        open or is not, which is exactly what one node can honestly claim, and
+        the observer that said unreachable is the only one that can take it
+        back.
+        """
+        if not any(m.address == message.peer for m in self._state.members):
+            return
+        status = (
+            ReachabilityStatus.REACHABLE
+            if message.reachable
+            else ReachabilityStatus.UNREACHABLE
+        )
+        if self._state.reachability.says(self._address, message.peer) is status:
+            return
+        _log.info(
+            "%s is %s from here",
+            message.peer,
+            "reachable again" if message.reachable else "unreachable",
+        )
+        self._state = self._state.observing(
+            self._address, message.peer, status
+        ).bumped_by(self._address)
 
     def _start_joining(
         self, timers: TimerScheduler[ClusterMessage], seeds: Sequence[str]

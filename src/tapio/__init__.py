@@ -41,7 +41,7 @@ from tapio.errors import (
 )
 from tapio.message import Message
 from tapio.remote.address import Address
-from tapio.remote.failure import PeerUnreachable
+from tapio.remote.failure import PeerReachable, PeerUnreachable
 from tapio.remote.registry import register_message
 from tapio.remote.spawner import (
     NoArgs,
@@ -91,6 +91,7 @@ __all__ = [
     "MessageTypeError",
     "NoArgs",
     "OverflowStrategy",
+    "PeerReachable",
     "PeerUnreachable",
     "PostStop",
     "PreRestart",

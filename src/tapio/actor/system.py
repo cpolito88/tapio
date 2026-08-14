@@ -262,8 +262,9 @@ class ActorSystem:
     def events(self) -> EventStream:
         """What this system publishes about itself, for whoever subscribes.
 
-        Runtime facts rather than traffic. Today that is
-        [PeerUnreachable][tapio.remote.failure.PeerUnreachable], which is how
+        Runtime facts rather than traffic. Today those are
+        [PeerUnreachable][tapio.remote.failure.PeerUnreachable] and
+        [PeerReachable][tapio.remote.failure.PeerReachable], which is how
         a service learns that a node it was talking to is beyond reach and
         decides whether to log it, alarm, or stop.
         """

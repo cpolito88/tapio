@@ -11,10 +11,16 @@ pair, which is what makes an unreachability *retractable*: the observer that
 said "unreachable" is the only one that can say "reachable again", and it says
 so with a higher number.
 
-Nothing writes into this table yet. Ring-based monitoring and the accrual
-detector that will fill it in are not built, and the merge is here already
-because the merge is the part that has to be right before anything depends on
-it.
+What writes into it today is the transport. When a link to a member opens or
+is given up on, remoting says so on the system's event stream, and the cluster
+daemon records that as this node's observation of that member. So an entry
+here means one node cannot currently reach another, which is a weaker claim
+than the cluster having decided anything: acting on it is the leader's job,
+and one unreachable member stops convergence until somebody does.
+
+Ring-based monitoring and the accrual detector are not built. When they are,
+they replace how the observation is reached and not what is recorded, since
+this table already takes an observation from any observer.
 """
 
 from enum import StrEnum
@@ -120,6 +126,24 @@ class Reachability(Message):
             for record in self.records
             if record.status is ReachabilityStatus.UNREACHABLE
         )
+
+    def says(self, observer: str, observed: str) -> ReachabilityStatus:
+        """What one node currently says about another.
+
+        Reachable when it has never said anything, since an observation is
+        only recorded once there is something to report.
+
+        Args:
+            observer: Who is watching.
+            observed: Who is being watched.
+
+        Returns:
+            That observer's current opinion, and nobody else's.
+        """
+        for record in self.records:
+            if record.pair == (observer, observed):
+                return record.status
+        return ReachabilityStatus.REACHABLE
 
     def observing(
         self, observer: str, observed: str, status: ReachabilityStatus
