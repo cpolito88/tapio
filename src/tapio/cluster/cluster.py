@@ -66,6 +66,7 @@ class Cluster:
             address=str(system.address),
             uid=system.uid,
             refs=system.refs,
+            events=system.events,
             settings=self._settings,
         )
         self._ref: ActorRef[ClusterMessage] = system.spawn_system_actor(

@@ -58,6 +58,7 @@ from tapio.remote.failure import (
     DownAlone,
     DownDecider,
     FailureDetector,
+    PeerReachable,
     PeerUnreachable,
 )
 from tapio.remote.handshake import introduce
@@ -855,6 +856,11 @@ class Association:
         self._detector.heartbeat(self._host.dispatcher.now())
         if not self._ready.done():
             self._ready.set_result(None)
+        # Said once the link can actually carry traffic, which is the point at
+        # which an earlier verdict about this peer stops being true. Whoever
+        # wrote the peer off is the only one that can take it back, so this is
+        # the fact rather than the retraction.
+        self._host.events.publish(PeerReachable(peer=str(self._peer), uid=self._uid))
 
     async def _read(self, link: Link) -> None:
         """Read frames until the link ends, handing on what is not ours."""

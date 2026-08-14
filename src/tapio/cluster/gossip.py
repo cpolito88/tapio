@@ -31,7 +31,7 @@ from typing import final
 
 from tapio.cluster.clock import Ordering, VectorClock
 from tapio.cluster.member import Member, MemberStatus, sort_key
-from tapio.cluster.reachability import Reachability
+from tapio.cluster.reachability import Reachability, ReachabilityStatus
 from tapio.message import Message
 
 __all__ = ["Gossip", "leader_actions"]
@@ -183,6 +183,30 @@ class Gossip(Message):
             update={
                 "version": self.version.increment(address),
                 "seen": frozenset({address}),
+            }
+        )
+
+    def observing(
+        self, observer: str, observed: str, status: ReachabilityStatus
+    ) -> "Gossip":
+        """Return this state with one node's opinion of another recorded.
+
+        The version is not touched, like
+        [with_member][tapio.cluster.gossip.Gossip.with_member], so a caller
+        making a change calls
+        [bumped_by][tapio.cluster.gossip.Gossip.bumped_by] as well.
+
+        Args:
+            observer: Who is watching, which is always the node recording it.
+            observed: Who is being watched.
+            status: What the observer now believes.
+
+        Returns:
+            The new state.
+        """
+        return self.model_copy(
+            update={
+                "reachability": self.reachability.observing(observer, observed, status)
             }
         )
 

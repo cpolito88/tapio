@@ -121,5 +121,27 @@ class FormTick(Message):
     """The moment the first seed may form a cluster, if it has heard nothing."""
 
 
-ClusterMessage: TypeAlias = WireMessage | Seeds | Tick | JoinTick | FormTick
+@final
+class LinkChanged(Message):
+    """What the transport saw about a peer, on its way into membership.
+
+    Remoting publishes its verdicts on the system's event stream, and a
+    subscriber runs wherever the publisher happens to be. This carries the
+    verdict into the daemon's mailbox instead, so the state is changed by the
+    actor that owns it, in its own turn, like every other change.
+
+    It never leaves the process: what the cluster does with the observation
+    travels as ordinary gossip.
+    """
+
+    peer: AddressStr
+    """The peer the transport reached a verdict about."""
+
+    reachable: bool
+    """Whether a link to it is open, as the transport last saw."""
+
+
+ClusterMessage: TypeAlias = (
+    WireMessage | Seeds | Tick | JoinTick | FormTick | LinkChanged
+)
 """Everything the cluster daemon accepts, its own ticks included."""
