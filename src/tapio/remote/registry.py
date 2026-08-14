@@ -6,6 +6,15 @@ arrived on a socket into an importable object is remote code execution. An
 unregistered key becomes a dead letter naming the key, and nothing is imported
 to find out what it might have meant.
 
+That table is append-only for the life of the process, on purpose. There is no
+deregister, no override and no reset, and a duplicate key raises at import
+rather than winning. A key is a promise about the wire: it has to mean the same
+type on both ends of a link, and on the node that reads a frame written before
+a restart. A type that could be swapped out under a key already in use turns a
+decoding error into a silently wrong object, which is exactly what naming types
+by key rather than by import path exists to prevent. Anything that wants to
+retire a key retires it by never sending it again.
+
 **Live refs.** A path and an incarnation uid look up the ref to deliver into.
 Cells register when they start and deregister when they stop, so the registry
 holds exactly the live actors. A uid that no longer matches resolves to
