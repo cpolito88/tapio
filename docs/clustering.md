@@ -16,12 +16,13 @@ not going to be one.
 
 ## What is in this release
 
-Membership: joining, converging, leading, and leaving. What is **not** here
-yet is the half that decides what to do when a node stops answering:
-reachability monitoring, and downing. Until those land, an unreachable member
-blocks the leader from acting, and it goes on blocking it. That is the honest
-behaviour rather than a gap somebody forgot: deciding to write a member off is
-a decision with consequences, and it gets strategies of its own.
+Membership: joining, converging, leading, and leaving. Reachability: every
+member is watched by a few others, and a member that stops answering is
+reported unreachable by the nodes watching it. What is **not** here yet is
+downing, which is the decision to write an unreachable member off. Until it
+lands, an unreachable member blocks the leader from acting, and it goes on
+blocking it. That is the honest behaviour rather than a gap somebody forgot:
+deciding a member is gone has consequences, and it gets strategies of its own.
 
 ## Statuses
 
@@ -128,10 +129,74 @@ The state itself is small and every part of it merges the same way:
 - **Members**, merged pairwise by the status lattice above.
 - **Reachability**, one observation per pair of nodes, each carrying the
   observer's own version so that an unreachability can be retracted by the
-  node that reported it. Nothing writes into it yet.
+  node that reported it.
 - **A vector clock**, merged by taking the higher count per node, which is how
   two views are ordered against each other when one is simply newer.
 - **A seen set**, which is what makes convergence observable.
+
+## Reachability
+
+Reachability is a separate axis from membership, and conflating the two is the
+classic mistake. A member can be `up` and unreachable at the same time. The
+first is a decision the cluster made about it, the second is an observation
+one node made about it, and only the second can be wrong.
+
+Every node sorts the member addresses, finds itself, and watches the few that
+follow it, wrapping round at the end:
+
+```python
+cluster = Cluster(system, ClusterSettings(monitored_peers=5))
+cluster.monitored  # the members this node watches, in address order
+```
+
+So every member is watched by exactly that many others, whether or not
+anybody has reason to send it anything, and the probing costs one message per
+watched member per round rather than one per pair. All-to-all monitoring is
+quadratic, and it is what makes naive implementations fall over at a few dozen
+nodes.
+
+A watcher sends a heartbeat every `heartbeat_interval`, the watched member
+answers, and a member that has not answered for `unreachable_after` is
+recorded unreachable **by that node**. Nothing about that is a decision by the
+cluster. It is one node saying it cannot get through, it travels in gossip
+like everything else, and the node that said it is the only one that can take
+it back, which it does the moment an answer arrives again.
+
+A member is unreachable to the cluster when **any** node says so, and
+reachable again only when every one of them has retracted. That is
+deliberately pessimistic. One node's bad link is enough to block convergence,
+which is visible and recoverable, whereas ignoring a minority report is how a
+half-partitioned node stays a member forever.
+
+The transport's verdict counts as evidence too. When remoting gives up on a
+link it says so on the event stream, and a watcher takes that as its member
+going unreachable, because it arrives sooner than a window that has not run
+out yet. The two sources are retracted separately: an answer to a probe brings
+back the first, and a link coming up again brings back the second. An answer
+never retracts what the transport said, since a peer that remoting is refusing
+to carry frames to cannot answer at all.
+
+Silence is judged behind an interface, and today it is a fixed window. A fixed
+window has no opinion about how variable a network is, so
+`unreachable_after` has to sit well above `heartbeat_interval` or a slow
+moment reads as a dead node. Phi-accrual, which learns the spread of a peer's
+timings instead of being told a number, fits behind the same interface.
+
+### One rule this contradicts
+
+Remoting says [recovery is never automatic](unreachable.md): a system that
+gave up on a peer stays given up on until somebody calls `reconnect`. A
+clustered system does not follow that rule for its own members. Each round, a
+node knocks again on every member it watches and currently reports
+unreachable, clearing the quarantine first if there is one.
+
+The rule is right for a single system and wrong here, and the difference is
+membership. One node alone cannot tell a false alarm from a dead peer, so it
+refuses to guess twice. A cluster does not have to guess: an unreachable
+member has not been downed, so it is still a member, and the cluster's job is
+to keep trying to reach it until a downing strategy says to stop. Only members
+this node watches and currently reports unreachable are forgiven, and only
+while nobody has decided otherwise.
 
 ## Addressing, and the one uid rule this bends
 

@@ -15,6 +15,7 @@ to be addressable. That is the only weakening of the incarnation rule in the
 library, it is opt-in, and it is why this actor and not another.
 """
 
+import asyncio
 import random
 from collections.abc import Callable, Sequence
 from datetime import timedelta
@@ -33,6 +34,9 @@ from tapio.cluster.messages import (
     ClusterMessage,
     FormTick,
     GossipEnvelope,
+    Heartbeat,
+    HeartbeatReply,
+    HeartbeatTick,
     Join,
     JoinTick,
     Leave,
@@ -41,6 +45,7 @@ from tapio.cluster.messages import (
     Tick,
     WireMessage,
 )
+from tapio.cluster.monitor import RingMonitor, deadline_detectors
 from tapio.cluster.reachability import ReachabilityStatus
 from tapio.logging import runtime_logger
 from tapio.remote.failure import PeerReachable, PeerUnreachable
@@ -57,6 +62,7 @@ _log = runtime_logger("cluster")
 _GOSSIP_TIMER = "gossip"
 _JOIN_TIMER = "join"
 _FORM_TIMER = "form"
+_HEARTBEAT_TIMER = "heartbeat"
 
 
 def daemon_uri(address: str) -> str:
@@ -84,6 +90,7 @@ class ClusterDaemon:
         refs: RefRegistry,
         events: EventStream,
         settings: ClusterSettings,
+        relent: Callable[[str], None],
         choose: Callable[[Sequence[str]], str] = random.choice,
     ) -> None:
         """Describe a node's cluster daemon, before its actor exists.
@@ -97,6 +104,10 @@ class ClusterDaemon:
             events: This system's event stream, where remoting says that a
                 peer went out of reach or came back.
             settings: How often to gossip, and how patient to be.
+            relent: Tells remoting to stop refusing a peer it gave up on. A
+                member that has not been downed is still a member, so this
+                node keeps knocking rather than waiting to be told the
+                quarantine is over.
             choose: Picks the peer to gossip to this round. Injected so a test
                 can make a round deterministic; the default is uniformly at
                 random, which is what keeps gossip traffic linear in the
@@ -107,6 +118,7 @@ class ClusterDaemon:
         self._refs = refs
         self._events = events
         self._choose = choose
+        self._relent = relent
         self._subscription: Subscription | None = None
         self._self = Member(address=address, uid=uid, roles=settings.roles)
         self._state = Gossip()
@@ -114,6 +126,12 @@ class ClusterDaemon:
         self._peers: dict[str, ActorRef[WireMessage]] = {}
         self._heard_from_anyone = False
         self._rounds = 0
+        self._heartbeats = 0
+        self._monitor = RingMonitor(
+            address=address,
+            size=settings.monitored_peers,
+            detector=deadline_detectors(settings.unreachable_after.total_seconds()),
+        )
 
     @property
     def state(self) -> Gossip:
@@ -143,6 +161,20 @@ class ClusterDaemon:
         """How many gossip rounds this node has sent, which a test counts."""
         return self._rounds
 
+    @property
+    def heartbeats(self) -> int:
+        """How many probes this node has sent, which a test counts.
+
+        One per watched member per round, so this is what shows the traffic is
+        bounded by the ring rather than by the size of the cluster.
+        """
+        return self._heartbeats
+
+    @property
+    def monitored(self) -> tuple[str, ...]:
+        """The members this node watches, in address order."""
+        return self._monitor.peers
+
     def behavior(self) -> Behavior[ClusterMessage]:
         """Build the daemon actor."""
 
@@ -153,6 +185,11 @@ class ClusterDaemon:
                 self._refs.register_well_known(ctx.self_ref)
                 timers.start_fixed_delay(
                     _GOSSIP_TIMER, Tick(), self._settings.gossip_interval
+                )
+                timers.start_fixed_delay(
+                    _HEARTBEAT_TIMER,
+                    HeartbeatTick(),
+                    self._settings.heartbeat_interval,
                 )
                 self._watch_the_links(ctx.self_ref)
 
@@ -192,6 +229,12 @@ class ClusterDaemon:
                 await self._ask_the_seeds(ctx, timers)
             case FormTick():
                 self._form_a_cluster()
+            case HeartbeatTick():
+                await self._probe_the_ring(ctx)
+            case Heartbeat():
+                await self._answer(ctx, message.sender)
+            case HeartbeatReply():
+                self._monitor.heard(message.sender, _now())
             case Join():
                 await self._admit(ctx, message.member)
             case GossipEnvelope():
@@ -201,6 +244,7 @@ class ClusterDaemon:
             case LinkChanged():
                 self._link_changed(message)
 
+        self._follow_the_ring()
         self._lead()
         if (
             self.self_member is not None
@@ -257,37 +301,104 @@ class ClusterDaemon:
             self._subscription = None
 
     def _link_changed(self, message: LinkChanged) -> None:
-        """Record what the transport saw, if it is news about a member.
+        """Take what the transport saw as evidence about a member this node watches.
 
-        Two things are deliberately narrow here. Only members are recorded,
-        because a peer this system talks to but has not clustered with is
-        nobody's business and its observations would never be cleaned up. And
-        only a change is recorded, because `PeerReachable` is published every
-        time a link opens, and writing the same opinion again would bump the
-        version and gossip a round for no news.
+        It is narrow on purpose. Only a member on this node's ring is
+        recorded: a peer this system talks to but has not clustered with is
+        nobody's business, and a member somebody else watches is judged by the
+        node whose job it is rather than by whichever node happened to send it
+        something.
 
-        The observation is this node's alone. It says the link from here is
-        open or is not, which is exactly what one node can honestly claim, and
-        the observer that said unreachable is the only one that can take it
-        back.
+        The transport's verdict is worth having next to this node's own probe
+        because it arrives sooner. A link that failed is known now, while the
+        probe is still inside a window that has not run out. It is retracted
+        by the link coming back and by nothing else, since an answer to a
+        probe says nothing about what the transport is refusing to carry.
         """
-        if not any(m.address == message.peer for m in self._state.members):
-            return
-        status = (
-            ReachabilityStatus.REACHABLE
+        now = _now()
+        watched = (
+            self._monitor.link_open(message.peer, now)
             if message.reachable
-            else ReachabilityStatus.UNREACHABLE
+            else self._monitor.link_lost(message.peer)
         )
-        if self._state.reachability.says(self._address, message.peer) is status:
+        if not watched:
+            return
+        self._observe(message.peer, self._monitor.verdicts(now)[message.peer])
+
+    def _follow_the_ring(self) -> None:
+        """Watch what the current membership says this node should watch.
+
+        Run at the end of every turn, because membership only changes in one,
+        so the ring this node holds is never a round out of date.
+        """
+        for peer in self._monitor.follow(self._state.alive, _now()):
+            # No longer this node's to judge, so whatever it said is taken
+            # back. A claim left behind by a node that has stopped watching
+            # would block convergence with nothing able to retract it.
+            self._observe(peer, ReachabilityStatus.REACHABLE)
+
+    async def _probe_the_ring(self, ctx: ActorContext[ClusterMessage]) -> None:
+        """Ask every member this node watches whether it is still answering.
+
+        The judging happens first, on what arrived since the last round, and
+        the asking after it. Traffic is one message per watched member, so it
+        is bounded by the ring rather than by the size of the cluster.
+        """
+        now = _now()
+        for peer, status in self._monitor.verdicts(now).items():
+            self._observe(peer, status)
+            if status is ReachabilityStatus.UNREACHABLE:
+                # An unreachable member is still a member, so this node keeps
+                # knocking. Remoting gives up for good and waits to be told
+                # otherwise, which is the honest answer for a system with no
+                # membership to consult and the wrong one here: nobody has
+                # decided this member is gone, and until somebody does, the
+                # cluster's job is to keep trying to reach it.
+                self._relent(peer)
+            self._heartbeats += 1
+            (await self._peer(ctx, peer)).tell(Heartbeat(sender=self._address))
+
+    async def _answer(self, ctx: ActorContext[ClusterMessage], watcher: str) -> None:
+        """Tell a node that is watching this one that it is still here.
+
+        Answered whether or not the asker is a member here. What the answer
+        means is the watcher's business, and a node that is behind on
+        membership is exactly the one that should not also look dead.
+
+        Args:
+            ctx: This actor's context, for resolving the watcher.
+            watcher: The node that asked.
+        """
+        peer = await self._peer(ctx, watcher)
+        peer.tell(HeartbeatReply(sender=self._address))
+
+    def _observe(self, peer: str, status: ReachabilityStatus) -> None:
+        """Record what this node believes about a member, when it is news.
+
+        Only a change is written. Every round reaches the same conclusion
+        about a member that is fine, and writing it again would bump the
+        version and cost a gossip round to say nothing.
+
+        The observation is this node's alone. It says this node cannot get
+        through, which is exactly what one node can honestly claim, and the
+        observer that said unreachable is the only one that can take it back.
+
+        Args:
+            peer: The member being judged.
+            status: What this node now believes about it.
+        """
+        if self._state.reachability.says(self._address, peer) is status:
             return
         _log.info(
             "%s is %s from here",
-            message.peer,
-            "reachable again" if message.reachable else "unreachable",
+            peer,
+            "reachable again"
+            if status is ReachabilityStatus.REACHABLE
+            else "unreachable",
         )
-        self._state = self._state.observing(
-            self._address, message.peer, status
-        ).bumped_by(self._address)
+        self._state = self._state.observing(self._address, peer, status).bumped_by(
+            self._address
+        )
 
     def _start_joining(
         self, timers: TimerScheduler[ClusterMessage], seeds: Sequence[str]
@@ -471,3 +582,13 @@ class ClusterDaemon:
     def __repr__(self) -> str:
         """Render this node's address and what it believes."""
         return f"ClusterDaemon({self._address}, {self._state!r})"
+
+
+def _now() -> float:
+    """Return the time a failure detector reads.
+
+    Returns:
+        The loop's monotonic clock, which is the one every detector in the
+        library is documented against.
+    """
+    return asyncio.get_running_loop().time()

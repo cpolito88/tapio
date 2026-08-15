@@ -1,8 +1,9 @@
 """System-wide settings, read from the environment with a `TAPIO_` prefix."""
 
 from datetime import timedelta
+from typing import Annotated
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from tapio.actor.mailbox import MailboxConfig, OverflowStrategy
@@ -160,6 +161,32 @@ class ClusterSettings(BaseSettings):
     from producing a second cluster that never meets the first, so this has to
     stay comfortably longer than the time it takes a running seed to answer a
     join with gossip."""
+
+    monitored_peers: Annotated[int, Field(ge=1)] = 5
+    """How many other members this node watches, by their place on the ring.
+
+    Every node sorts the member addresses, finds itself, and watches the few
+    that follow it. So every member is watched by this many others whatever
+    the traffic does, and the heartbeat traffic stays linear in the number of
+    nodes. All-to-all monitoring is quadratic, and it is what makes naive
+    implementations fall over at a few dozen nodes."""
+
+    heartbeat_interval: timedelta = timedelta(seconds=1)
+    """How often this node asks each member it watches whether it is answering.
+
+    Separate from the link heartbeat in
+    [RemoteSettings][tapio.settings.RemoteSettings]: that one keeps a
+    connection warm and judges the connection, and this one judges a member,
+    including one this node would otherwise never send anything to."""
+
+    unreachable_after: timedelta = timedelta(seconds=5)
+    """How long a watched member may go without answering before it is called
+    unreachable.
+
+    An unreachable member blocks convergence and is not written off: deciding
+    to stop waiting for it is downing, and downing is a separate decision with
+    strategies of its own. Set this well above `heartbeat_interval`, since a
+    fixed window has no opinion about how variable the network is."""
 
     join_timeout: timedelta = timedelta(seconds=30)
     """How long `join_seed_nodes` waits to see this node reach `Up`."""

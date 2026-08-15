@@ -29,6 +29,7 @@ from tapio.cluster.gossip import Gossip
 from tapio.cluster.member import Member, MemberStatus, rank_of
 from tapio.cluster.messages import ClusterMessage, Leave, Seeds
 from tapio.errors import ClusterError
+from tapio.remote.address import Address
 from tapio.settings import ClusterSettings
 
 __all__ = ["Cluster"]
@@ -53,7 +54,8 @@ class Cluster:
             ClusterError: If the system has remoting switched off, so it has
                 no address other nodes could dial.
         """
-        if system.remote is None:
+        endpoint = system.remote
+        if endpoint is None:
             msg = (
                 f"cannot cluster {system.name}: it has remoting switched off, so "
                 "it has no address another node could dial. Pass "
@@ -62,12 +64,18 @@ class Cluster:
             raise ClusterError(msg)
         self._system = system
         self._settings = settings if settings is not None else ClusterSettings()
+
+        def relent(address: str) -> None:
+            """Stop refusing a member remoting gave up on."""
+            endpoint.clear_quarantine(Address.parse(address))
+
         self._daemon = ClusterDaemon(
             address=str(system.address),
             uid=system.uid,
             refs=system.refs,
             events=system.events,
             settings=self._settings,
+            relent=relent,
         )
         self._ref: ActorRef[ClusterMessage] = system.spawn_system_actor(
             self._daemon.behavior(), DAEMON_NAME
@@ -113,6 +121,25 @@ class Cluster:
         take" is a question about rounds rather than about seconds.
         """
         return self._daemon.rounds
+
+    @property
+    def monitored(self) -> tuple[str, ...]:
+        """The members this node watches, in address order.
+
+        Every node sorts the member addresses, finds itself, and watches the
+        few that follow it, so every member is watched by that many others
+        however little traffic there is between them.
+        """
+        return self._daemon.monitored
+
+    @property
+    def heartbeats_sent(self) -> int:
+        """How many probes this node has sent to the members it watches.
+
+        One per watched member per round, which is what makes the traffic
+        linear in the number of nodes rather than quadratic.
+        """
+        return self._daemon.heartbeats
 
     async def join_seed_nodes(
         self,
