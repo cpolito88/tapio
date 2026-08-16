@@ -237,6 +237,25 @@ async def test_a_join_claiming_a_high_status_is_admitted_as_joining():
             await eventually(lambda: first.cluster.heartbeats_sent > beats, within=5.0)
 
 
+async def test_a_join_naming_an_address_with_no_host_is_refused_on_the_wire():
+    # `Join` is answered, so the joiner's address is dialled, and resolving an
+    # address with no host raises rather than dead-lettering. Refusing it here
+    # keeps it out of the state as well: an undialable member admitted before
+    # the answer failed would have been gossiped to the whole cluster.
+    with pytest.raises(ValidationError, match="no host to dial"):
+        Join(member=Member(address="tapio://ghost", uid=1))
+
+
+async def test_a_seed_with_no_host_to_dial_is_refused_at_the_call():
+    # The same check on the way in from a configuration file rather than from
+    # a socket. A seed nobody can dial is a typo, and saying so where the list
+    # is passed beats a node that asks a seed forever and never joins.
+    with assert_no_leaked_tasks():
+        async with cluster_of(1) as (node,):
+            with pytest.raises(ValidationError, match="no host to dial"):
+                await node.cluster.join_seed_nodes(["tapio://ghost"])
+
+
 async def test_a_peer_addresses_the_daemon_without_knowing_its_incarnation():
     # This is what makes a seed list usable: an address in a configuration
     # file names the daemon over there, and nothing else could.

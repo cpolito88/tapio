@@ -28,6 +28,15 @@ def test_an_address_that_is_not_an_address_is_rejected_where_it_is_written():
         Member(address="alpha", uid=1)
 
 
+def test_an_address_with_no_host_to_dial_is_rejected_too():
+    # It parses, since that is how a system with remoting switched off writes
+    # its own refs down, and resolving one raises rather than dead-lettering.
+    # A cluster reaches its members by dialling them, so a member that names
+    # nowhere to send to is refused at the edge instead.
+    with pytest.raises(ValidationError, match="no host to dial"):
+        Member(address="tapio://ghost", uid=1)
+
+
 def test_the_statuses_are_ordered_the_way_the_merge_needs():
     ranks = [
         Member(address=ALPHA, uid=1, status=status).rank for status in MemberStatus

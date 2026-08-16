@@ -24,7 +24,15 @@ __all__ = ["AddressStr", "Member", "MemberStatus", "rank_of", "sort_key"]
 
 
 def _parses_as_an_address(text: str) -> str:
-    """Check that a string is an address, since it will be dialled later.
+    """Check that a string is an address that could be dialled.
+
+    Being an address is not enough. A system with remoting switched off writes
+    its refs down with no host, and that form parses, so checking only that it
+    parses lets `tapio://ghost` through. Every address in a cluster message is
+    dialled sooner or later, and resolving one with nowhere to send to raises
+    rather than dead-lettering, so the check that matters here is that a peer
+    could reach it. A cluster requires remoting, so no member has an honest
+    reason to name an address that cannot be dialled.
 
     Args:
         text: The candidate.
@@ -33,10 +41,19 @@ def _parses_as_an_address(text: str) -> str:
         The same string.
 
     Raises:
-        ValueError: If it is not an address, which Pydantic reports as a
-            validation error naming the field.
+        ValueError: If it is not an address, or names no host to dial, which
+            Pydantic reports as a validation error naming the field. On a
+            message that arrived on a socket the codec turns that into a dead
+            letter, so the frame is refused rather than delivered.
     """
-    Address.parse(text)
+    address = Address.parse(text)
+    if not address.is_addressable:
+        msg = (
+            f"{text!r} names the system {address.system!r} and no host to dial. "
+            "A cluster member is reached by its canonical address, so an "
+            "address with nowhere to send to cannot name one."
+        )
+        raise ValueError(msg)
     return text
 
 

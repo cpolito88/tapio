@@ -154,13 +154,51 @@ async def test_answering_a_stranger_does_not_grow_the_ref_cache():
                 lambda: first.cluster.heartbeats_sent > sent + 2, within=5.0
             )
 
-            # The asker is answered whether or not it is a member, since a
-            # node behind on membership is the one that should not also look
-            # dead. Keeping its ref is the part that is not safe: the address
-            # came off a socket, so a cache keyed by it is one anybody can
-            # grow.
+            # The address came off a socket, so a cache keyed by it is one
+            # anybody can grow. Only membership vouches for a ref being kept.
             cached = set(first.cluster._daemon._peers)
             assert cached <= {n.address for n in nodes} | set(seeds_of(nodes))
+
+
+async def test_answering_never_dials_an_address_the_asker_made_up():
+    with assert_no_leaked_tasks():
+        dialled = 0
+
+        async def count(reader, writer) -> None:
+            nonlocal dialled
+            dialled += 1
+            writer.close()
+
+        listener = await asyncio.start_server(count, "127.0.0.1", 0)
+        port = listener.sockets[0].getsockname()[1]
+        try:
+            async with cluster_of(2, settings=WATCHFUL) as nodes:
+                first, second = nodes
+                await joined(nodes)
+                daemon = await second.system.resolve(
+                    daemon_uri(first.address), expect=WireMessage
+                )
+
+                for index in range(5):
+                    daemon.tell(
+                        Heartbeat(sender=f"tapio://made-up{index}@127.0.0.1:{port}")
+                    )
+
+                # A few rounds, so any answer has certainly been sent by now.
+                sent = first.cluster.heartbeats_sent
+                await eventually(
+                    lambda: first.cluster.heartbeats_sent > sent + 2, within=5.0
+                )
+
+                # The asker names where to answer, so a node that answered by
+                # dialling would connect wherever any peer that finished a
+                # handshake told it to, as often as it asked. A real watcher
+                # is answered over the link its heartbeat arrived on, which
+                # these have not got and cannot get.
+                assert dialled == 0
+        finally:
+            listener.close()
+            await listener.wait_closed()
 
 
 async def test_the_probing_is_bounded_by_the_ring_and_not_by_the_cluster():

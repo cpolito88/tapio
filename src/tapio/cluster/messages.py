@@ -1,6 +1,6 @@
 """What cluster nodes say to each other, and what a node says to itself.
 
-The three that cross a link share a base class, so one resolved ref can carry
+The five that cross a link share a base class, so one resolved ref can carry
 all of them, and they are registered so a peer can name them on the wire. The
 ticks are the daemon's own: they never leave the process, they are not
 registered, and a peer that invented one would be answered with a dead letter

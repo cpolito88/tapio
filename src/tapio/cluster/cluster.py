@@ -69,6 +69,10 @@ class Cluster:
             """Stop refusing a member remoting gave up on."""
             endpoint.clear_quarantine(Address.parse(address))
 
+        def linked(address: str) -> bool:
+            """Whether remoting already holds an association with a peer."""
+            return endpoint.association_for(Address.parse(address)) is not None
+
         self._daemon = ClusterDaemon(
             address=str(system.address),
             uid=system.uid,
@@ -76,6 +80,7 @@ class Cluster:
             events=system.events,
             settings=self._settings,
             relent=relent,
+            linked=linked,
         )
         self._ref: ActorRef[ClusterMessage] = system.spawn_system_actor(
             self._daemon.behavior(), DAEMON_NAME

@@ -47,6 +47,7 @@ from tapio.cluster.messages import (
 )
 from tapio.cluster.monitor import RingMonitor, deadline_detectors
 from tapio.cluster.reachability import ReachabilityStatus
+from tapio.errors import RefResolutionError
 from tapio.logging import runtime_logger
 from tapio.remote.failure import PeerReachable, PeerUnreachable
 from tapio.remote.registry import RefRegistry
@@ -91,6 +92,7 @@ class ClusterDaemon:
         events: EventStream,
         settings: ClusterSettings,
         relent: Callable[[str], None],
+        linked: Callable[[str], bool],
         choose: Callable[[Sequence[str]], str] = random.choice,
     ) -> None:
         """Describe a node's cluster daemon, before its actor exists.
@@ -108,6 +110,10 @@ class ClusterDaemon:
                 member that has not been downed is still a member, so this
                 node keeps knocking rather than waiting to be told the
                 quarantine is over.
+            linked: Says whether remoting already holds an association with a
+                peer. It is asked before answering a heartbeat from an address
+                membership does not know, so that answering reuses a link that
+                exists rather than opening one to wherever the message said.
             choose: Picks the peer to gossip to this round. Injected so a test
                 can make a round deterministic; the default is uniformly at
                 random, which is what keeps gossip traffic linear in the
@@ -119,6 +125,7 @@ class ClusterDaemon:
         self._events = events
         self._choose = choose
         self._relent = relent
+        self._linked = linked
         self._subscription: Subscription | None = None
         self._self = Member(address=address, uid=uid, roles=settings.roles)
         self._state = Gossip()
@@ -348,8 +355,13 @@ class ClusterDaemon:
         self._keep_knocking()
         for peer, status in self._monitor.verdicts(now).items():
             self._observe(peer, status)
+            ref = await self._peer(ctx, peer)
+            if ref is None:
+                # Counted only when one is sent, so the tally stays the answer
+                # to "how much traffic did the ring cost".
+                continue
             self._heartbeats += 1
-            (await self._peer(ctx, peer)).tell(Heartbeat(sender=self._address))
+            ref.tell(Heartbeat(sender=self._address))
         self._forget_strangers()
 
     def _keep_knocking(self) -> None:
@@ -402,6 +414,16 @@ class ClusterDaemon:
         means is the watcher's business, and a node that is behind on
         membership is exactly the one that should not also look dead.
 
+        What is never done is open a new connection to an address that only
+        the message vouches for. The asker names where to answer, so answering
+        by dialling would let any peer that has completed a handshake make
+        this node connect to any host and port it likes, as many times as it
+        cares to ask. Two things make an address answerable: membership, which
+        is a peer this node would gossip to anyway, and a link that already
+        exists, which is how a node this one has not heard of yet is answered.
+        A genuine watcher always has the second, since its heartbeat arrived
+        over it. An invented address has neither and is dropped.
+
         The ref is kept only for a node membership already vouches for. The
         asker's address arrived in a message, so caching whatever turns up
         would let a peer grow this node's cache by asking under a new name
@@ -412,7 +434,16 @@ class ClusterDaemon:
             watcher: The node that asked.
         """
         vouched = any(member.address == watcher for member in self._state.alive)
+        if not vouched and not self._linked(watcher):
+            _log.debug(
+                "%s asked %s for an answer and is neither a member nor linked",
+                watcher,
+                self._address,
+            )
+            return
         peer = await self._peer(ctx, watcher, remember=vouched)
+        if peer is None:
+            return
         peer.tell(HeartbeatReply(sender=self._address))
 
     def _observe(self, peer: str, status: ReachabilityStatus) -> None:
@@ -491,6 +522,8 @@ class ClusterDaemon:
             if seed == self._address:
                 continue
             peer = await self._peer(ctx, seed)
+            if peer is None:
+                continue
             peer.tell(Join(member=self._self))
 
     def _form_a_cluster(self) -> None:
@@ -612,6 +645,8 @@ class ClusterDaemon:
     async def _send(self, ctx: ActorContext[ClusterMessage], address: str) -> None:
         """Send this node's whole view to one other node."""
         peer = await self._peer(ctx, address)
+        if peer is None:
+            return
         peer.tell(GossipEnvelope(sender=self._address, gossip=self._state))
 
     async def _peer(
@@ -620,12 +655,23 @@ class ClusterDaemon:
         address: str,
         *,
         remember: bool = True,
-    ) -> ActorRef[WireMessage]:
+    ) -> ActorRef[WireMessage] | None:
         """Return the ref to another node's daemon, resolving it once.
 
         The ref is kept because it stays usable: it names a node rather than a
         link, so it survives a link that failed, and it names a path rather
         than an incarnation, so it survives a peer that restarted.
+
+        An address this node cannot resolve is dropped rather than raised
+        about. Resolving is the one thing the daemon does with an address that
+        raises instead of dead-lettering, and every address it resolves came
+        from somewhere else: a member merged out of a gossip, the sender of a
+        heartbeat, a seed out of a configuration file. A raise here reaches
+        the receive loop, where the default supervision decision is to stop,
+        so one address nobody can dial would end this node's membership while
+        every other member still listed it as up. `AddressStr` refuses the one
+        form known to be undialable, and this is the guarantee behind it: no
+        address stops the daemon, whatever it turns out to be.
 
         Args:
             ctx: This actor's context, which does the resolving.
@@ -633,13 +679,24 @@ class ClusterDaemon:
             remember: Whether to keep the ref. False for an address that came
                 out of a message rather than out of membership, so that what
                 arrives on a socket cannot grow the cache.
+
+        Returns:
+            The ref, or `None` if the address names nothing this node can
+            send to. Nothing is dialled either way: the first send through
+            the ref is what opens the association.
         """
         held = self._peers.get(address)
         if held is not None:
             return held
-        peer: ActorRef[WireMessage] = await ctx.resolve(
-            daemon_uri(address), expect=WireMessage
-        )
+        try:
+            peer: ActorRef[WireMessage] = await ctx.resolve(
+                daemon_uri(address), expect=WireMessage
+            )
+        except RefResolutionError as error:
+            _log.warning(
+                "%s cannot be reached from %s: %s", address, self._address, error
+            )
+            return None
         if remember:
             self._peers[address] = peer
         return peer

@@ -63,6 +63,13 @@ await cluster.join_seed_nodes([
 ])
 ```
 
+Every address in that list has to name a host and a port, and so does every
+address that arrives in a cluster message. `tapio://orders` on its own parses,
+since that is how a system with remoting switched off writes its own refs
+down, but nobody can dial it, and a cluster reaches its members by dialling
+them. A seed like that is refused where the list is passed, and one that
+arrives on a socket is refused as a malformed frame.
+
 A node asks every seed to let it in, and keeps asking until it sees itself in
 the gossip that comes back, because a join is delivered at most once like
 every other message in tapio. A node that is not a member itself ignores a
@@ -161,6 +168,15 @@ recorded unreachable **by that node**. Nothing about that is a decision by the
 cluster. It is one node saying it cannot get through, it travels in gossip
 like everything else, and the node that said it is the only one that can take
 it back, which it does the moment an answer arrives again.
+
+A heartbeat says where to send the answer, and a node answers only an address
+it has a reason to believe: a member of the view it holds, or a peer it
+already has a link to. A real watcher always has the second, because its
+heartbeat came over that link, so a node that is ahead on membership is still
+answered and does not look dead for the round or two it takes this one to
+catch up. What the rule refuses is the invented address. Answering by dialling
+whatever a message names would let any peer that has finished a handshake make
+this node open a connection to any host and port, as often as it cared to ask.
 
 A member is unreachable to the cluster when **any** node says so, and
 reachable again only when every one of them has retracted. That is
