@@ -28,7 +28,13 @@ A watcher has two sources of evidence, and it believes the worse of them:
 They are separate because each is retracted by its own evidence: an answer
 retracts the first, and a link coming back up retracts the second. Reading
 either one as the retraction of the other would let a node call a peer
-reachable on the strength of something that never asked it.
+reachable on the strength of something that never asked it. A link coming up
+is the clearest case: it proves a process is accepting connections, not that
+the daemon behind it is still answering.
+
+What the transport says is remembered for every peer, not only the ones on
+this node's ring, because the ring moves as the membership does. A peer that
+leaves the ring and comes back has not been proved healthy by the change.
 """
 
 from collections.abc import Callable, Iterable
@@ -125,6 +131,7 @@ class RingMonitor:
         self._size = size
         self._new_detector = detector
         self._watched: dict[str, _Watch] = {}
+        self._lost: set[str] = set()
 
     @property
     def peers(self) -> tuple[str, ...]:
@@ -145,13 +152,20 @@ class RingMonitor:
             node that no longer watches the member would block convergence
             with nothing left to retract it.
         """
-        wanted = monitored_by(self._address, members, self._size)
+        live = tuple(members)
+        wanted = monitored_by(self._address, live, self._size)
         dropped = tuple(sorted(set(self._watched) - set(wanted)))
         for peer in dropped:
             del self._watched[peer]
         for peer in wanted:
             if peer not in self._watched:
-                self._watched[peer] = _Watch(detector=self._new_detector(now))
+                # A peer arriving on the ring starts from what the transport
+                # already said about it. Picking it up is a change of whose
+                # job it is, and that is not evidence that it got better.
+                self._watched[peer] = _Watch(
+                    detector=self._new_detector(now), link_lost=peer in self._lost
+                )
+        self._lost &= {member.address for member in live}
         return dropped
 
     def heard(self, peer: str, at: float) -> bool:
@@ -175,38 +189,47 @@ class RingMonitor:
     def link_lost(self, peer: str) -> bool:
         """Record that the transport has given up on the link to a peer.
 
+        Remembered for any peer, not only a watched one, so that a peer this
+        node picks up later starts from what the transport already knows.
+
         Args:
             peer: The peer in question.
 
         Returns:
             Whether this node watches that peer.
         """
+        self._lost.add(peer)
         watch = self._watched.get(peer)
         if watch is None:
             return False
         watch.link_lost = True
         return True
 
-    def link_open(self, peer: str, at: float) -> bool:
+    def link_open(self, peer: str) -> bool:
         """Record that a link to a peer is up again.
 
         The link coming back is what retracts the transport's verdict, and
         nothing else can: this node's own probe never asked the transport
-        anything. It counts as being heard from as well, because a handshake
-        is a round trip and a peer that has just completed one is answering.
+        anything.
+
+        It does not count as an answer. A completed handshake proves a process
+        is accepting connections, and this node is asking whether the daemon
+        behind it is still replying. Feeding the detector here would let a
+        peer whose links churn faster than the window stay reachable for ever
+        without answering once, which is the failure this monitor exists to
+        catch. The next probe settles it, one round later.
 
         Args:
             peer: The peer in question.
-            at: When the link came up.
 
         Returns:
             Whether this node watches that peer.
         """
+        self._lost.discard(peer)
         watch = self._watched.get(peer)
         if watch is None:
             return False
         watch.link_lost = False
-        watch.detector.heartbeat(at)
         return True
 
     def verdicts(self, now: float) -> dict[str, ReachabilityStatus]:

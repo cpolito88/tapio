@@ -145,7 +145,7 @@ def test_an_answer_does_not_retract_what_the_transport_said():
     # fire on evidence that never asked the transport anything.
     assert monitor.verdicts(101.0) == {address(2): UNREACHABLE}
 
-    monitor.link_open(address(2), at=102.0)
+    monitor.link_open(address(2))
 
     assert monitor.verdicts(102.0) == {address(2): REACHABLE}
 
@@ -172,15 +172,70 @@ def test_a_peer_that_leaves_the_ring_is_handed_back():
     [
         lambda monitor: monitor.heard(address(9), at=1.0),
         lambda monitor: monitor.link_lost(address(9)),
-        lambda monitor: monitor.link_open(address(9), at=1.0),
+        lambda monitor: monitor.link_open(address(9)),
     ],
 )
-def test_nothing_is_recorded_about_a_peer_this_node_does_not_watch(tell):
+def test_no_verdict_is_reached_about_a_peer_this_node_does_not_watch(tell):
     monitor = a_monitor()
     monitor.follow(ring(1, 2), now=100.0)
 
     assert tell(monitor) is False
     assert monitor.verdicts(100.0) == {address(2): REACHABLE}
+
+
+def test_a_link_coming_up_does_not_count_as_an_answer():
+    monitor = a_monitor(window=10.0)
+    monitor.follow(ring(1, 2), now=100.0)
+
+    # Nothing answers for a whole window, so the peer has gone silent.
+    assert monitor.verdicts(111.0) == {address(2): UNREACHABLE}
+
+    monitor.link_open(address(2))
+
+    # A handshake proves a process is accepting connections, not that the
+    # daemon behind it is still replying. Counting it as an answer would let a
+    # peer whose links churn faster than the window never answer and never be
+    # judged, which is the failure this monitor exists to catch.
+    assert monitor.verdicts(111.0) == {address(2): UNREACHABLE}
+
+    monitor.heard(address(2), at=111.0)
+
+    assert monitor.verdicts(111.0) == {address(2): REACHABLE}
+
+
+def test_a_peer_returning_to_the_ring_keeps_what_the_transport_said():
+    monitor = a_monitor(size=1)
+    monitor.follow(ring(1, 2), now=100.0)
+    monitor.link_lost(address(2))
+
+    # Port 10 sorts between 1 and 2, so it takes over as this node's
+    # successor and hands port 2 back. Then it leaves again.
+    monitor.follow(ring(1, 10, 2), now=101.0)
+    monitor.follow(ring(1, 2), now=102.0)
+
+    # Changing whose job a peer is says nothing about the peer. Remoting is
+    # still refusing to carry frames to it, so a fresh window here would
+    # report it reachable for a whole window on no evidence at all.
+    assert monitor.verdicts(102.0) == {address(2): UNREACHABLE}
+
+    monitor.link_open(address(2))
+    monitor.heard(address(2), at=102.0)
+
+    assert monitor.verdicts(102.0) == {address(2): REACHABLE}
+
+
+def test_the_transport_is_forgotten_about_a_member_that_has_gone():
+    monitor = a_monitor(size=1)
+    monitor.follow(ring(1, 2), now=100.0)
+    monitor.link_lost(address(2))
+
+    # The member leaves the cluster altogether, and later an address is
+    # reused. What the transport said about the old one is not evidence
+    # about the new one, and remembering it for ever would grow without end.
+    monitor.follow(ring(1, 3), now=101.0)
+    monitor.follow(ring(1, 2), now=102.0)
+
+    assert monitor.verdicts(102.0) == {address(2): REACHABLE}
 
 
 def test_a_member_that_was_downed_is_no_longer_watched():
