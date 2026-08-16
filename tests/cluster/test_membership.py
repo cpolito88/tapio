@@ -14,10 +14,11 @@ from pydantic import ValidationError
 from tapio.actor import ActorPath, ActorSystem
 from tapio.cluster import Cluster, MemberStatus, WireMessage
 from tapio.cluster.daemon import daemon_uri
-from tapio.cluster.messages import Seeds
+from tapio.cluster.member import Member
+from tapio.cluster.messages import Join, Seeds
 from tapio.errors import ClusterError
 from tapio.testkit import assert_no_leaked_tasks
-from tests.cluster.conftest import Node, cluster_of, seeds_of
+from tests.cluster.conftest import WATCHFUL, Node, cluster_of, seeds_of
 from tests.failures import eventually
 
 NODES = 5
@@ -197,6 +198,43 @@ async def test_a_clustered_system_still_leaves_an_empty_registry_behind():
                 # catch one left behind.
                 assert node.system.refs.names() == ()
                 assert node.system.refs.lookup(_daemon_path(node)) is None
+
+
+async def test_a_join_claiming_a_high_status_is_admitted_as_joining():
+    # The daemon publishes a well-known name, so any peer that can handshake
+    # can send it a Join. Moving a member's status down the lattice raises,
+    # so trusting the status on the wire let one message stop the daemon for
+    # good: no more gossip, no more probing, and a node still in everybody
+    # else's view.
+    stranger = "tapio://sys@127.0.0.1:9"
+    with assert_no_leaked_tasks():
+        async with cluster_of(2, settings=WATCHFUL) as nodes:
+            first, second = nodes
+            await asyncio.gather(
+                *(n.cluster.join_seed_nodes(seeds_of(nodes)) for n in nodes)
+            )
+            await eventually(
+                lambda: all(n.cluster.state.converged for n in nodes), within=5.0
+            )
+            ref = await second.system.resolve(
+                daemon_uri(first.address), expect=WireMessage
+            )
+
+            ref.tell(
+                Join(member=Member(address=stranger, uid=9, status=MemberStatus.UP))
+            )
+
+            # A join means joining, whatever the joiner says about itself.
+            await eventually(
+                lambda: first.cluster.state.member(stranger) is not None, within=5.0
+            )
+            admitted = first.cluster.state.member(stranger)
+            assert admitted is not None
+            assert admitted.status is MemberStatus.JOINING
+
+            # Still probing, which is the part that says the daemon survived.
+            beats = first.cluster.heartbeats_sent
+            await eventually(lambda: first.cluster.heartbeats_sent > beats, within=5.0)
 
 
 async def test_a_peer_addresses_the_daemon_without_knowing_its_incarnation():

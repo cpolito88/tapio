@@ -537,10 +537,20 @@ class ClusterDaemon:
                         stale.uid,
                     )
                     state = state.with_member(stale.with_status(MemberStatus.DOWN))
-            _log.info("%s joins as %s", joiner.address, joiner.status)
-            self._state = state.with_member(
-                joiner.with_status(MemberStatus.JOINING)
-            ).bumped_by(self._address)
+            # Built rather than moved. The joiner arrived on a socket, so its
+            # status is a claim, and `with_status` refuses to move one back
+            # down the lattice: a Join carrying anything above `joining` would
+            # raise here and stop this daemon for good. What a node may assert
+            # about itself is who it is, and joining is the only status a join
+            # can mean.
+            admitted = Member(
+                address=joiner.address,
+                uid=joiner.uid,
+                roles=joiner.roles,
+                status=MemberStatus.JOINING,
+            )
+            _log.info("%s joins as %s", admitted.address, admitted.status)
+            self._state = state.with_member(admitted).bumped_by(self._address)
         # Answered whether or not anything changed, because what the joiner is
         # waiting for is to see itself in a gossip, and a retry that arrives
         # after it was already admitted still has to be told.
