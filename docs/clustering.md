@@ -176,6 +176,13 @@ back the first, and a link coming up again brings back the second. An answer
 never retracts what the transport said, since a peer that remoting is refusing
 to carry frames to cannot answer at all.
 
+A link coming up is not an answer either. It proves a process is accepting
+connections, and what this node is asking is whether the daemon behind it is
+still replying, so the next probe settles that one round later. Reading a
+handshake as a reply would let a peer whose links churn faster than
+`unreachable_after` look healthy forever without ever answering, which is the
+failure the watching exists to catch.
+
 Silence is judged behind an interface, and today it is a fixed window. A fixed
 window has no opinion about how variable a network is, so
 `unreachable_after` has to sit well above `heartbeat_interval` or a slow
@@ -187,16 +194,28 @@ timings instead of being told a number, fits behind the same interface.
 Remoting says [recovery is never automatic](unreachable.md): a system that
 gave up on a peer stays given up on until somebody calls `reconnect`. A
 clustered system does not follow that rule for its own members. Each round, a
-node knocks again on every member it watches and currently reports
-unreachable, clearing the quarantine first if there is one.
+node clears the quarantine on every alive member, so nothing it might have to
+talk to is left refused.
 
 The rule is right for a single system and wrong here, and the difference is
 membership. One node alone cannot tell a false alarm from a dead peer, so it
 refuses to guess twice. A cluster does not have to guess: an unreachable
 member has not been downed, so it is still a member, and the cluster's job is
-to keep trying to reach it until a downing strategy says to stop. Only members
-this node watches and currently reports unreachable are forgiven, and only
-while nobody has decided otherwise.
+to keep trying to reach it until a downing strategy says to stop. Only
+members are forgiven, and only while nobody has decided otherwise: a peer this
+system talks to but has not clustered with follows remoting's rule as before.
+
+It covers every member and not only the ones this node watches, because the
+two sets are different jobs. The ring decides who is *judged*, and it is a few
+nodes per member so that heartbeat traffic stays linear. Gossip goes to any
+member at all. A node therefore has to be able to dial members it does not
+watch, and if only the watching node forgave a quarantine then every other
+pair would stay refused for good. In a cluster larger than `monitored_peers`
+that is most pairs, and a partition that healed would never converge again.
+
+Clearing a quarantine dials nothing. It says only that this node is willing to
+be associated again, so doing it every round for a member that is perfectly
+reachable costs a set lookup and changes nothing.
 
 ## Addressing, and the one uid rule this bends
 

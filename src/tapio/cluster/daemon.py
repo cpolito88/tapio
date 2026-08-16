@@ -317,7 +317,7 @@ class ClusterDaemon:
         """
         now = _now()
         watched = (
-            self._monitor.link_open(message.peer, now)
+            self._monitor.link_open(message.peer)
             if message.reachable
             else self._monitor.link_lost(message.peer)
         )
@@ -345,18 +345,55 @@ class ClusterDaemon:
         is bounded by the ring rather than by the size of the cluster.
         """
         now = _now()
+        self._keep_knocking()
         for peer, status in self._monitor.verdicts(now).items():
             self._observe(peer, status)
-            if status is ReachabilityStatus.UNREACHABLE:
-                # An unreachable member is still a member, so this node keeps
-                # knocking. Remoting gives up for good and waits to be told
-                # otherwise, which is the honest answer for a system with no
-                # membership to consult and the wrong one here: nobody has
-                # decided this member is gone, and until somebody does, the
-                # cluster's job is to keep trying to reach it.
-                self._relent(peer)
             self._heartbeats += 1
             (await self._peer(ctx, peer)).tell(Heartbeat(sender=self._address))
+        self._forget_strangers()
+
+    def _keep_knocking(self) -> None:
+        """Stop remoting refusing any member of this cluster.
+
+        An unreachable member is still a member, so this node keeps knocking.
+        Remoting gives up for good and waits to be told otherwise, which is
+        the honest answer for a system with no membership to consult and the
+        wrong one here: nobody has decided this member is gone, and until
+        somebody does, the cluster's job is to keep trying to reach it.
+
+        Every alive member is forgiven, not only the ones this node watches.
+        Gossip goes to any member, so a member this node does not watch is
+        still one it has to be able to talk to, and a quarantine that only the
+        watching node clears would leave the two of them refusing each other's
+        dial for good. In a cluster larger than `monitored_peers` that is most
+        pairs, so scoping this to the ring would stop a healed partition ever
+        converging again.
+
+        Clearing a quarantine dials nothing. It says only that this node is
+        willing to be associated again, so doing it for a member that is
+        perfectly reachable costs a set lookup and changes nothing.
+        """
+        for member in self._state.alive:
+            if member.address != self._address:
+                self._relent(member.address)
+
+    def _forget_strangers(self) -> None:
+        """Drop cached refs to nodes that are neither members nor seeds.
+
+        A ref is cached so that talking to a member does not resolve twice.
+        Answering a heartbeat caches nothing, because the asker need not be a
+        member here and an unbounded cache keyed by whatever arrived on a
+        socket is a cache anybody can grow. This prunes what membership has
+        since moved on from, so the cache stays the size of the cluster.
+
+        Seeds are kept because a node that has not joined yet has no members
+        to speak of and still has to reach them.
+        """
+        keep = {member.address for member in self._state.alive}
+        keep.update(self._seeds)
+        for address in tuple(self._peers):
+            if address not in keep:
+                del self._peers[address]
 
     async def _answer(self, ctx: ActorContext[ClusterMessage], watcher: str) -> None:
         """Tell a node that is watching this one that it is still here.
@@ -365,11 +402,17 @@ class ClusterDaemon:
         means is the watcher's business, and a node that is behind on
         membership is exactly the one that should not also look dead.
 
+        The ref is kept only for a node membership already vouches for. The
+        asker's address arrived in a message, so caching whatever turns up
+        would let a peer grow this node's cache by asking under a new name
+        each time.
+
         Args:
             ctx: This actor's context, for resolving the watcher.
             watcher: The node that asked.
         """
-        peer = await self._peer(ctx, watcher)
+        vouched = any(member.address == watcher for member in self._state.alive)
+        peer = await self._peer(ctx, watcher, remember=vouched)
         peer.tell(HeartbeatReply(sender=self._address))
 
     def _observe(self, peer: str, status: ReachabilityStatus) -> None:
@@ -562,13 +605,24 @@ class ClusterDaemon:
         peer.tell(GossipEnvelope(sender=self._address, gossip=self._state))
 
     async def _peer(
-        self, ctx: ActorContext[ClusterMessage], address: str
+        self,
+        ctx: ActorContext[ClusterMessage],
+        address: str,
+        *,
+        remember: bool = True,
     ) -> ActorRef[WireMessage]:
         """Return the ref to another node's daemon, resolving it once.
 
         The ref is kept because it stays usable: it names a node rather than a
         link, so it survives a link that failed, and it names a path rather
         than an incarnation, so it survives a peer that restarted.
+
+        Args:
+            ctx: This actor's context, which does the resolving.
+            address: The node whose daemon is wanted.
+            remember: Whether to keep the ref. False for an address that came
+                out of a message rather than out of membership, so that what
+                arrives on a socket cannot grow the cache.
         """
         held = self._peers.get(address)
         if held is not None:
@@ -576,7 +630,8 @@ class ClusterDaemon:
         peer: ActorRef[WireMessage] = await ctx.resolve(
             daemon_uri(address), expect=WireMessage
         )
-        self._peers[address] = peer
+        if remember:
+            self._peers[address] = peer
         return peer
 
     def __repr__(self) -> str:

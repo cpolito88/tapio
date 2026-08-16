@@ -8,6 +8,8 @@ stopped bringing the cluster back without somebody being written off.
 import asyncio
 
 from tapio.cluster import MemberStatus
+from tapio.cluster.daemon import daemon_uri
+from tapio.cluster.messages import Heartbeat, WireMessage
 from tapio.remote.address import Address
 from tapio.testkit import assert_no_leaked_tasks
 from tests.cluster.conftest import WATCHFUL, cluster_of, seeds_of
@@ -109,6 +111,56 @@ async def test_a_member_the_transport_gave_up_on_is_knocked_on_again():
                 lambda: not first.system.remote.is_quarantined(peer), within=5.0
             )
             await eventually(lambda: first.cluster.state.converged, within=10.0)
+
+
+async def test_a_member_this_node_does_not_watch_is_knocked_on_too():
+    with assert_no_leaked_tasks():
+        watchful = WATCHFUL.model_copy(update={"monitored_peers": 1})
+        async with cluster_of(4, settings=watchful) as nodes:
+            first, *rest = nodes
+            await joined(nodes)
+            await eventually(lambda: all(n.cluster.monitored for n in nodes))
+
+            stranger = next(n for n in rest if n.address not in first.cluster.monitored)
+            peer = Address.parse(stranger.address)
+            first.system.remote.quarantine(peer, "this system gave up alone")
+
+            # Gossip goes to any member, not only the ones this node watches,
+            # so forgiving just the ring would leave these two refusing each
+            # other for good. In a cluster larger than monitored_peers that is
+            # most pairs, and a healed partition would never converge again.
+            await eventually(
+                lambda: not first.system.remote.is_quarantined(peer), within=5.0
+            )
+            await eventually(
+                lambda: all(n.cluster.state.converged for n in nodes), within=10.0
+            )
+
+
+async def test_answering_a_stranger_does_not_grow_the_ref_cache():
+    with assert_no_leaked_tasks():
+        async with cluster_of(2, settings=WATCHFUL) as nodes:
+            first, second = nodes
+            await joined(nodes)
+            daemon = await second.system.resolve(
+                daemon_uri(first.address), expect=WireMessage
+            )
+
+            daemon.tell(Heartbeat(sender="tapio://nobody@127.0.0.1:1"))
+
+            # A few rounds, so the answer has certainly been sent by now.
+            sent = first.cluster.heartbeats_sent
+            await eventually(
+                lambda: first.cluster.heartbeats_sent > sent + 2, within=5.0
+            )
+
+            # The asker is answered whether or not it is a member, since a
+            # node behind on membership is the one that should not also look
+            # dead. Keeping its ref is the part that is not safe: the address
+            # came off a socket, so a cache keyed by it is one anybody can
+            # grow.
+            cached = set(first.cluster._daemon._peers)
+            assert cached <= {n.address for n in nodes} | set(seeds_of(nodes))
 
 
 async def test_the_probing_is_bounded_by_the_ring_and_not_by_the_cluster():
