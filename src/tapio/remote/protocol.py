@@ -35,18 +35,33 @@ PROTOCOL_VERSION: Final = 1
 It appears in every frame as `v`, and in both hellos, and a peer that answers
 with a different number is refused before anything else is read.
 
-**One contract change has happened without raising this**, deliberately, and it
-is recorded here because the rule above says it should have. The handshake
-stopped volunteering a system's identity to anything that could open a
-connection: the name, address, incarnation uid and release moved out of the
-server-hello and into the welcome. By the rule that is a contract change, since
-a reader has to know where those fields now are. The number stayed at 1 because
-nothing was deployed to be incompatible with, so the bump would have announced
-a break to nobody.
+**One contract change has happened without raising this**, and it is recorded
+here because the rule above says it should have. The handshake stopped
+volunteering a system's identity to anything that could open a connection: the
+name, address, incarnation uid and release moved out of the server-hello and
+into the welcome, in the release that became v0.6.0. By the rule that is a
+contract change, since a reader has to know where those fields now are.
 
-The cost is that two nodes on either side of that change both say 1 and fail at
-the frame rather than at the number: a `malformed server-hello` or a
-`malformed welcome`, instead of a protocol mismatch naming both versions. If
-you are reading this while debugging exactly that, the answer is that one end
-predates the change. The next contract change raises the number.
+The reason first written here for leaving it at 1 was that nothing was deployed
+to be incompatible with. That was wrong. v0.5.0 and every release before it
+were already tagged and published, and they speak the old handshake while
+calling it protocol 1.
+
+It stays at 1 anyway, for a reason that survives checking. A version number
+gates compatibility, and it can only gate a change that has not shipped yet.
+Raising it now would not reach v0.5.0, which is frozen at 1 and unreachable
+whatever this says. What it would reach is every release from v0.6.0 onwards,
+which all speak the same handshake as this one and interoperate today: they
+would start refusing the next release over a wire format that never changed.
+That is the flag day the paragraph above exists to prevent, and paying it to
+improve an error message for releases that have been unreachable since v0.6.0
+is the wrong trade.
+
+So two nodes either side of that change both say 1 and fail at the frame rather
+than at the number: a `malformed server-hello` or a `malformed welcome`,
+instead of a protocol mismatch naming both versions. If you are reading this
+while debugging exactly that, the answer is that one end predates v0.6.0, and
+the fix is to upgrade it rather than to look for a version mismatch that will
+never be reported. The next contract change raises the number, and that one
+will gate something.
 """
