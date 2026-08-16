@@ -20,7 +20,15 @@ from tapio.cluster.clock import Ordering, VectorClock
 from tapio.cluster.cluster import Cluster
 from tapio.cluster.gossip import Gossip
 from tapio.cluster.member import Member, MemberStatus
-from tapio.cluster.messages import GossipEnvelope, Join, Leave, WireMessage
+from tapio.cluster.messages import (
+    GossipEnvelope,
+    Heartbeat,
+    HeartbeatReply,
+    Join,
+    Leave,
+    WireMessage,
+)
+from tapio.cluster.monitor import RingMonitor, monitored_by
 from tapio.cluster.reachability import (
     Reachability,
     ReachabilityRecord,
@@ -31,6 +39,8 @@ __all__ = [
     "Cluster",
     "Gossip",
     "GossipEnvelope",
+    "Heartbeat",
+    "HeartbeatReply",
     "Join",
     "Leave",
     "Member",
@@ -39,6 +49,8 @@ __all__ = [
     "Reachability",
     "ReachabilityRecord",
     "ReachabilityStatus",
+    "RingMonitor",
     "VectorClock",
     "WireMessage",
+    "monitored_by",
 ]

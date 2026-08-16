@@ -1,6 +1,6 @@
 """What cluster nodes say to each other, and what a node says to itself.
 
-The three that cross a link share a base class, so one resolved ref can carry
+The five that cross a link share a base class, so one resolved ref can carry
 all of them, and they are registered so a peer can name them on the wire. The
 ticks are the daemon's own: they never leave the process, they are not
 registered, and a peer that invented one would be answered with a dead letter
@@ -25,6 +25,9 @@ __all__ = [
     "ClusterMessage",
     "FormTick",
     "GossipEnvelope",
+    "Heartbeat",
+    "HeartbeatReply",
+    "HeartbeatTick",
     "Join",
     "JoinTick",
     "Leave",
@@ -70,6 +73,33 @@ class GossipEnvelope(WireMessage):
 
     gossip: Gossip
     """What the sender believes."""
+
+
+@final
+@register_message()
+class Heartbeat(WireMessage):
+    """Ask a member whether it is still answering.
+
+    Sent every round to the members this node watches, and to nobody else, so
+    the traffic is bounded by how many peers a node watches rather than by how
+    many members there are.
+    """
+
+    sender: AddressStr
+    """Who is asking, so the answer knows where to go."""
+
+
+@final
+@register_message()
+class HeartbeatReply(WireMessage):
+    """Answer a member that asked whether this node is still answering.
+
+    Nothing is carried back but the answerer's address. What the watcher is
+    measuring is the arrival, and the arrival is the whole of the evidence.
+    """
+
+    sender: AddressStr
+    """Who answered, which is the member being watched."""
 
 
 @final
@@ -122,6 +152,11 @@ class FormTick(Message):
 
 
 @final
+class HeartbeatTick(Message):
+    """Probe the members this node watches, and judge the ones that went quiet."""
+
+
+@final
 class LinkChanged(Message):
     """What the transport saw about a peer, on its way into membership.
 
@@ -142,6 +177,6 @@ class LinkChanged(Message):
 
 
 ClusterMessage: TypeAlias = (
-    WireMessage | Seeds | Tick | JoinTick | FormTick | LinkChanged
+    WireMessage | Seeds | Tick | JoinTick | FormTick | HeartbeatTick | LinkChanged
 )
 """Everything the cluster daemon accepts, its own ticks included."""

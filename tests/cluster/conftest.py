@@ -13,16 +13,39 @@ from datetime import timedelta
 from tapio.actor import ActorSystem
 from tapio.cluster import Cluster, MemberStatus
 from tapio.settings import ClusterSettings, RemoteSettings, TapioSettings
+from tapio.testkit.remote import LinkFaults, link_faults
 
 QUICK = ClusterSettings(
     _env_file=None,  # type: ignore[call-arg]
     gossip_interval=timedelta(milliseconds=20),
     join_retry_interval=timedelta(milliseconds=20),
     seed_form_after=timedelta(milliseconds=100),
+    heartbeat_interval=timedelta(milliseconds=200),
+    unreachable_after=timedelta(seconds=5),
     join_timeout=timedelta(seconds=10),
     leave_timeout=timedelta(seconds=10),
 )
-"""Gossip fast enough that a whole cluster converges inside a test."""
+"""Gossip fast enough that a whole cluster converges inside a test.
+
+Gossip is what these settings hurry. Probing is left slow on purpose: a test
+about membership has no use for it, and a probe every few milliseconds only
+adds links to open and close while the test is tearing its nodes down. The
+window stays long for the same reason, so a busy loop never reads as a dead
+node. A test about reachability asks for `WATCHFUL` instead.
+"""
+
+WATCHFUL = QUICK.model_copy(
+    update={
+        "heartbeat_interval": timedelta(milliseconds=20),
+        "unreachable_after": timedelta(milliseconds=300),
+    }
+)
+"""Probe often, and give up quickly, for the tests that are about giving up.
+
+Fifteen probes fit inside the window, which is enough that a busy moment does
+not read as a dead node and short enough that a test does not wait seconds to
+see one.
+"""
 
 
 def remoting() -> TapioSettings:
@@ -39,6 +62,7 @@ class Node:
 
     system: ActorSystem
     cluster: Cluster
+    faults: LinkFaults
 
     @property
     def address(self) -> str:
@@ -69,7 +93,9 @@ async def cluster_of(
     """Start `count` systems, each with a cluster daemon and nothing joined yet.
 
     The systems are named `node1` upwards, and every one is terminated however
-    the test ends, so a failure leaves no port bound.
+    the test ends, so a failure leaves no port bound. Fault injection is
+    installed on each before it sends anything, so a test can partition a node
+    from the rest without having to arrange it beforehand.
 
     Args:
         count: How many nodes to start.
@@ -82,7 +108,14 @@ async def cluster_of(
     try:
         for index in range(1, count + 1):
             system = ActorSystem(f"node{index}", remoting())
-            nodes.append(Node(system=system, cluster=Cluster(system, settings)))
+            faults = link_faults(system)
+            nodes.append(
+                Node(
+                    system=system,
+                    cluster=Cluster(system, settings),
+                    faults=faults,
+                )
+            )
         yield tuple(nodes)
     finally:
         for node in reversed(nodes):

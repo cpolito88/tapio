@@ -15,6 +15,7 @@ to be addressable. That is the only weakening of the incarnation rule in the
 library, it is opt-in, and it is why this actor and not another.
 """
 
+import asyncio
 import random
 from collections.abc import Callable, Sequence
 from datetime import timedelta
@@ -33,6 +34,9 @@ from tapio.cluster.messages import (
     ClusterMessage,
     FormTick,
     GossipEnvelope,
+    Heartbeat,
+    HeartbeatReply,
+    HeartbeatTick,
     Join,
     JoinTick,
     Leave,
@@ -41,7 +45,9 @@ from tapio.cluster.messages import (
     Tick,
     WireMessage,
 )
+from tapio.cluster.monitor import RingMonitor, deadline_detectors
 from tapio.cluster.reachability import ReachabilityStatus
+from tapio.errors import RefResolutionError
 from tapio.logging import runtime_logger
 from tapio.remote.failure import PeerReachable, PeerUnreachable
 from tapio.remote.registry import RefRegistry
@@ -57,6 +63,7 @@ _log = runtime_logger("cluster")
 _GOSSIP_TIMER = "gossip"
 _JOIN_TIMER = "join"
 _FORM_TIMER = "form"
+_HEARTBEAT_TIMER = "heartbeat"
 
 
 def daemon_uri(address: str) -> str:
@@ -84,6 +91,8 @@ class ClusterDaemon:
         refs: RefRegistry,
         events: EventStream,
         settings: ClusterSettings,
+        relent: Callable[[str], None],
+        linked: Callable[[str], bool],
         choose: Callable[[Sequence[str]], str] = random.choice,
     ) -> None:
         """Describe a node's cluster daemon, before its actor exists.
@@ -97,6 +106,14 @@ class ClusterDaemon:
             events: This system's event stream, where remoting says that a
                 peer went out of reach or came back.
             settings: How often to gossip, and how patient to be.
+            relent: Tells remoting to stop refusing a peer it gave up on. A
+                member that has not been downed is still a member, so this
+                node keeps knocking rather than waiting to be told the
+                quarantine is over.
+            linked: Says whether remoting already holds an association with a
+                peer. It is asked before answering a heartbeat from an address
+                membership does not know, so that answering reuses a link that
+                exists rather than opening one to wherever the message said.
             choose: Picks the peer to gossip to this round. Injected so a test
                 can make a round deterministic; the default is uniformly at
                 random, which is what keeps gossip traffic linear in the
@@ -107,6 +124,8 @@ class ClusterDaemon:
         self._refs = refs
         self._events = events
         self._choose = choose
+        self._relent = relent
+        self._linked = linked
         self._subscription: Subscription | None = None
         self._self = Member(address=address, uid=uid, roles=settings.roles)
         self._state = Gossip()
@@ -114,6 +133,12 @@ class ClusterDaemon:
         self._peers: dict[str, ActorRef[WireMessage]] = {}
         self._heard_from_anyone = False
         self._rounds = 0
+        self._heartbeats = 0
+        self._monitor = RingMonitor(
+            address=address,
+            size=settings.monitored_peers,
+            detector=deadline_detectors(settings.unreachable_after.total_seconds()),
+        )
 
     @property
     def state(self) -> Gossip:
@@ -143,6 +168,20 @@ class ClusterDaemon:
         """How many gossip rounds this node has sent, which a test counts."""
         return self._rounds
 
+    @property
+    def heartbeats(self) -> int:
+        """How many probes this node has sent, which a test counts.
+
+        One per watched member per round, so this is what shows the traffic is
+        bounded by the ring rather than by the size of the cluster.
+        """
+        return self._heartbeats
+
+    @property
+    def monitored(self) -> tuple[str, ...]:
+        """The members this node watches, in address order."""
+        return self._monitor.peers
+
     def behavior(self) -> Behavior[ClusterMessage]:
         """Build the daemon actor."""
 
@@ -153,6 +192,11 @@ class ClusterDaemon:
                 self._refs.register_well_known(ctx.self_ref)
                 timers.start_fixed_delay(
                     _GOSSIP_TIMER, Tick(), self._settings.gossip_interval
+                )
+                timers.start_fixed_delay(
+                    _HEARTBEAT_TIMER,
+                    HeartbeatTick(),
+                    self._settings.heartbeat_interval,
                 )
                 self._watch_the_links(ctx.self_ref)
 
@@ -192,6 +236,12 @@ class ClusterDaemon:
                 await self._ask_the_seeds(ctx, timers)
             case FormTick():
                 self._form_a_cluster()
+            case HeartbeatTick():
+                await self._probe_the_ring(ctx)
+            case Heartbeat():
+                await self._answer(ctx, message.sender)
+            case HeartbeatReply():
+                self._monitor.heard(message.sender, _now())
             case Join():
                 await self._admit(ctx, message.member)
             case GossipEnvelope():
@@ -201,6 +251,7 @@ class ClusterDaemon:
             case LinkChanged():
                 self._link_changed(message)
 
+        self._follow_the_ring()
         self._lead()
         if (
             self.self_member is not None
@@ -257,37 +308,171 @@ class ClusterDaemon:
             self._subscription = None
 
     def _link_changed(self, message: LinkChanged) -> None:
-        """Record what the transport saw, if it is news about a member.
+        """Take what the transport saw as evidence about a member this node watches.
 
-        Two things are deliberately narrow here. Only members are recorded,
-        because a peer this system talks to but has not clustered with is
-        nobody's business and its observations would never be cleaned up. And
-        only a change is recorded, because `PeerReachable` is published every
-        time a link opens, and writing the same opinion again would bump the
-        version and gossip a round for no news.
+        It is narrow on purpose. Only a member on this node's ring is
+        recorded: a peer this system talks to but has not clustered with is
+        nobody's business, and a member somebody else watches is judged by the
+        node whose job it is rather than by whichever node happened to send it
+        something.
 
-        The observation is this node's alone. It says the link from here is
-        open or is not, which is exactly what one node can honestly claim, and
-        the observer that said unreachable is the only one that can take it
-        back.
+        The transport's verdict is worth having next to this node's own probe
+        because it arrives sooner. A link that failed is known now, while the
+        probe is still inside a window that has not run out. It is retracted
+        by the link coming back and by nothing else, since an answer to a
+        probe says nothing about what the transport is refusing to carry.
         """
-        if not any(m.address == message.peer for m in self._state.members):
-            return
-        status = (
-            ReachabilityStatus.REACHABLE
+        now = _now()
+        watched = (
+            self._monitor.link_open(message.peer)
             if message.reachable
-            else ReachabilityStatus.UNREACHABLE
+            else self._monitor.link_lost(message.peer)
         )
-        if self._state.reachability.says(self._address, message.peer) is status:
+        if not watched:
+            return
+        self._observe(message.peer, self._monitor.verdicts(now)[message.peer])
+
+    def _follow_the_ring(self) -> None:
+        """Watch what the current membership says this node should watch.
+
+        Run at the end of every turn, because membership only changes in one,
+        so the ring this node holds is never a round out of date.
+        """
+        for peer in self._monitor.follow(self._state.alive, _now()):
+            # No longer this node's to judge, so whatever it said is taken
+            # back. A claim left behind by a node that has stopped watching
+            # would block convergence with nothing able to retract it.
+            self._observe(peer, ReachabilityStatus.REACHABLE)
+
+    async def _probe_the_ring(self, ctx: ActorContext[ClusterMessage]) -> None:
+        """Ask every member this node watches whether it is still answering.
+
+        The judging happens first, on what arrived since the last round, and
+        the asking after it. Traffic is one message per watched member, so it
+        is bounded by the ring rather than by the size of the cluster.
+        """
+        now = _now()
+        self._keep_knocking()
+        for peer, status in self._monitor.verdicts(now).items():
+            self._observe(peer, status)
+            ref = await self._peer(ctx, peer)
+            if ref is None:
+                # Counted only when one is sent, so the tally stays the answer
+                # to "how much traffic did the ring cost".
+                continue
+            self._heartbeats += 1
+            ref.tell(Heartbeat(sender=self._address))
+        self._forget_strangers()
+
+    def _keep_knocking(self) -> None:
+        """Stop remoting refusing any member of this cluster.
+
+        An unreachable member is still a member, so this node keeps knocking.
+        Remoting gives up for good and waits to be told otherwise, which is
+        the honest answer for a system with no membership to consult and the
+        wrong one here: nobody has decided this member is gone, and until
+        somebody does, the cluster's job is to keep trying to reach it.
+
+        Every alive member is forgiven, not only the ones this node watches.
+        Gossip goes to any member, so a member this node does not watch is
+        still one it has to be able to talk to, and a quarantine that only the
+        watching node clears would leave the two of them refusing each other's
+        dial for good. In a cluster larger than `monitored_peers` that is most
+        pairs, so scoping this to the ring would stop a healed partition ever
+        converging again.
+
+        Clearing a quarantine dials nothing. It says only that this node is
+        willing to be associated again, so doing it for a member that is
+        perfectly reachable costs a set lookup and changes nothing.
+        """
+        for member in self._state.alive:
+            if member.address != self._address:
+                self._relent(member.address)
+
+    def _forget_strangers(self) -> None:
+        """Drop cached refs to nodes that are neither members nor seeds.
+
+        A ref is cached so that talking to a member does not resolve twice.
+        Answering a heartbeat caches nothing, because the asker need not be a
+        member here and an unbounded cache keyed by whatever arrived on a
+        socket is a cache anybody can grow. This prunes what membership has
+        since moved on from, so the cache stays the size of the cluster.
+
+        Seeds are kept because a node that has not joined yet has no members
+        to speak of and still has to reach them.
+        """
+        keep = {member.address for member in self._state.alive}
+        keep.update(self._seeds)
+        for address in tuple(self._peers):
+            if address not in keep:
+                del self._peers[address]
+
+    async def _answer(self, ctx: ActorContext[ClusterMessage], watcher: str) -> None:
+        """Tell a node that is watching this one that it is still here.
+
+        Answered whether or not the asker is a member here. What the answer
+        means is the watcher's business, and a node that is behind on
+        membership is exactly the one that should not also look dead.
+
+        What is never done is open a new connection to an address that only
+        the message vouches for. The asker names where to answer, so answering
+        by dialling would let any peer that has completed a handshake make
+        this node connect to any host and port it likes, as many times as it
+        cares to ask. Two things make an address answerable: membership, which
+        is a peer this node would gossip to anyway, and a link that already
+        exists, which is how a node this one has not heard of yet is answered.
+        A genuine watcher always has the second, since its heartbeat arrived
+        over it. An invented address has neither and is dropped.
+
+        The ref is kept only for a node membership already vouches for. The
+        asker's address arrived in a message, so caching whatever turns up
+        would let a peer grow this node's cache by asking under a new name
+        each time.
+
+        Args:
+            ctx: This actor's context, for resolving the watcher.
+            watcher: The node that asked.
+        """
+        vouched = any(member.address == watcher for member in self._state.alive)
+        if not vouched and not self._linked(watcher):
+            _log.debug(
+                "%s asked %s for an answer and is neither a member nor linked",
+                watcher,
+                self._address,
+            )
+            return
+        peer = await self._peer(ctx, watcher, remember=vouched)
+        if peer is None:
+            return
+        peer.tell(HeartbeatReply(sender=self._address))
+
+    def _observe(self, peer: str, status: ReachabilityStatus) -> None:
+        """Record what this node believes about a member, when it is news.
+
+        Only a change is written. Every round reaches the same conclusion
+        about a member that is fine, and writing it again would bump the
+        version and cost a gossip round to say nothing.
+
+        The observation is this node's alone. It says this node cannot get
+        through, which is exactly what one node can honestly claim, and the
+        observer that said unreachable is the only one that can take it back.
+
+        Args:
+            peer: The member being judged.
+            status: What this node now believes about it.
+        """
+        if self._state.reachability.says(self._address, peer) is status:
             return
         _log.info(
             "%s is %s from here",
-            message.peer,
-            "reachable again" if message.reachable else "unreachable",
+            peer,
+            "reachable again"
+            if status is ReachabilityStatus.REACHABLE
+            else "unreachable",
         )
-        self._state = self._state.observing(
-            self._address, message.peer, status
-        ).bumped_by(self._address)
+        self._state = self._state.observing(self._address, peer, status).bumped_by(
+            self._address
+        )
 
     def _start_joining(
         self, timers: TimerScheduler[ClusterMessage], seeds: Sequence[str]
@@ -337,6 +522,8 @@ class ClusterDaemon:
             if seed == self._address:
                 continue
             peer = await self._peer(ctx, seed)
+            if peer is None:
+                continue
             peer.tell(Join(member=self._self))
 
     def _form_a_cluster(self) -> None:
@@ -383,10 +570,20 @@ class ClusterDaemon:
                         stale.uid,
                     )
                     state = state.with_member(stale.with_status(MemberStatus.DOWN))
-            _log.info("%s joins as %s", joiner.address, joiner.status)
-            self._state = state.with_member(
-                joiner.with_status(MemberStatus.JOINING)
-            ).bumped_by(self._address)
+            # Built rather than moved. The joiner arrived on a socket, so its
+            # status is a claim, and `with_status` refuses to move one back
+            # down the lattice: a Join carrying anything above `joining` would
+            # raise here and stop this daemon for good. What a node may assert
+            # about itself is who it is, and joining is the only status a join
+            # can mean.
+            admitted = Member(
+                address=joiner.address,
+                uid=joiner.uid,
+                roles=joiner.roles,
+                status=MemberStatus.JOINING,
+            )
+            _log.info("%s joins as %s", admitted.address, admitted.status)
+            self._state = state.with_member(admitted).bumped_by(self._address)
         # Answered whether or not anything changed, because what the joiner is
         # waiting for is to see itself in a gossip, and a retry that arrives
         # after it was already admitted still has to be told.
@@ -448,26 +645,72 @@ class ClusterDaemon:
     async def _send(self, ctx: ActorContext[ClusterMessage], address: str) -> None:
         """Send this node's whole view to one other node."""
         peer = await self._peer(ctx, address)
+        if peer is None:
+            return
         peer.tell(GossipEnvelope(sender=self._address, gossip=self._state))
 
     async def _peer(
-        self, ctx: ActorContext[ClusterMessage], address: str
-    ) -> ActorRef[WireMessage]:
+        self,
+        ctx: ActorContext[ClusterMessage],
+        address: str,
+        *,
+        remember: bool = True,
+    ) -> ActorRef[WireMessage] | None:
         """Return the ref to another node's daemon, resolving it once.
 
         The ref is kept because it stays usable: it names a node rather than a
         link, so it survives a link that failed, and it names a path rather
         than an incarnation, so it survives a peer that restarted.
+
+        An address this node cannot resolve is dropped rather than raised
+        about. Resolving is the one thing the daemon does with an address that
+        raises instead of dead-lettering, and every address it resolves came
+        from somewhere else: a member merged out of a gossip, the sender of a
+        heartbeat, a seed out of a configuration file. A raise here reaches
+        the receive loop, where the default supervision decision is to stop,
+        so one address nobody can dial would end this node's membership while
+        every other member still listed it as up. `AddressStr` refuses the one
+        form known to be undialable, and this is the guarantee behind it: no
+        address stops the daemon, whatever it turns out to be.
+
+        Args:
+            ctx: This actor's context, which does the resolving.
+            address: The node whose daemon is wanted.
+            remember: Whether to keep the ref. False for an address that came
+                out of a message rather than out of membership, so that what
+                arrives on a socket cannot grow the cache.
+
+        Returns:
+            The ref, or `None` if the address names nothing this node can
+            send to. Nothing is dialled either way: the first send through
+            the ref is what opens the association.
         """
         held = self._peers.get(address)
         if held is not None:
             return held
-        peer: ActorRef[WireMessage] = await ctx.resolve(
-            daemon_uri(address), expect=WireMessage
-        )
-        self._peers[address] = peer
+        try:
+            peer: ActorRef[WireMessage] = await ctx.resolve(
+                daemon_uri(address), expect=WireMessage
+            )
+        except RefResolutionError as error:
+            _log.warning(
+                "%s cannot be reached from %s: %s", address, self._address, error
+            )
+            return None
+        if remember:
+            self._peers[address] = peer
         return peer
 
     def __repr__(self) -> str:
         """Render this node's address and what it believes."""
         return f"ClusterDaemon({self._address}, {self._state!r})"
+
+
+def _now() -> float:
+    """Return the time a failure detector reads.
+
+    Returns:
+        The loop's monotonic clock, which is the one every detector in the
+        library is documented against.
+    """
+    return asyncio.get_running_loop().time()

@@ -71,6 +71,13 @@ beliefs about who is alive and no moment at which either could notice. An
 explicit call means a human or a supervisor decided to accept the peer again,
 and the application gets to re-establish whatever it needs to.
 
+A clustered system is the one exception, and it is an informed one. A node
+keeps knocking on its fellow members, quarantine and all, because a member
+that has not been downed is still a member and the cluster has a membership to
+consult where a single system has nothing. A peer that is not a member follows
+the rule above unchanged. See
+[clustering](clustering.md#one-rule-this-contradicts).
+
 Refs held across a quarantine are **not reusable**. Their uid belongs to a
 session that is over, so addressing after a reconnect goes through `resolve`
 again. That is also what makes a restarted peer a different peer rather than

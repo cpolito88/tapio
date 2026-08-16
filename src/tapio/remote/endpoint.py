@@ -229,16 +229,27 @@ class RemoteEndpoint:
     ) -> None:
         """Handshake an inbound connection, then hand the link to an association.
 
-        The accepting task ends as soon as the handshake does. Reading the
-        link belongs to the association's own reader, which is a task a cell
-        owns and cancels. This task is tracked only so that a connection
-        caught mid-handshake at shutdown is cancelled rather than left open.
+        The accepting task ends as soon as the link has been handed over.
+        Reading it belongs to the association's own reader, which is a task a
+        cell owns and cancels. This task is tracked so that a connection caught
+        at shutdown is closed rather than left open, and it stays tracked until
+        the handover, because a link this endpoint decides not to keep is
+        closed by a task `close` has to be able to wait for.
+
+        A connection accepted after this endpoint has closed is closed here
+        rather than handshaken. The socket was accepted by the loop before the
+        listener shut, so this task can be the first thing that runs after
+        `close` finished, and there would be nobody left to hand it to.
         """
         task = asyncio.current_task()
         if task is not None:
             self._handshakes.add(task)
         link = FrameLink(reader, writer, max_frame_bytes=self._settings.max_frame_bytes)
         try:
+            if self._closed:
+                _log.debug("closing a connection from %s: shutting down", link.peer)
+                await link.close()
+                return
             identity = await accept(
                 link,
                 address=self._address,
@@ -257,10 +268,11 @@ class RemoteEndpoint:
         except asyncio.CancelledError:
             await link.close()
             raise
+        else:
+            self._adopt(identity.address, identity.uid, self.wrap(link))
         finally:
             if task is not None:
                 self._handshakes.discard(task)
-        self._adopt(identity.address, identity.uid, self.wrap(link))
 
     def _adopt(self, peer: Address, uid: int, link: Link) -> None:
         """Take a handshaken inbound link, resolving a simultaneous dial.
@@ -674,18 +686,26 @@ class RemoteEndpoint:
                 await server.wait_closed()
         else:
             self._listener.close()
-        for task in list(self._handshakes):
-            task.cancel()
-        for task in list(self._handshakes):
-            with contextlib.suppress(asyncio.CancelledError, HandshakeError, OSError):
-                await task
-        self._handshakes.clear()
-        # Awaited rather than cancelled: these are already closing, and
-        # cancelling one would leave the socket it was releasing open.
-        for task in list(self._closing_links):
-            with contextlib.suppress(asyncio.CancelledError, OSError):
-                await task
-        self._closing_links.clear()
+        # Both sets are drained until they stay empty, because draining one
+        # fills the other: a handshake that finishes here hands its link to
+        # `_adopt`, which has nowhere to put it now and starts closing it. A
+        # single pass would return with that close still owed, and the task
+        # doing it dies with the dispatcher, leaving the socket open.
+        while self._handshakes or self._closing_links:
+            for task in list(self._handshakes):
+                task.cancel()
+            for task in list(self._handshakes):
+                with contextlib.suppress(
+                    asyncio.CancelledError, HandshakeError, OSError
+                ):
+                    await task
+                self._handshakes.discard(task)
+            # Awaited rather than cancelled: these are already closing, and
+            # cancelling one would leave the socket it was releasing open.
+            for task in list(self._closing_links):
+                with contextlib.suppress(asyncio.CancelledError, OSError):
+                    await task
+                self._closing_links.discard(task)
 
     async def _stop_listening(self) -> None:
         """Stop the accept task, before anything closes the socket under it.

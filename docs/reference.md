@@ -118,6 +118,10 @@ Generated from the source, so it cannot drift from what is installed.
 
 ::: tapio.cluster.reachability.ReachabilityStatus
 
+::: tapio.cluster.monitor.RingMonitor
+
+::: tapio.cluster.monitor.monitored_by
+
 ::: tapio.cluster.messages
 
 ::: tapio.cluster.daemon.ClusterDaemon

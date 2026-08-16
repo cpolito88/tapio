@@ -11,16 +11,17 @@ pair, which is what makes an unreachability *retractable*: the observer that
 said "unreachable" is the only one that can say "reachable again", and it says
 so with a higher number.
 
-What writes into it today is the transport. When a link to a member opens or
-is given up on, remoting says so on the system's event stream, and the cluster
-daemon records that as this node's observation of that member. So an entry
-here means one node cannot currently reach another, which is a weaker claim
-than the cluster having decided anything: acting on it is the leader's job,
-and one unreachable member stops convergence until somebody does.
+What writes into it is [monitor][tapio.cluster.monitor]. Every node watches a
+few members, picked by their place on the sorted address ring, and records
+what it finds: a member that stops answering its probe, or one the transport
+has given up on. So an entry here means one node cannot currently reach
+another, which is a weaker claim than the cluster having decided anything:
+acting on it is the leader's job, and one unreachable member stops convergence
+until somebody does.
 
-Ring-based monitoring and the accrual detector are not built. When they are,
-they replace how the observation is reached and not what is recorded, since
-this table already takes an observation from any observer.
+The table has no idea where an observation came from, which is what lets the
+detector behind it be replaced. A phi-accrual detector changes how a watcher
+reaches its conclusion and not what is recorded here.
 """
 
 from enum import StrEnum
