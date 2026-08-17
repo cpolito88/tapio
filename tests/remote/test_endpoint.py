@@ -1,6 +1,7 @@
 """Tests for the endpoint: resolving, addressing and shutdown."""
 
 import asyncio
+import contextlib
 import gc
 import socket
 import sys
@@ -319,6 +320,56 @@ async def test_closing_the_endpoint_waits_for_a_link_it_is_still_releasing():
         await endpoint.close()
 
         assert closed == ["closed"]
+        await system.terminate()
+
+
+async def test_a_handshake_cancelled_before_it_starts_has_its_link_closed():
+    # A task cancelled before its first line never runs, so a handshake that
+    # recorded its own link from the inside would leave the socket open. The
+    # link is recorded when the connection is made, so close() closes it even
+    # though the handshake never ran a line.
+    closed: list[str] = []
+
+    with assert_no_leaked_tasks():
+        system = ActorSystem("alpha", remoting())
+        endpoint = system.remote
+        assert endpoint is not None
+
+        async def never() -> None:
+            raise AssertionError("a handshake cancelled before it runs never runs")
+
+        task = endpoint.dispatcher.spawn_task(never(), name="tapio-remote-handshake")
+        endpoint._handshakes[task] = _SlowClosingLink(0.0, closed)
+        task.cancel()
+
+        await endpoint.close()
+
+        assert closed == ["closed"]
+        await system.terminate()
+
+
+async def test_a_connection_accepted_after_close_is_closed_at_once():
+    # The listener can still be readable at the moment it shuts, so the loop
+    # delivers a connection after close() has drained. Nobody is left to hand
+    # it to and nobody is left to run a handshake, so the endpoint closes the
+    # transport on the spot rather than leaving it for the garbage collector.
+    with assert_no_leaked_tasks():
+        system = ActorSystem("alpha", remoting())
+        endpoint = system.remote
+        assert endpoint is not None
+        await endpoint.close()
+
+        here, there = socket.socketpair()
+        reader, writer = await asyncio.open_connection(sock=here)
+        try:
+            endpoint._accept(reader, writer)
+            assert writer.is_closing()
+        finally:
+            writer.close()
+            with contextlib.suppress(OSError):
+                await writer.wait_closed()
+            there.close()
+
         await system.terminate()
 
 

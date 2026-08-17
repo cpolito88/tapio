@@ -23,7 +23,7 @@ import ipaddress
 import json
 import socket
 import ssl
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from types import TracebackType
 from typing import Any, Final, Protocol, Self, TypeAlias
 
@@ -54,9 +54,14 @@ __all__ = [
 ]
 
 ConnectionHandler: TypeAlias = Callable[
-    [asyncio.StreamReader, asyncio.StreamWriter], Awaitable[None]
+    [asyncio.StreamReader, asyncio.StreamWriter], None
 ]
-"""What a listening endpoint does with each accepted connection."""
+"""What a listening endpoint does with each accepted connection.
+
+Synchronous on purpose. It runs as the connection is made, which is the one
+moment nothing can cancel, so it is where the endpoint takes ownership of the
+socket before it hands the reader to a task that a shutdown could cancel.
+"""
 
 LINK_PREFIX: Final = b'{"link":'
 """What a link frame opens with, and a message frame never does.

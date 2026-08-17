@@ -104,7 +104,10 @@ class RemoteEndpoint:
         self._associations: dict[Address, Association] = {}
         self._peers: PeerProvider = StaticPeers()
         self._listening: asyncio.Task[None] | None = None
-        self._handshakes: set[asyncio.Task[None]] = set()
+        # Each accepted connection, keyed by the task handshaking it, held by
+        # its link. The link is recorded the moment the connection is made, so
+        # `close` can close it even for a task cancelled before it ever ran.
+        self._handshakes: dict[asyncio.Task[None], FrameLink] = {}
         # A link this endpoint decided not to use still has to be closed, and
         # the task doing it is nobody's child. The event loop holds only a
         # weak reference to a task, so without this set one can be collected
@@ -219,22 +222,46 @@ class RemoteEndpoint:
             if self._settings.tls is not None
             else None
         )
-        self._server = await listen(
-            self._on_connection, self._listener, ssl_context=context
-        )
+        self._server = await listen(self._accept, self._listener, ssl_context=context)
         _log.debug("listening for peers on %s", self._address)
 
-    async def _on_connection(
+    def _accept(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        """Handshake an inbound connection, then hand the link to an association.
+        """Take ownership of an accepted connection, then hand it to a task.
 
-        The accepting task ends as soon as the link has been handed over.
-        Reading it belongs to the association's own reader, which is a task a
-        cell owns and cancels. This task is tracked so that a connection caught
-        at shutdown is closed rather than left open, and it stays tracked until
-        the handover, because a link this endpoint decides not to keep is
-        closed by a task `close` has to be able to wait for.
+        This runs synchronously as the connection is made, which is the one
+        moment nothing can cancel. The link is recorded before the task that
+        reads it has run a line, because a task cancelled before its first line
+        never runs at all: a handshake that registered itself from the inside
+        would leave the socket for the garbage collector on a shutdown that
+        raced it. Recording the link here means `close` can close it either
+        way.
+
+        A connection accepted after `close` has drained is closed here instead.
+        The listening socket was readable when it shut, so the loop delivers
+        this one anyway, and there is nobody left to drain a task: a handshake
+        spawned now would be cancelled by the dying dispatcher before it could
+        close anything, so the transport is closed on the spot.
+        """
+        if self._closed:
+            writer.close()
+            return
+        link = FrameLink(reader, writer, max_frame_bytes=self._settings.max_frame_bytes)
+        task = self.dispatcher.spawn_task(
+            self._handshake(link), name="tapio-remote-handshake"
+        )
+        self._handshakes[task] = link
+
+    async def _handshake(self, link: FrameLink) -> None:
+        """Handshake an inbound link, then hand it to an association.
+
+        The task ends as soon as the link has been handed over. Reading it
+        belongs to the association's own reader, which is a task a cell owns
+        and cancels. This task stays in `_handshakes` until the handover, so a
+        connection caught at shutdown is closed rather than left open, and a
+        link this endpoint decides not to keep is closed by a task `close` has
+        to be able to wait for.
 
         A connection accepted after this endpoint has closed is closed here
         rather than handshaken. The socket was accepted by the loop before the
@@ -242,9 +269,6 @@ class RemoteEndpoint:
         `close` finished, and there would be nobody left to hand it to.
         """
         task = asyncio.current_task()
-        if task is not None:
-            self._handshakes.add(task)
-        link = FrameLink(reader, writer, max_frame_bytes=self._settings.max_frame_bytes)
         try:
             if self._closed:
                 _log.debug("closing a connection from %s: shutting down", link.peer)
@@ -271,8 +295,11 @@ class RemoteEndpoint:
         else:
             self._adopt(identity.address, identity.uid, self.wrap(link))
         finally:
+            # This task took responsibility for the link: adopted it, or closed
+            # it above. What stays in the map is a task that never got to run,
+            # whose link `close` closes.
             if task is not None:
-                self._handshakes.discard(task)
+                self._handshakes.pop(task, None)
 
     def _adopt(self, peer: Address, uid: int, link: Link) -> None:
         """Take a handshaken inbound link, resolving a simultaneous dial.
@@ -671,8 +698,9 @@ class RemoteEndpoint:
 
         The associations are children of this endpoint's actor, so the sweep
         that reached here is already stopping them. What is left is the
-        listener, the socket, any connection still mid-handshake, and any link
-        this endpoint refused and is still closing. Nobody else owns those.
+        listener, the socket, any connection still mid-handshake, any link this
+        endpoint refused and is still closing, and any association adopted so
+        late that the sweep had already passed it. Nobody else owns those.
         """
         if self._closed:
             return
@@ -686,11 +714,11 @@ class RemoteEndpoint:
                 await server.wait_closed()
         else:
             self._listener.close()
-        # Both sets are drained until they stay empty, because draining one
-        # fills the other: a handshake that finishes here hands its link to
-        # `_adopt`, which has nowhere to put it now and starts closing it. A
-        # single pass would return with that close still owed, and the task
-        # doing it dies with the dispatcher, leaving the socket open.
+        # Both are drained until they stay empty, because draining one fills
+        # the other: a handshake that finishes here hands its link to `_adopt`,
+        # which has nowhere to put it now and starts closing it. A single pass
+        # would return with that close still owed, and the task doing it dies
+        # with the dispatcher, leaving the socket open.
         while self._handshakes or self._closing_links:
             for task in list(self._handshakes):
                 task.cancel()
@@ -699,13 +727,25 @@ class RemoteEndpoint:
                     asyncio.CancelledError, HandshakeError, OSError
                 ):
                     await task
-                self._handshakes.discard(task)
+                # A task cancelled before its first line never ran its own
+                # cleanup, so its link is still open and still recorded here.
+                # One that did run took its link out of the map itself.
+                link = self._handshakes.pop(task, None)
+                if link is not None:
+                    await link.close()
             # Awaited rather than cancelled: these are already closing, and
             # cancelling one would leave the socket it was releasing open.
             for task in list(self._closing_links):
                 with contextlib.suppress(asyncio.CancelledError, OSError):
                     await task
                 self._closing_links.discard(task)
+        # An association whose actor stopped normally took itself out of this
+        # table on the way, so whatever is left was adopted after the stop
+        # sweep had passed and will get no `PostStop` to close its link. Close
+        # it here, or the socket is left for the garbage collector.
+        for association in list(self._associations.values()):
+            with contextlib.suppress(OSError, asyncio.CancelledError):
+                await association.detach()
 
     async def _stop_listening(self) -> None:
         """Stop the accept task, before anything closes the socket under it.
