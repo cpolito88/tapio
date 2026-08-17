@@ -533,6 +533,34 @@ class Association:
         if ref is not None:
             ref.tell(Close(detail=detail))
 
+    async def detach(self) -> None:
+        """Close the link when this association's actor never got to stop.
+
+        `_release` closes the socket on `PostStop`, which is the ordinary
+        path. An association adopted so late that the endpoint's stop sweep had
+        already passed it gets no `PostStop`, so its socket would be left for
+        the garbage collector. The endpoint calls this on its own way down to
+        close it, in the same reader-then-link order `_release` takes so a read
+        in flight ends before the link does.
+        """
+        if self._closing:
+            return
+        self._closing = True
+        self._fail_ready("the association stopped")
+        reader = self._reader
+        self._reader = None
+        if reader is not None and reader is not asyncio.current_task():
+            reader.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await reader
+        link = self._socket or self._accepted
+        self._link = None
+        self._socket = None
+        self._accepted = None
+        if link is not None:
+            await link.close()
+        self._host.forget(self)
+
     async def wait_connected(self, timeout: float) -> None:  # noqa: ASYNC109 - the dial deadline
         """Wait until the link is up, for a caller that asked for it by hand.
 
