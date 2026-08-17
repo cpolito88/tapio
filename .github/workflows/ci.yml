@@ -19,10 +19,13 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
+      # Pinned to an exact version rather than a major, unlike every other
+      # action here: setup-uv stopped publishing the floating major tag after
+      # v7, so `@v10` does not resolve. Dependabot bumps it.
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
 
@@ -91,24 +94,33 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
 
       - name: make docs-build
         run: make docs-build
 
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
 
-      - uses: actions/upload-pages-artifact@v3
+      # The artifact carries the attempt number so that re-running this job
+      # works. deploy-pages looks the artifact up by name across the whole run
+      # rather than within the current attempt, so a second attempt uploading
+      # another `github-pages` leaves two of them and the deploy refuses to
+      # choose. That is what turned a transient 503 from the Pages API on run
+      # 96 into a failure the re-run button could not clear.
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site
+          name: github-pages-${{ github.run_attempt }}
 
       - id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
+        with:
+          artifact_name: github-pages-${{ github.run_attempt }}
 
   # Versions come from the commits. `feat:` moves the minor, `fix:` the patch,
   # and the job tags what it bumped, so nobody edits two files by hand and
@@ -138,14 +150,14 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The whole history, because the next version is a function of every
           # commit since the last tag.
           fetch-depth: 0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
 

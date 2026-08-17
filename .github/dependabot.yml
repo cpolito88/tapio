@@ -1,0 +1,28 @@
+# Keeps the actions in `.github/workflows/` current. Without this the pins go
+# stale quietly: every action in the pipeline had drifted between one and five
+# majors behind before this file existed, and the first sign of it was a
+# deprecation warning about the Node version the runner was forcing.
+#
+# Only GitHub Actions are watched. Python dependencies are resolved by uv from
+# `uv.lock`, and a bot editing that lock is a separate decision.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      # `ci:` so the bump does not move the version. python-semantic-release
+      # reads these on main, and an action upgrade releases nothing.
+      prefix: "ci"
+    groups:
+      # One pull request for the routine bumps, since they are reviewed
+      # together and each one on its own is noise. A major still arrives
+      # separately, because that is the one worth reading.
+      actions:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
