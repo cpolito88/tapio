@@ -4,7 +4,12 @@ import pytest
 
 from tapio import DeadLetter, DeadLetterReason
 from tapio.errors import ActorSystemTerminating, HandshakeError
-from tapio.remote.failure import DeadlineDetector, DownAlone, PeerUnreachable
+from tapio.remote.failure import (
+    DeadlineDetector,
+    DownAlone,
+    PeerUnreachable,
+    PhiAccrualDetector,
+)
 from tapio.testkit import assert_no_leaked_tasks, two_nodes
 from tests.failures import eventually
 from tests.remote.peers import GHOST, Tick, counting, dial, uri, watching
@@ -17,6 +22,88 @@ async def test_the_detector_gives_up_only_after_the_window():
     assert not detector.is_available(101.5)
     detector.heartbeat(101.0)
     assert detector.is_available(101.5)
+
+
+def _phi_detector(started_at: float = 0.0, pause: float = 0.0) -> PhiAccrualDetector:
+    """A phi detector on a one-second rhythm, for the unit tests below."""
+    return PhiAccrualDetector(
+        started_at=started_at,
+        threshold=8.0,
+        acceptable_pause=pause,
+        first_interval_estimate=1.0,
+    )
+
+
+def test_phi_accrual_believes_a_peer_that_answers_on_its_rhythm():
+    detector = _phi_detector()
+    now = 0.0
+    for _ in range(50):
+        now += 1.0
+        detector.heartbeat(now)
+        # A beat that arrives on the interval the detector has learned barely
+        # raises suspicion at all.
+        assert detector.is_available(now + 0.1)
+
+
+def test_phi_accrual_gives_up_when_silence_outlasts_the_rhythm():
+    detector = _phi_detector()
+    now = 0.0
+    for _ in range(50):
+        now += 1.0
+        detector.heartbeat(now)
+
+    # One interval late is still within reason; ten is a peer that is gone.
+    assert detector.is_available(now + 1.0)
+    assert not detector.is_available(now + 10.0)
+
+
+def test_phi_accrual_rises_without_bound_as_silence_grows():
+    detector = _phi_detector()
+    now = 0.0
+    for _ in range(50):
+        now += 1.0
+        detector.heartbeat(now)
+
+    # Suspicion only ever climbs while nothing new arrives, so a peer never
+    # flickers back to reachable on the strength of more silence.
+    previous = -1.0
+    for elapsed in (0.0, 0.5, 1.0, 2.0, 5.0, 10.0):
+        phi = detector.phi(now + elapsed)
+        assert phi >= previous
+        previous = phi
+
+
+def test_phi_accrual_rides_out_a_pause_within_the_acceptable_window():
+    strict = _phi_detector(pause=0.0)
+    lax = _phi_detector(pause=3.0)
+    now = 0.0
+    for _ in range(50):
+        now += 1.0
+        strict.heartbeat(now)
+        lax.heartbeat(now)
+
+    # A pause of two and a half seconds is death to the strict detector and a
+    # tolerated hiccup to the one told to expect pauses.
+    assert not strict.is_available(now + 2.5)
+    assert lax.is_available(now + 2.5)
+
+
+def test_phi_accrual_is_patient_before_the_first_real_answer():
+    # Only the seed estimate, no real beat yet: a freshly watched peer is not
+    # suspected for staying quiet through roughly one expected interval, but
+    # unbroken silence still catches up with it.
+    detector = _phi_detector(started_at=100.0)
+    assert detector.is_available(101.0)
+    assert not detector.is_available(110.0)
+
+
+def test_phi_accrual_ignores_an_interval_that_did_not_advance():
+    # Two arrivals credited to one instant, or a clock that stepped back, say
+    # nothing about the rhythm and must not poison the estimate.
+    detector = _phi_detector(started_at=10.0)
+    detector.heartbeat(10.0)
+    detector.heartbeat(9.0)
+    assert detector.is_available(9.5)
 
 
 async def test_one_node_decides_alone_and_says_so(alpha):

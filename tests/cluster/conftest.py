@@ -40,6 +40,19 @@ WATCHFUL = QUICK.model_copy(
         "unreachable_after": timedelta(milliseconds=300),
     }
 )
+
+WATCHFUL_PHI = WATCHFUL.model_copy(
+    update={
+        "phi_accrual": True,
+        "phi_acceptable_pause": timedelta(milliseconds=100),
+    }
+)
+"""Watch with a phi-accrual detector instead of a fixed window.
+
+The same fast probing as `WATCHFUL`, so a partition is seen inside a test, but
+the verdict is learned from each member's rhythm rather than a deadline. The
+pause covers a handful of missed probes so a busy moment is not read as death.
+"""
 """Probe often, and give up quickly, for the tests that are about giving up.
 
 Fifteen probes fit inside the window, which is enough that a busy moment does

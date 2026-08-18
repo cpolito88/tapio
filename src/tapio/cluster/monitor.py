@@ -43,9 +43,14 @@ from typing import final
 
 from tapio.cluster.member import Member
 from tapio.cluster.reachability import ReachabilityStatus
-from tapio.remote.failure import DeadlineDetector, FailureDetector
+from tapio.remote.failure import DeadlineDetector, FailureDetector, PhiAccrualDetector
 
-__all__ = ["RingMonitor", "deadline_detectors", "monitored_by"]
+__all__ = [
+    "RingMonitor",
+    "deadline_detectors",
+    "monitored_by",
+    "phi_detectors",
+]
 
 
 def monitored_by(
@@ -266,6 +271,46 @@ def deadline_detectors(
     def build(started_at: float) -> FailureDetector:
         return DeadlineDetector(
             unreachable_after=unreachable_after, started_at=started_at
+        )
+
+    return build
+
+
+def phi_detectors(
+    *,
+    threshold: float,
+    acceptable_pause: float,
+    first_interval_estimate: float,
+) -> Callable[[float], FailureDetector]:
+    """Build detectors that learn a peer's rhythm instead of being told a window.
+
+    The counterpart of
+    [deadline_detectors][tapio.cluster.monitor.deadline_detectors]: which
+    factory the daemon passes to
+    [RingMonitor][tapio.cluster.monitor.RingMonitor] is the whole of choosing
+    between a fixed window and a learned one, and nothing else in the monitor
+    changes.
+
+    Args:
+        threshold: The suspicion level at which a peer is called unreachable.
+        acceptable_pause: Seconds of extra silence tolerated on top of the
+            learned mean, to ride out a scheduler or garbage-collection hiccup.
+        first_interval_estimate: The interval assumed before any real one is
+            seen. The probe interval is the natural value, since that is how
+            often a watched peer is expected to answer.
+
+    Returns:
+        A factory that
+        [RingMonitor][tapio.cluster.monitor.RingMonitor] calls for each peer it
+        picks up.
+    """
+
+    def build(started_at: float) -> FailureDetector:
+        return PhiAccrualDetector(
+            started_at=started_at,
+            threshold=threshold,
+            acceptable_pause=acceptable_pause,
+            first_interval_estimate=first_interval_estimate,
         )
 
     return build
