@@ -76,6 +76,7 @@ from tapio.errors import (
     ActorNameError,
     ActorSystemTerminating,
     BehaviorRegistrationError,
+    RefResolutionError,
     TapioError,
 )
 from tapio.message import Message
@@ -450,6 +451,24 @@ def _answer(
             factory=key,
             reason=SpawnFailure.INVALID_ARGS,
             detail=f"{key!r} takes {factory.args_type.__name__}: {error}",
+        )
+    except RefResolutionError:
+        # An arguments model may not carry an ActorRef. Arguments are rebuilt
+        # here, after the decode that resolves refs has already ended, so a ref
+        # in them has nothing to resolve against and raises. It is a reply
+        # rather than a failure for the same reason every other bad request is:
+        # a spawner is the parent of every actor it started, and one malformed
+        # request must not stop the rest.
+        return SpawnFailed(
+            factory=key,
+            reason=SpawnFailure.INVALID_ARGS,
+            detail=(
+                f"{key!r} takes {factory.args_type.__name__}, whose fields "
+                "include an ActorRef. Arguments are validated outside the decode "
+                "that resolves refs, so a ref in them cannot be rebuilt. Send the "
+                "new actor a message instead: the requester holds Spawned.ref, "
+                "and refs in that message resolve normally."
+            ),
         )
 
     name = message.name

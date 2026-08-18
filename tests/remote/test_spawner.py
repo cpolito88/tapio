@@ -123,6 +123,22 @@ def spawnable_unoffered(args: NoArgs) -> Behavior[Crash]:
     return Behaviors.ignore()
 
 
+class RefArgs(Message):
+    """A misconfigured arguments model: it carries a ref, which it may not."""
+
+    partner: ActorRef[Result]
+
+
+@remote_behavior("test-ref-args", args=RefArgs)
+def spawnable_ref_args(args: RefArgs) -> Behavior[Work]:
+    """A factory whose arguments model wrongly carries a ref.
+
+    The factory itself never runs: its arguments are rebuilt after the decode
+    that resolves refs, so building them fails before this is called.
+    """
+    return Behaviors.receive_message(lambda message: Behaviors.same(), msg_type=Work)
+
+
 class CountingFaults(LinkFaults):
     """Link faults that also count what the system wrote.
 
@@ -309,6 +325,23 @@ async def test_a_factory_that_raises_is_refused_and_the_spawner_survives(
     assert "BoomError" in reply.detail
     # The spawner is the parent of everything it has started, so one bad
     # request must not take the rest of them down with it.
+    after = await ask_to_spawn(ref, "test-worker")
+    assert isinstance(after, Spawned)
+
+
+async def test_arguments_that_carry_a_ref_are_refused_and_the_spawner_survives(
+    system: ActorSystem,
+):
+    ref = system.spawn(offering("test-ref-args", "test-worker"), "spawner")
+
+    # An arguments model may not carry a ref: it is rebuilt after the decode
+    # that resolves refs, so the ref has nothing to resolve against. That must
+    # be a refusal, not a crash that stops the spawner and its children.
+    reply = await ask_to_spawn(ref, "test-ref-args", args=RefArgs(partner=ref))
+
+    assert isinstance(reply, SpawnFailed)
+    assert reply.reason == SpawnFailure.INVALID_ARGS
+    assert "ActorRef" in reply.detail
     after = await ask_to_spawn(ref, "test-worker")
     assert isinstance(after, Spawned)
 

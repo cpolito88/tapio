@@ -15,7 +15,7 @@ def test_silence_is_not_evidence_of_a_problem():
     # cluster that has never had a failure looks like.
     table = Reachability.empty()
 
-    assert table.status(ALPHA, BETA) is REACHABLE
+    assert table.says(ALPHA, BETA) is REACHABLE
     assert table.is_reachable(BETA)
     assert table.unreachable == frozenset()
 

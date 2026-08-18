@@ -84,22 +84,6 @@ class Reachability(Message):
         """Return the table in which everyone can hear everyone."""
         return cls()
 
-    def status(self, observer: str, observed: str) -> ReachabilityStatus:
-        """Say what one node believes about another.
-
-        Args:
-            observer: Who is watching.
-            observed: Who is being watched.
-
-        Returns:
-            The belief, defaulting to reachable when nothing was ever
-            recorded. Silence is not evidence of a problem.
-        """
-        for record in self.records:
-            if record.pair == (observer, observed):
-                return record.status
-        return ReachabilityStatus.REACHABLE
-
     def is_reachable(self, address: str) -> bool:
         """Whether every observer that has an opinion can hear this node.
 
