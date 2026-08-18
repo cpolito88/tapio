@@ -122,6 +122,22 @@ Generated from the source, so it cannot drift from what is installed.
 
 ::: tapio.cluster.monitor.monitored_by
 
+::: tapio.cluster.downing.DownStrategy
+
+::: tapio.cluster.downing.DownAll
+
+::: tapio.cluster.downing.KeepMajority
+
+::: tapio.cluster.downing.StaticQuorum
+
+::: tapio.cluster.downing.KeepOldest
+
+::: tapio.cluster.downing.LeaseMajority
+
+::: tapio.cluster.downing.Lease
+
+::: tapio.cluster.downing.LocalLease
+
 ::: tapio.cluster.messages
 
 ::: tapio.cluster.daemon.ClusterDaemon

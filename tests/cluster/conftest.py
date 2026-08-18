@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from tapio.actor import ActorSystem
-from tapio.cluster import Cluster, MemberStatus
+from tapio.cluster import Cluster, DownStrategy, MemberStatus
 from tapio.settings import ClusterSettings, RemoteSettings, TapioSettings
 from tapio.testkit.remote import LinkFaults, link_faults
 
@@ -88,7 +88,11 @@ def seeds_of(nodes: Sequence[Node]) -> list[str]:
 
 @asynccontextmanager
 async def cluster_of(
-    count: int, *, settings: ClusterSettings = QUICK
+    count: int,
+    *,
+    settings: ClusterSettings = QUICK,
+    downing: DownStrategy | None = None,
+    terminate_on_down: bool = False,
 ) -> AsyncIterator[tuple[Node, ...]]:
     """Start `count` systems, each with a cluster daemon and nothing joined yet.
 
@@ -100,6 +104,10 @@ async def cluster_of(
     Args:
         count: How many nodes to start.
         settings: How they gossip.
+        downing: The strategy every node resolves a split with, or `None` to
+            leave a split blocking convergence, which is the default.
+        terminate_on_down: Whether a node that downs itself shuts its own system
+            down, as opposed to leaving it running for the test to inspect.
 
     Yields:
         The nodes, in the order they were started.
@@ -112,7 +120,12 @@ async def cluster_of(
             nodes.append(
                 Node(
                     system=system,
-                    cluster=Cluster(system, settings),
+                    cluster=Cluster(
+                        system,
+                        settings,
+                        downing=downing,
+                        terminate_on_down=terminate_on_down,
+                    ),
                     faults=faults,
                 )
             )

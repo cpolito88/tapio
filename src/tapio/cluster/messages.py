@@ -22,6 +22,7 @@ from tapio.message import Message
 from tapio.remote.registry import register_message
 
 __all__ = [
+    "ClusterDowned",
     "ClusterMessage",
     "FormTick",
     "GossipEnvelope",
@@ -154,6 +155,29 @@ class FormTick(Message):
 @final
 class HeartbeatTick(Message):
     """Probe the members this node watches, and judge the ones that went quiet."""
+
+
+@final
+class ClusterDowned(Message):
+    """Published on the system event stream when this node downs itself.
+
+    A downing strategy decided this node is on the side of a partition that
+    loses, so the node marked itself `Down`. A `Down` member may not return, so
+    the process cannot rejoin as itself: the honest response is to shut the
+    system down, and to come back, if at all, as a new incarnation. Subscribe
+    to this, or await
+    [Cluster.when_downed][tapio.cluster.cluster.Cluster.when_downed], to do
+    that.
+
+    It never leaves the process. What the rest of the cluster learns is that
+    the member is `Down`, which travels as ordinary gossip.
+    """
+
+    address: AddressStr
+    """This node's canonical address, the one that was downed."""
+
+    detail: str
+    """Why, in words, for the log and for whoever shuts the node down."""
 
 
 @final

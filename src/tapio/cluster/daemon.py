@@ -28,9 +28,11 @@ from tapio.actor.ref import ActorRef
 from tapio.actor.signals import PostStop, Signal
 from tapio.actor.timers import TimerScheduler
 from tapio.cluster.clock import Ordering
+from tapio.cluster.downing import DownStrategy
 from tapio.cluster.gossip import Gossip, leader_actions
 from tapio.cluster.member import Member, MemberStatus
 from tapio.cluster.messages import (
+    ClusterDowned,
     ClusterMessage,
     FormTick,
     GossipEnvelope,
@@ -93,6 +95,7 @@ class ClusterDaemon:
         settings: ClusterSettings,
         relent: Callable[[str], None],
         linked: Callable[[str], bool],
+        strategy: DownStrategy | None = None,
         choose: Callable[[Sequence[str]], str] = random.choice,
     ) -> None:
         """Describe a node's cluster daemon, before its actor exists.
@@ -104,7 +107,8 @@ class ClusterDaemon:
             refs: This system's ref registry, where the daemon publishes its
                 well-known name.
             events: This system's event stream, where remoting says that a
-                peer went out of reach or came back.
+                peer went out of reach or came back, and where this daemon says
+                that it has downed itself.
             settings: How often to gossip, and how patient to be.
             relent: Tells remoting to stop refusing a peer it gave up on. A
                 member that has not been downed is still a member, so this
@@ -114,6 +118,10 @@ class ClusterDaemon:
                 peer. It is asked before answering a heartbeat from an address
                 membership does not know, so that answering reuses a link that
                 exists rather than opening one to wherever the message said.
+            strategy: What to do about an unreachable member. `None` leaves an
+                unreachable member blocking convergence for ever, which is the
+                safe default for a node that has not been told how its cluster
+                would rather resolve a split.
             choose: Picks the peer to gossip to this round. Injected so a test
                 can make a round deterministic; the default is uniformly at
                 random, which is what keeps gossip traffic linear in the
@@ -126,6 +134,8 @@ class ClusterDaemon:
         self._choose = choose
         self._relent = relent
         self._linked = linked
+        self._strategy = strategy
+        self._down_after = settings.down_after.total_seconds()
         self._subscription: Subscription | None = None
         self._self = Member(address=address, uid=uid, roles=settings.roles)
         self._state = Gossip()
@@ -134,6 +144,12 @@ class ClusterDaemon:
         self._heard_from_anyone = False
         self._rounds = 0
         self._heartbeats = 0
+        # The split this node last saw, and when it first saw it. Downing waits
+        # for the pair to hold still, so a passing blip is ridden out.
+        self._split: frozenset[str] | None = None
+        self._split_since = 0.0
+        self._downed = asyncio.Event()
+        self._downed_announced = False
         self._monitor = RingMonitor(
             address=address,
             size=settings.monitored_peers,
@@ -181,6 +197,11 @@ class ClusterDaemon:
     def monitored(self) -> tuple[str, ...]:
         """The members this node watches, in address order."""
         return self._monitor.peers
+
+    @property
+    def downed(self) -> asyncio.Event:
+        """Set once this node has downed itself, for the application to wait on."""
+        return self._downed
 
     def behavior(self) -> Behavior[ClusterMessage]:
         """Build the daemon actor."""
@@ -253,6 +274,8 @@ class ClusterDaemon:
 
         self._follow_the_ring()
         self._lead()
+        await self._down()
+        self._announce_if_downed()
         if (
             self.self_member is not None
             and self.self_member.status is MemberStatus.REMOVED
@@ -637,6 +660,120 @@ class ClusterDaemon:
                         member.status,
                     )
             self._state = moved.bumped_by(self._address)
+
+    async def _down(self) -> None:
+        """Down the losing side of a split, once a strategy says which loses.
+
+        This is the path a node takes when the view is blocked by an
+        unreachable member rather than converged, which is the one case
+        [_lead][tapio.cluster.daemon.ClusterDaemon._lead] cannot make progress
+        on. It is guarded twice over, because downing cannot be taken back. A
+        strategy has to be configured to make the decision at all, and the
+        split has to have held still for `down_after`, so a passing blip is
+        ridden out rather than resolved.
+
+        Every node runs it, not only the leader, and each downs the verdict for
+        its own view. That is safe and needs no coordination because the two
+        sides agree on the loser: a strategy that reads the shape of the split
+        has both sides compute the same answer from mirror-image views, and the
+        lease-backed one has them agree because only one side can take the
+        lease. So the loser downs itself while the winner downs the loser.
+        Downing is a move up the lattice, so two nodes reaching the same verdict
+        is one decision made twice, not two decisions in conflict. Leaving it to
+        a leader would not do: a strategy that downs a whole side, its own
+        included, leaves that node no reachable member to gossip the decision
+        to, so a peer that did not run the decision itself would never hear it.
+
+        Deciding is awaited because the lease-backed strategy reaches an outside
+        lock. The wait is the only point in a turn this actor gives up, and only
+        while a split is being resolved, so a peer's heartbeat is answered on
+        the turns either side of it.
+        """
+        me = self.self_member
+        if (
+            self._strategy is None
+            or me is None
+            or me.status
+            in (
+                MemberStatus.DOWN,
+                MemberStatus.REMOVED,
+            )
+        ):
+            # A node that has already downed itself makes no more decisions:
+            # it is on its way out and has nothing left to keep or sacrifice.
+            return
+        unreachable = self._unreachable_alive()
+        now = _now()
+        if unreachable != self._split:
+            self._split = unreachable
+            self._split_since = now
+        if not unreachable:
+            return
+        if now - self._split_since < self._down_after:
+            return
+        self._apply_downing(await self._strategy.decide(self._state))
+
+    def _unreachable_alive(self) -> frozenset[str]:
+        """The live members at least one observer currently cannot hear."""
+        gone = self._state.reachability.unreachable
+        return frozenset(m.address for m in self._state.alive if m.address in gone)
+
+    def _apply_downing(self, verdict: frozenset[str]) -> None:
+        """Move the members a strategy named to `Down`, in one version bump.
+
+        A member already `Down` or `Removed` is left alone: the verdict is
+        about the live members of a split, and downing one twice would be a
+        version bump that says nothing.
+
+        Args:
+            verdict: The addresses to down.
+        """
+        changed = self._state
+        downed: list[str] = []
+        for address in sorted(verdict):
+            member = changed.member(address)
+            if member is None or member.status in (
+                MemberStatus.DOWN,
+                MemberStatus.REMOVED,
+            ):
+                continue
+            changed = changed.with_member(member.with_status(MemberStatus.DOWN))
+            downed.append(address)
+        if not downed:
+            return
+        _log.warning(
+            "%s downs %s, resolving a split with %r",
+            self._address,
+            ", ".join(downed),
+            self._strategy,
+        )
+        self._state = changed.bumped_by(self._address)
+
+    def _announce_if_downed(self) -> None:
+        """Say once, on the event stream, that this node has downed itself.
+
+        A node reaches this by downing its own side as the side's leader, or by
+        merging in the gossip a side-mate leader sent. Either way a `Down`
+        member may not rejoin as itself, so the application is told to shut the
+        system down. Said once, because the status does not move back and
+        repeating it would only be noise.
+        """
+        me = self.self_member
+        if me is None or me.status is not MemberStatus.DOWN or self._downed_announced:
+            return
+        self._downed_announced = True
+        _log.warning("%s has downed itself and should shut down", self._address)
+        self._events.publish(
+            ClusterDowned(
+                address=self._address,
+                detail=(
+                    f"{self._address} was on the losing side of a split and downed "
+                    "itself. A downed member may not rejoin as itself, so the "
+                    "system should be shut down."
+                ),
+            )
+        )
+        self._downed.set()
 
     def _is_member_of(self, state: Gossip) -> bool:
         """Whether this node appears in a view it is about to adopt."""
