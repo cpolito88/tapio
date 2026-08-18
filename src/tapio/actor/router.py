@@ -208,6 +208,52 @@ class Routers:
 
         return Behaviors.setup(build)
 
+    @staticmethod
+    def group(
+        msg_type: MessageType,
+        *,
+        path: str,
+        role: str | None = None,
+        strategy: RoutingStrategy | None = None,
+    ) -> Behavior[Any]:
+        """Spread work over an actor published on every member of a cluster role.
+
+        ```python
+        proxy = ctx.spawn(Routers.group(Job, role="worker", path="/user/worker"))
+        ```
+
+        Where a pool owns its routees, a group router routes to whatever actor
+        each member of `role` publishes at `path`, and the pool follows
+        membership: a member that joins is added, and one that is removed or
+        goes unreachable is dropped within a convergence. An empty group holds
+        and dead-letters rather than stopping, because the next member to arrive
+        is what it is waiting for.
+
+        The routee on each node is addressed by its bare path, so it has to be
+        published as a well-known name there, with
+        `system.refs.register_well_known(ref)`. Unlike a pool, this needs a
+        clustered system: the routees are discovered from membership.
+
+        The message type is named rather than read off a routee, because the
+        routees are on other nodes and there is no spawned child here to read it
+        from.
+
+        Args:
+            msg_type: What the routees accept, and what this router forwards.
+            path: The path the routee is published at on each member.
+            role: The role a member must carry to take a share. `None` routes to
+                every member.
+            strategy: How to choose between routees. Round-robin when omitted.
+
+        Returns:
+            A behavior to spawn.
+        """
+        # Imported here, not at module load: the actor package does not depend
+        # on clustering, and a group router is the one router that does.
+        from tapio.cluster.router import group_router
+
+        return group_router(msg_type, path=path, role=role, strategy=strategy)
+
 
 def _pool_msg_type(routees: Sequence[ActorRef[Any]]) -> MessageType:
     """Take the router's message type from the routees it just spawned.

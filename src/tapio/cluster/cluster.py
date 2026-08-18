@@ -20,16 +20,24 @@ construction rather than at the first gossip round that goes nowhere.
 import asyncio
 from collections.abc import Sequence
 from datetime import timedelta
-from typing import final
+from typing import Any, final
 
 from tapio.actor.events import Subscription
 from tapio.actor.ref import ActorRef
 from tapio.actor.system import ActorSystem
 from tapio.cluster.daemon import DAEMON_NAME, ClusterDaemon
 from tapio.cluster.downing import DownStrategy
+from tapio.cluster.events import ClusterEvent
 from tapio.cluster.gossip import Gossip
 from tapio.cluster.member import Member, MemberStatus, rank_of
-from tapio.cluster.messages import ClusterDowned, ClusterMessage, Leave, Seeds
+from tapio.cluster.messages import (
+    ClusterDowned,
+    ClusterMessage,
+    Leave,
+    Seeds,
+    Subscribe,
+    Unsubscribe,
+)
 from tapio.errors import ClusterError
 from tapio.remote.address import Address
 from tapio.settings import ClusterSettings
@@ -200,6 +208,63 @@ class Cluster:
         linear in the number of nodes rather than quadratic.
         """
         return self._daemon.heartbeats
+
+    def members_with_role(self, role: str) -> tuple[Member, ...]:
+        """The members that carry a role, in address order.
+
+        A role is what a node says it is for, fixed when it joined and part of
+        what the cluster agreed on. Cluster-aware features filter on these:
+        [ClusterSingleton][tapio.cluster.singleton.ClusterSingleton] places one
+        instance among the members of a role, and a group router from
+        [Routers.group][tapio.actor.router.Routers.group] spreads work over
+        them.
+
+        Args:
+            role: The role to filter on.
+
+        Returns:
+            Every member that has not been downed or removed and carries the
+            role, oldest first.
+        """
+        return tuple(member for member in self.members if role in member.roles)
+
+    def subscribe(self, subscriber: ActorRef[Any], *events: type[ClusterEvent]) -> None:
+        """Have cluster events delivered to an actor's mailbox.
+
+        ```python
+        cluster.subscribe(worker, MemberUp, MemberRemoved, UnreachableMember)
+        ```
+
+        The events are ordinary messages, so reacting to membership is
+        behaviour switching and supervision like everything else. The
+        subscriber must accept the events it asks for as part of its declared
+        message type. It hears the current membership straight away, as the
+        events that would have carried it, so an actor that subscribes after
+        the cluster has formed still learns who is up before it hears the next
+        change.
+
+        A subscriber that stops is forgotten, because the daemon watches it, so
+        [unsubscribe][tapio.cluster.cluster.Cluster.unsubscribe] is only for an
+        actor that wants to keep running and stop listening. Subscribing an
+        actor again replaces what it asked for rather than doubling its events.
+
+        Args:
+            subscriber: The actor the events go to.
+            events: Which event types to deliver, from
+                [tapio.cluster.events][]. None given means every one of them.
+        """
+        self._ref.tell(Subscribe(subscriber=subscriber, events=events))
+
+    def unsubscribe(self, subscriber: ActorRef[Any]) -> None:
+        """Stop delivering cluster events to an actor that is still running.
+
+        Harmless if the actor was not subscribed. An actor that stops is
+        forgotten without this.
+
+        Args:
+            subscriber: The actor to forget.
+        """
+        self._ref.tell(Unsubscribe(subscriber=subscriber))
 
     async def join_seed_nodes(
         self,

@@ -28,6 +28,15 @@ from tapio.cluster.downing import (
     LocalLease,
     StaticQuorum,
 )
+from tapio.cluster.events import (
+    ClusterEvent,
+    LeaderChanged,
+    MemberRemoved,
+    MemberUp,
+    ReachableMember,
+    SelfDown,
+    UnreachableMember,
+)
 from tapio.cluster.gossip import Gossip
 from tapio.cluster.member import Member, MemberStatus
 from tapio.cluster.messages import (
@@ -45,10 +54,14 @@ from tapio.cluster.reachability import (
     ReachabilityRecord,
     ReachabilityStatus,
 )
+from tapio.cluster.router import group_router
+from tapio.cluster.singleton import ClusterSingleton
 
 __all__ = [
     "Cluster",
     "ClusterDowned",
+    "ClusterEvent",
+    "ClusterSingleton",
     "DownAll",
     "DownStrategy",
     "Gossip",
@@ -58,19 +71,26 @@ __all__ = [
     "Join",
     "KeepMajority",
     "KeepOldest",
+    "LeaderChanged",
     "Lease",
     "LeaseMajority",
     "Leave",
     "LocalLease",
     "Member",
+    "MemberRemoved",
     "MemberStatus",
+    "MemberUp",
     "Ordering",
     "Reachability",
     "ReachabilityRecord",
     "ReachabilityStatus",
+    "ReachableMember",
     "RingMonitor",
+    "SelfDown",
     "StaticQuorum",
+    "UnreachableMember",
     "VectorClock",
     "WireMessage",
+    "group_router",
     "monitored_by",
 ]

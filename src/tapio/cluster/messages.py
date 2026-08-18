@@ -12,10 +12,12 @@ the same at-most-once delivery every other message in tapio gets, and gossip
 is the one protocol shaped to need nothing more.
 """
 
-from typing import Annotated, TypeAlias, final
+from typing import Annotated, Any, TypeAlias, final
 
 from pydantic import Field
 
+from tapio.actor.ref import ActorRef
+from tapio.cluster.events import ClusterEvent
 from tapio.cluster.gossip import Gossip
 from tapio.cluster.member import AddressStr, Member
 from tapio.message import Message
@@ -33,7 +35,9 @@ __all__ = [
     "JoinTick",
     "Leave",
     "Seeds",
+    "Subscribe",
     "Tick",
+    "Unsubscribe",
     "WireMessage",
 ]
 
@@ -138,6 +142,37 @@ class Seeds(Message):
 
 
 @final
+class Subscribe(Message):
+    """Ask the daemon to deliver cluster events to an actor's mailbox.
+
+    Local only, like [Seeds][tapio.cluster.messages.Seeds]: it carries a ref
+    into the daemon rather than crossing a link, so it is not registered on the
+    wire. The daemon replays the current membership to the new subscriber as
+    events straight away, so an actor that subscribes after the cluster has
+    formed still learns who is up, and then hears each change as it happens.
+    """
+
+    subscriber: ActorRef[Any]
+    """Where the events go. The daemon watches it and forgets it when it stops."""
+
+    events: tuple[type[ClusterEvent], ...] = ()
+    """Which events to deliver. Empty means every one of them."""
+
+
+@final
+class Unsubscribe(Message):
+    """Ask the daemon to stop delivering cluster events to an actor.
+
+    Harmless if the actor was not subscribed. A subscriber that stops is
+    forgotten without this, because the daemon watches every subscriber, so
+    this is for an actor that wants to keep running and stop listening.
+    """
+
+    subscriber: ActorRef[Any]
+    """The actor to forget."""
+
+
+@final
 class Tick(Message):
     """Gossip to one peer, and act if this node leads a converged view."""
 
@@ -201,6 +236,14 @@ class LinkChanged(Message):
 
 
 ClusterMessage: TypeAlias = (
-    WireMessage | Seeds | Tick | JoinTick | FormTick | HeartbeatTick | LinkChanged
+    WireMessage
+    | Seeds
+    | Subscribe
+    | Unsubscribe
+    | Tick
+    | JoinTick
+    | FormTick
+    | HeartbeatTick
+    | LinkChanged
 )
 """Everything the cluster daemon accepts, its own ticks included."""

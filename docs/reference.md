@@ -100,6 +100,12 @@ Generated from the source, so it cannot drift from what is installed.
 
 ::: tapio.cluster.cluster.Cluster
 
+::: tapio.cluster.events
+
+::: tapio.cluster.singleton.ClusterSingleton
+
+::: tapio.cluster.router.group_router
+
 ::: tapio.cluster.member.Member
 
 ::: tapio.cluster.member.MemberStatus
