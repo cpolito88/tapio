@@ -188,6 +188,33 @@ class ClusterSettings(BaseSettings):
     strategies of its own. Set this well above `heartbeat_interval`, since a
     fixed window has no opinion about how variable the network is."""
 
+    phi_accrual: bool = False
+    """Judge a watched member with a phi-accrual detector, not a fixed window.
+
+    A fixed window (`unreachable_after`) has to be set well above
+    `heartbeat_interval` or a slow moment reads as death, and that slack is
+    latency a real failure waits out. Phi-accrual learns the spread of a
+    member's answer times instead, and suspects it on a scale that means the
+    same confidence whether the link is fast and steady or slow and jittery.
+    Off by default so behaviour does not change under anyone until they ask for
+    it; when on, `unreachable_after` is not consulted and `phi_threshold` and
+    `phi_acceptable_pause` take over."""
+
+    phi_threshold: Annotated[float, Field(gt=0.0)] = 8.0
+    """How much suspicion is enough to call a member unreachable.
+
+    A log-scale value: 8 is roughly a one-in-a-hundred-million chance the
+    member is merely slow rather than gone. Higher is more patient and less
+    likely to be wrong, at the cost of noticing a real death later. Only
+    consulted when `phi_accrual` is set."""
+
+    phi_acceptable_pause: timedelta = timedelta(seconds=3)
+    """How much silence to tolerate on top of a member's learned rhythm.
+
+    Rides out a scheduler or garbage-collection pause without relearning it as
+    the normal interval. Set it to cover the longest hiccup that is not a
+    failure. Only consulted when `phi_accrual` is set."""
+
     down_after: timedelta = timedelta(seconds=7)
     """How long an unreachable split must hold still before a strategy acts.
 

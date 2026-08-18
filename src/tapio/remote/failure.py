@@ -27,6 +27,8 @@ costs a retry, which is recoverable, and waiting forever costs availability,
 which often is not.
 """
 
+import math
+from collections import deque
 from typing import Protocol, final, runtime_checkable
 
 from tapio.message import Message
@@ -40,6 +42,7 @@ __all__ = [
     "FailureDetector",
     "PeerReachable",
     "PeerUnreachable",
+    "PhiAccrualDetector",
 ]
 
 
@@ -107,6 +110,161 @@ class DeadlineDetector:
     def __repr__(self) -> str:
         """Render the window, which is the whole of the configuration."""
         return f"DeadlineDetector(unreachable_after={self._window:g}s)"
+
+
+@final
+class PhiAccrualDetector:
+    """Alive until the peer's silence is longer than its own history explains.
+
+    A fixed window has to be set well above the heartbeat interval or a slow
+    moment reads as death, and that slack is latency a real failure waits out.
+    This detector learns the spread of a peer's arrival times instead of being
+    told a number, and reports a suspicion level `phi` that rises smoothly as
+    silence outruns what the peer's own timing led it to expect. `phi` is on a
+    log scale: phi around 1 is roughly a one-in-ten chance the next beat is
+    merely late, phi around 2 about one in a hundred, and so on. One threshold
+    therefore means the same confidence whether the link is fast and steady or
+    slow and jittery, which is the whole reason to prefer it over a window.
+
+    It reads the same interface as
+    [DeadlineDetector][tapio.remote.failure.DeadlineDetector], so
+    [RingMonitor][tapio.cluster.monitor.RingMonitor] and the association hold
+    one without learning which.
+
+    The estimate is seeded before any real interval is seen, so a peer picked
+    up a moment ago is not suspected for never having answered a probe that has
+    not been sent yet. One sample has no spread, so the seed is two synthetic
+    intervals around a first estimate.
+    """
+
+    __slots__ = (
+        "_intervals",
+        "_last",
+        "_max_samples",
+        "_min_std",
+        "_pause",
+        "_sum",
+        "_sum_sq",
+        "_threshold",
+    )
+
+    def __init__(
+        self,
+        *,
+        started_at: float,
+        threshold: float,
+        acceptable_pause: float,
+        first_interval_estimate: float,
+        max_samples: int = 200,
+        min_std_deviation: float = 0.05,
+    ) -> None:
+        """Start suspecting a peer that has just been heard from.
+
+        Args:
+            started_at: When the link came up, which counts as being heard
+                from, exactly as
+                [DeadlineDetector][tapio.remote.failure.DeadlineDetector]
+                treats it.
+            threshold: The `phi` at which the peer is called unreachable.
+                Higher is more patient and less likely to be wrong, at the
+                cost of noticing a real death later.
+            acceptable_pause: Seconds of extra silence tolerated on top of the
+                learned mean, to ride out a scheduler or garbage-collection
+                hiccup without relearning it as normal.
+            first_interval_estimate: The interval assumed before any real one
+                is seen, so a peer is not suspected during its first rounds.
+                The probe interval is the natural value.
+            max_samples: How many recent intervals shape the estimate. Older
+                ones fall out, so the detector tracks a network whose timing
+                drifts.
+            min_std_deviation: A floor on the spread, in seconds. A peer that
+                answers like a metronome would otherwise be suspected on a
+                pause of milliseconds, which is too sharp to be safe.
+        """
+        self._last = started_at
+        self._threshold = threshold
+        self._pause = acceptable_pause
+        self._max_samples = max_samples
+        self._min_std = min_std_deviation
+        self._intervals: deque[float] = deque(maxlen=max_samples)
+        self._sum = 0.0
+        self._sum_sq = 0.0
+        std = first_interval_estimate / 4.0
+        self._record(first_interval_estimate - std)
+        self._record(first_interval_estimate + std)
+
+    def _record(self, interval: float) -> None:
+        """Add one inter-arrival interval, dropping the oldest past the window.
+
+        The running sum and sum of squares are kept alongside the samples, so
+        the mean and variance a probe needs cost nothing to read.
+
+        Args:
+            interval: The seconds between two arrivals.
+        """
+        if len(self._intervals) == self._max_samples:
+            evicted = self._intervals[0]
+            self._sum -= evicted
+            self._sum_sq -= evicted * evicted
+        self._intervals.append(interval)
+        self._sum += interval
+        self._sum_sq += interval * interval
+
+    def heartbeat(self, at: float) -> None:
+        """Record that something arrived, and learn the interval since the last.
+
+        A zero or negative interval is not learned: two arrivals credited to
+        the same instant say nothing about the peer's rhythm, and a clock that
+        went backwards must not poison the estimate.
+
+        Args:
+            at: When, on the system loop's monotonic clock.
+        """
+        interval = at - self._last
+        if interval > 0.0:
+            self._record(interval)
+        self._last = at
+
+    def phi(self, now: float) -> float:
+        """The suspicion that the peer is gone, given how long it has been quiet.
+
+        Args:
+            now: The current time, on the loop's monotonic clock.
+
+        Returns:
+            A value that is near zero while beats arrive on time and climbs
+            without bound as silence outlasts the learned interval.
+        """
+        elapsed = now - self._last
+        count = len(self._intervals)
+        mean = self._sum / count + self._pause
+        variance = self._sum_sq / count - (self._sum / count) ** 2
+        std = max(math.sqrt(max(variance, 0.0)), self._min_std)
+        # A logistic approximation to the normal distribution's tail, accurate
+        # to a few thousandths and far cheaper than the error function. The
+        # suspicion is -log10(P) for that tail, which reduces to log10(1 + e^p).
+        # That single form is computed through a stable softplus so a long
+        # silence, where p is large, neither overflows nor takes log10 of a
+        # value that underflowed to zero.
+        y = (elapsed - mean) / std
+        p = y * (1.5976 + 0.070566 * y * y)
+        softplus = p + math.log1p(math.exp(-p)) if p > 0.0 else math.log1p(math.exp(p))
+        return softplus / math.log(10.0)
+
+    def is_available(self, now: float) -> bool:
+        """Whether suspicion is still below the threshold.
+
+        Args:
+            now: The current time, on the loop's monotonic clock.
+
+        Returns:
+            Whether the peer still looks alive.
+        """
+        return self.phi(now) < self._threshold
+
+    def __repr__(self) -> str:
+        """Render the threshold, which is the knob a reader reaches for first."""
+        return f"PhiAccrualDetector(threshold={self._threshold:g})"
 
 
 @final

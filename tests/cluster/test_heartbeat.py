@@ -12,7 +12,7 @@ from tapio.cluster.daemon import daemon_uri
 from tapio.cluster.messages import Heartbeat, WireMessage
 from tapio.remote.address import Address
 from tapio.testkit import assert_no_leaked_tasks
-from tests.cluster.conftest import WATCHFUL, cluster_of, seeds_of
+from tests.cluster.conftest import WATCHFUL, WATCHFUL_PHI, cluster_of, seeds_of
 from tests.failures import eventually
 
 
@@ -67,6 +67,37 @@ async def test_a_partitioned_node_is_unreachable_on_both_sides():
             )
             # Nobody is written off. An unreachable member is still a member
             # until a downing strategy says otherwise, and there is none yet.
+            for node in nodes:
+                for member in node.cluster.state.members:
+                    assert member.status is MemberStatus.UP
+
+
+async def test_a_partition_is_noticed_with_a_phi_accrual_detector():
+    # The same partition as above, but the nodes judge each other with a
+    # phi-accrual detector rather than a fixed window. This is what proves the
+    # daemon actually reaches for the learned detector when the setting asks
+    # for it: the whole reachability pipeline still fires on its verdict.
+    with assert_no_leaked_tasks():
+        async with cluster_of(3, settings=WATCHFUL_PHI) as nodes:
+            first, second, odd = nodes
+            await joined(nodes)
+
+            odd.faults.partition()
+
+            for node in (first, second):
+                await eventually(
+                    lambda node=node: (
+                        odd.address in node.cluster.state.reachability.unreachable
+                    ),
+                    within=5.0,
+                )
+            await eventually(
+                lambda: (
+                    {first.address, second.address}
+                    <= odd.cluster.state.reachability.unreachable
+                ),
+                within=5.0,
+            )
             for node in nodes:
                 for member in node.cluster.state.members:
                     assert member.status is MemberStatus.UP

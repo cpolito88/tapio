@@ -61,7 +61,7 @@ from tapio.cluster.messages import (
     Unsubscribe,
     WireMessage,
 )
-from tapio.cluster.monitor import RingMonitor, deadline_detectors
+from tapio.cluster.monitor import RingMonitor, deadline_detectors, phi_detectors
 from tapio.cluster.reachability import ReachabilityStatus
 from tapio.errors import RefResolutionError
 from tapio.logging import runtime_logger
@@ -224,7 +224,15 @@ class ClusterDaemon:
         self._monitor = RingMonitor(
             address=address,
             size=settings.monitored_peers,
-            detector=deadline_detectors(settings.unreachable_after.total_seconds()),
+            detector=(
+                phi_detectors(
+                    threshold=settings.phi_threshold,
+                    acceptable_pause=settings.phi_acceptable_pause.total_seconds(),
+                    first_interval_estimate=settings.heartbeat_interval.total_seconds(),
+                )
+                if settings.phi_accrual
+                else deadline_detectors(settings.unreachable_after.total_seconds())
+            ),
         )
 
     @property
