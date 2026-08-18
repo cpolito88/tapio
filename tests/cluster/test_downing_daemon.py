@@ -8,7 +8,7 @@ partition is meant to.
 
 import asyncio
 
-from tapio.cluster import DownAll, KeepMajority, MemberStatus
+from tapio.cluster import DownAll, KeepMajority, LeaseMajority, LocalLease, MemberStatus
 from tapio.testkit import assert_no_leaked_tasks
 from tests.cluster.conftest import WATCHFUL, cluster_of, seeds_of
 from tests.failures import eventually
@@ -99,3 +99,60 @@ async def test_a_blip_shorter_than_the_window_downs_nobody():
                 assert len(node.cluster.members) == 3
                 for member in node.cluster.state.members:
                     assert member.status is MemberStatus.UP
+
+
+async def test_lease_majority_leaves_one_survivor_of_an_even_split():
+    with assert_no_leaked_tasks():
+        # A shared lease stands in for one held outside the split, which is what
+        # every node holding the same object gives when the nodes share a
+        # process. Two nodes cut apart is an even split with no majority.
+        lease = LocalLease()
+        strategy = LeaseMajority(lease=lease)
+        async with cluster_of(2, settings=DECISIVE, downing=strategy) as nodes:
+            await joined(nodes)
+
+            nodes[0].faults.partition()
+
+            # The lease admits one owner, so one side takes it and lives while
+            # the other cannot and downs itself: exactly one survivor, which is
+            # the guarantee the count could not make about an even split.
+            await eventually(
+                lambda: (
+                    sum(
+                        n.cluster.self_member.status is MemberStatus.DOWN for n in nodes
+                    )
+                    == 1
+                ),
+                within=5.0,
+            )
+            survivors = [
+                n for n in nodes if n.cluster.self_member.status is MemberStatus.UP
+            ]
+            assert len(survivors) == 1
+
+
+async def test_terminate_on_down_shuts_the_losing_node_down():
+    with assert_no_leaked_tasks():
+        async with cluster_of(
+            3, settings=DECISIVE, downing=KeepMajority(), terminate_on_down=True
+        ) as nodes:
+            first, second, odd = nodes
+            await joined(nodes)
+
+            odd.faults.partition()
+
+            # The minority downs itself, and because terminate_on_down is set it
+            # shuts its own system down rather than leaving that to the caller.
+            await asyncio.wait_for(odd.system.when_terminated(), timeout=5.0)
+            assert odd.system.is_terminating
+
+            # The majority is untouched and carries on as a smaller cluster.
+            await eventually(
+                lambda: all(
+                    n.cluster.state.converged and len(n.cluster.members) == 2
+                    for n in (first, second)
+                ),
+                within=5.0,
+            )
+            for node in (first, second):
+                assert node.cluster.self_member.status is MemberStatus.UP

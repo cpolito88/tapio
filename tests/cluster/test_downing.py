@@ -1,4 +1,4 @@
-"""The deterministic downing strategies, as pure functions over a view."""
+"""The downing strategies, as functions over a view (and, for the lease, a lock)."""
 
 from collections.abc import Iterable, Sequence
 
@@ -9,6 +9,8 @@ from tapio.cluster.downing import (
     DownStrategy,
     KeepMajority,
     KeepOldest,
+    LeaseMajority,
+    LocalLease,
     StaticQuorum,
 )
 from tapio.cluster.gossip import Gossip
@@ -61,52 +63,65 @@ def view(members: Sequence[Member], *, unreachable: Iterable[str] = ()) -> Gossi
 
 def test_a_strategy_is_a_down_strategy() -> None:
     # The protocol is runtime-checkable, so the export list is enforceable.
-    for strategy in (DownAll(), KeepMajority(), StaticQuorum(size=1), KeepOldest()):
+    strategies = (
+        DownAll(),
+        KeepMajority(),
+        StaticQuorum(size=1),
+        KeepOldest(),
+        LeaseMajority(lease=LocalLease()),
+    )
+    for strategy in strategies:
         assert isinstance(strategy, DownStrategy)
 
 
 @pytest.mark.parametrize(
     "strategy",
-    [DownAll(), KeepMajority(), StaticQuorum(size=2), KeepOldest()],
+    [
+        DownAll(),
+        KeepMajority(),
+        StaticQuorum(size=2),
+        KeepOldest(),
+        LeaseMajority(lease=LocalLease()),
+    ],
 )
-def test_nothing_is_downed_without_an_unreachable_member(
+async def test_nothing_is_downed_without_an_unreachable_member(
     strategy: DownStrategy,
 ) -> None:
     # No split means no decision: downing is only ever a response to silence.
     state = view([up(A), up(B), up(C)])
-    assert strategy.decide(state) == frozenset()
+    assert await strategy.decide(state) == frozenset()
 
 
-def test_down_all_downs_every_member_on_a_split() -> None:
+async def test_down_all_downs_every_member_on_a_split() -> None:
     state = view([up(A), up(B), up(C)], unreachable=[C])
-    assert DownAll().decide(state) == frozenset({A, B, C})
+    assert await DownAll().decide(state) == frozenset({A, B, C})
 
 
-def test_keep_majority_downs_the_smaller_side() -> None:
+async def test_keep_majority_downs_the_smaller_side() -> None:
     # Three reachable against two unreachable: the two are downed.
     state = view([up(A), up(B), up(C), up(D), up(E)], unreachable=[D, E])
-    assert KeepMajority().decide(state) == frozenset({D, E})
+    assert await KeepMajority().decide(state) == frozenset({D, E})
 
 
-def test_keep_majority_downs_this_side_when_it_is_the_minority() -> None:
+async def test_keep_majority_downs_this_side_when_it_is_the_minority() -> None:
     # This node sees itself among two, against three it cannot hear. Being the
     # minority means downing its own side, which is what self-down is.
     state = view([up(A), up(B), up(C), up(D), up(E)], unreachable=[C, D, E])
-    assert KeepMajority().decide(state) == frozenset({A, B})
+    assert await KeepMajority().decide(state) == frozenset({A, B})
 
 
-def test_keep_majority_breaks_a_tie_by_the_lowest_address() -> None:
+async def test_keep_majority_breaks_a_tie_by_the_lowest_address() -> None:
     # Two against two. A is the lowest address, so the side holding A is kept
     # and the other side is downed.
     kept_here = view([up(A), up(B), up(C), up(D)], unreachable=[C, D])
-    assert KeepMajority().decide(kept_here) == frozenset({C, D})
+    assert await KeepMajority().decide(kept_here) == frozenset({C, D})
 
     # The mirror: this node is on the side without A, so its own side loses.
     kept_there = view([up(A), up(B), up(C), up(D)], unreachable=[A, B])
-    assert KeepMajority().decide(kept_there) == frozenset({C, D})
+    assert await KeepMajority().decide(kept_there) == frozenset({C, D})
 
 
-def test_keep_majority_counts_only_the_role_but_downs_the_whole_side() -> None:
+async def test_keep_majority_counts_only_the_role_but_downs_the_whole_side() -> None:
     # Reachable side has one database, unreachable side has two. Counting
     # databases the unreachable side is the majority, so the reachable side
     # loses, and it loses whole: its web node goes down with its database.
@@ -117,37 +132,39 @@ def test_keep_majority_counts_only_the_role_but_downs_the_whole_side() -> None:
         up(D, roles=["db"]),
     ]
     state = view(members, unreachable=[C, D])
-    assert KeepMajority(role="db").decide(state) == frozenset({A, B})
+    assert await KeepMajority(role="db").decide(state) == frozenset({A, B})
 
 
-def test_keep_majority_downs_all_when_a_role_names_nobody() -> None:
+async def test_keep_majority_downs_all_when_a_role_names_nobody() -> None:
     # A role no member carries leaves no side to keep, so nothing survives.
     state = view([up(A), up(B), up(C)], unreachable=[C])
-    assert KeepMajority(role="db").decide(state) == frozenset({A, B, C})
+    assert await KeepMajority(role="db").decide(state) == frozenset({A, B, C})
 
 
-def test_static_quorum_keeps_the_side_that_alone_reaches_it() -> None:
+async def test_static_quorum_keeps_the_side_that_alone_reaches_it() -> None:
     state = view([up(A), up(B), up(C), up(D), up(E)], unreachable=[D, E])
-    assert StaticQuorum(size=3).decide(state) == frozenset({D, E})
+    assert await StaticQuorum(size=3).decide(state) == frozenset({D, E})
 
 
-def test_static_quorum_downs_this_side_when_only_the_other_reaches_it() -> None:
+async def test_static_quorum_downs_this_side_when_only_the_other_reaches_it() -> None:
     # Two reachable, below a quorum of three, against three that reach it. This
     # side downs itself, which is what self-down is.
     state = view([up(A), up(B), up(C), up(D), up(E)], unreachable=[C, D, E])
-    assert StaticQuorum(size=3).decide(state) == frozenset({A, B})
+    assert await StaticQuorum(size=3).decide(state) == frozenset({A, B})
 
 
-def test_static_quorum_downs_all_when_both_sides_reach_it() -> None:
+async def test_static_quorum_downs_all_when_both_sides_reach_it() -> None:
     # A quorum set below half the cluster lets both sides hold it, which is the
     # misconfiguration the strategy fails loudly on: everyone goes down.
     state = view([up(A), up(B), up(C), up(D)], unreachable=[C, D])
-    assert StaticQuorum(size=2).decide(state) == frozenset({A, B, C, D})
+    assert await StaticQuorum(size=2).decide(state) == frozenset({A, B, C, D})
 
 
-def test_static_quorum_downs_all_when_neither_side_reaches_it() -> None:
+async def test_static_quorum_downs_all_when_neither_side_reaches_it() -> None:
     state = view([up(A), up(B), up(C), up(D)], unreachable=[C, D])
-    assert StaticQuorum(size=3, role="db").decide(state) == frozenset({A, B, C, D})
+    assert await StaticQuorum(size=3, role="db").decide(state) == frozenset(
+        {A, B, C, D}
+    )
 
 
 def test_static_quorum_refuses_a_size_below_one() -> None:
@@ -155,7 +172,7 @@ def test_static_quorum_refuses_a_size_below_one() -> None:
         StaticQuorum(size=0)
 
 
-def test_keep_oldest_keeps_the_side_with_the_oldest_member() -> None:
+async def test_keep_oldest_keeps_the_side_with_the_oldest_member() -> None:
     # E was accepted first, so its side is kept and the other side is downed,
     # even though the other side is larger.
     members = [
@@ -167,10 +184,10 @@ def test_keep_oldest_keeps_the_side_with_the_oldest_member() -> None:
     state = view(members, unreachable=[E])
     # The oldest is alone on the unreachable side, so its side is kept and the
     # three reachable members are downed.
-    assert KeepOldest().decide(state) == frozenset({A, B, C})
+    assert await KeepOldest().decide(state) == frozenset({A, B, C})
 
 
-def test_keep_oldest_downs_a_lone_oldest_when_told_to() -> None:
+async def test_keep_oldest_downs_a_lone_oldest_when_told_to() -> None:
     members = [
         up(A, up_number=4),
         up(B, up_number=3),
@@ -179,10 +196,10 @@ def test_keep_oldest_downs_a_lone_oldest_when_told_to() -> None:
     ]
     state = view(members, unreachable=[E])
     # With down_if_alone the isolated oldest yields, and the majority lives.
-    assert KeepOldest(down_if_alone=True).decide(state) == frozenset({E})
+    assert await KeepOldest(down_if_alone=True).decide(state) == frozenset({E})
 
 
-def test_keep_oldest_keeps_a_lone_oldest_that_is_not_alone_on_its_side() -> None:
+async def test_keep_oldest_keeps_a_lone_oldest_that_is_not_alone_on_its_side() -> None:
     # down_if_alone only fires when the oldest is truly by itself. Here the
     # oldest keeps company, so its side is kept whatever the flag says.
     members = [
@@ -192,10 +209,10 @@ def test_keep_oldest_keeps_a_lone_oldest_that_is_not_alone_on_its_side() -> None
         up(D, up_number=3),
     ]
     state = view(members, unreachable=[A])
-    assert KeepOldest(down_if_alone=True).decide(state) == frozenset({A})
+    assert await KeepOldest(down_if_alone=True).decide(state) == frozenset({A})
 
 
-def test_keep_oldest_chooses_the_oldest_within_a_role() -> None:
+async def test_keep_oldest_chooses_the_oldest_within_a_role() -> None:
     # B is older overall, but only databases are eligible to be the oldest, and
     # the oldest database D is on the unreachable side, so this side is downed.
     members = [
@@ -205,7 +222,44 @@ def test_keep_oldest_chooses_the_oldest_within_a_role() -> None:
         up(D, up_number=2, roles=["db"]),
     ]
     state = view(members, unreachable=[C, D])
-    assert KeepOldest(role="db").decide(state) == frozenset({A, B})
+    assert await KeepOldest(role="db").decide(state) == frozenset({A, B})
+
+
+async def test_lease_majority_keeps_the_side_that_takes_the_lease() -> None:
+    # An even split has no majority, so a lease decides it. Both sides race for
+    # the same lock, and it admits one owner: the side that named it wins and
+    # downs the other, the side that could not downs itself. Both sides name
+    # the same losers, which is the agreement the count could not reach.
+    lease = LocalLease()
+    strategy = LeaseMajority(lease=lease)
+    from_a_side = view([up(A), up(B), up(C), up(D)], unreachable=[C, D])
+    from_c_side = view([up(A), up(B), up(C), up(D)], unreachable=[A, B])
+
+    assert await strategy.decide(from_a_side) == frozenset({C, D})
+    assert await strategy.decide(from_c_side) == frozenset({C, D})
+
+
+async def test_lease_majority_downs_this_side_when_another_owner_holds_it() -> None:
+    lease = LocalLease()
+    await lease.acquire("some other side")
+    strategy = LeaseMajority(lease=lease)
+    state = view([up(A), up(B), up(C), up(D)], unreachable=[C, D])
+
+    # This side cannot take a lease somebody else holds, so it downs itself.
+    assert await strategy.decide(state) == frozenset({A, B})
+
+
+async def test_lease_majority_lets_a_whole_side_share_the_lease() -> None:
+    # Two nodes on the winning side name it with the same owner, so the lease's
+    # re-entrancy lets both hold it. A side agrees with itself, and neither node
+    # of it downs the other.
+    lease = LocalLease()
+    strategy = LeaseMajority(lease=lease)
+    one_node = view([up(A), up(B), up(C), up(D)], unreachable=[C, D])
+    its_neighbour = view([up(A), up(B), up(C), up(D)], unreachable=[C, D])
+
+    assert await strategy.decide(one_node) == frozenset({C, D})
+    assert await strategy.decide(its_neighbour) == frozenset({C, D})
 
 
 @pytest.mark.parametrize(
@@ -219,7 +273,7 @@ def test_keep_oldest_chooses_the_oldest_within_a_role() -> None:
         DownAll(),
     ],
 )
-def test_both_sides_of_a_partition_down_the_same_members(
+async def test_both_sides_of_a_partition_down_the_same_members(
     strategy: DownStrategy,
 ) -> None:
     # The safety property. A split into {A, B} and {C, D, E} is seen from each
@@ -236,4 +290,6 @@ def test_both_sides_of_a_partition_down_the_same_members(
     ]
     seen_from_small = view(members, unreachable=[C, D, E])
     seen_from_large = view(members, unreachable=[A, B])
-    assert strategy.decide(seen_from_small) == strategy.decide(seen_from_large)
+    assert await strategy.decide(seen_from_small) == await strategy.decide(
+        seen_from_large
+    )

@@ -274,7 +274,7 @@ class ClusterDaemon:
 
         self._follow_the_ring()
         self._lead()
-        self._down()
+        await self._down()
         self._announce_if_downed()
         if (
             self.self_member is not None
@@ -661,7 +661,7 @@ class ClusterDaemon:
                     )
             self._state = moved.bumped_by(self._address)
 
-    def _down(self) -> None:
+    async def _down(self) -> None:
         """Down the losing side of a split, once a strategy says which loses.
 
         This is the path a node takes when the view is blocked by an
@@ -673,16 +673,21 @@ class ClusterDaemon:
         ridden out rather than resolved.
 
         Every node runs it, not only the leader, and each downs the verdict for
-        its own view. That is safe and needs no coordination because the
-        verdict is a pure function of the view: every node on one side of a
-        split sees the same view and reaches the same verdict, and the two
-        sides see mirror images and reach the agreeing one, so the loser downs
-        itself while the winner downs the loser. Downing is a move up the
-        lattice, so two nodes reaching the same verdict is one decision made
-        twice, not two decisions in conflict. Leaving it to a leader would not
-        do: a strategy that downs a whole side, its own included, leaves that
-        node no reachable member to gossip the decision to, so a peer that did
-        not run the decision itself would never hear it.
+        its own view. That is safe and needs no coordination because the two
+        sides agree on the loser: a strategy that reads the shape of the split
+        has both sides compute the same answer from mirror-image views, and the
+        lease-backed one has them agree because only one side can take the
+        lease. So the loser downs itself while the winner downs the loser.
+        Downing is a move up the lattice, so two nodes reaching the same verdict
+        is one decision made twice, not two decisions in conflict. Leaving it to
+        a leader would not do: a strategy that downs a whole side, its own
+        included, leaves that node no reachable member to gossip the decision
+        to, so a peer that did not run the decision itself would never hear it.
+
+        Deciding is awaited because the lease-backed strategy reaches an outside
+        lock. The wait is the only point in a turn this actor gives up, and only
+        while a split is being resolved, so a peer's heartbeat is answered on
+        the turns either side of it.
         """
         me = self.self_member
         if (
@@ -706,7 +711,7 @@ class ClusterDaemon:
             return
         if now - self._split_since < self._down_after:
             return
-        self._apply_downing(self._strategy.decide(self._state))
+        self._apply_downing(await self._strategy.decide(self._state))
 
     def _unreachable_alive(self) -> frozenset[str]:
         """The live members at least one observer currently cannot hear."""

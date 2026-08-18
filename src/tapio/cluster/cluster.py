@@ -22,13 +22,14 @@ from collections.abc import Sequence
 from datetime import timedelta
 from typing import final
 
+from tapio.actor.events import Subscription
 from tapio.actor.ref import ActorRef
 from tapio.actor.system import ActorSystem
 from tapio.cluster.daemon import DAEMON_NAME, ClusterDaemon
 from tapio.cluster.downing import DownStrategy
 from tapio.cluster.gossip import Gossip
 from tapio.cluster.member import Member, MemberStatus, rank_of
-from tapio.cluster.messages import ClusterMessage, Leave, Seeds
+from tapio.cluster.messages import ClusterDowned, ClusterMessage, Leave, Seeds
 from tapio.errors import ClusterError
 from tapio.remote.address import Address
 from tapio.settings import ClusterSettings
@@ -46,6 +47,7 @@ class Cluster:
         settings: ClusterSettings | None = None,
         *,
         downing: DownStrategy | None = None,
+        terminate_on_down: bool = False,
     ) -> None:
         """Start this node's cluster daemon, without joining anything yet.
 
@@ -61,6 +63,14 @@ class Cluster:
                 [KeepMajority][tapio.cluster.downing.KeepMajority] or
                 [DownAll][tapio.cluster.downing.DownAll] to have the losing
                 side downed and, for this node, to have it down itself.
+            terminate_on_down: Whether to shut the whole system down when this
+                node downs itself, rather than leaving that to the application.
+                A downed member may not rejoin as itself, so a service whose
+                only reason to run was the cluster wants this. One that does
+                other work leaves it off and awaits
+                [when_downed][tapio.cluster.cluster.Cluster.when_downed]
+                instead. It has no effect without a `downing` strategy, since
+                nothing then downs this node.
 
         Raises:
             ClusterError: If the system has remoting switched off, so it has
@@ -98,6 +108,38 @@ class Cluster:
         self._ref: ActorRef[ClusterMessage] = system.spawn_system_actor(
             self._daemon.behavior(), DAEMON_NAME
         )
+        self._down_watch: Subscription | None = None
+        self._shutdown: asyncio.Task[None] | None = None
+        if downing is not None and terminate_on_down:
+            self._down_watch = self._terminate_when_downed()
+
+    def _terminate_when_downed(self) -> Subscription:
+        """Shut the system down the moment this node downs itself.
+
+        The daemon publishes
+        [ClusterDowned][tapio.cluster.messages.ClusterDowned] from inside its
+        own turn, so this cannot terminate inline: doing so would stop the
+        daemon while it is mid publish. It spawns the shutdown as its own task
+        instead, the same way a failure escalating past a guardian does, so the
+        turn that decided to down this node finishes first. The task is held,
+        since the event loop keeps only a weak reference to one and would let an
+        unheld shutdown be collected before it finished. Once fired this stops
+        listening, because a system downs itself once.
+
+        Returns:
+            The subscription, so construction can hold it.
+        """
+        system = self._system
+
+        def shut_down(event: ClusterDowned) -> None:
+            if self._down_watch is not None:
+                self._down_watch.unsubscribe()
+            system.log.warning(
+                "%s downed itself, shutting the system down", event.address
+            )
+            self._shutdown = asyncio.ensure_future(system.terminate())
+
+        return system.events.subscribe(ClusterDowned, shut_down)
 
     @property
     def address(self) -> str:

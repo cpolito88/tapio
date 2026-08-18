@@ -23,6 +23,9 @@ from tapio.cluster.downing import (
     DownStrategy,
     KeepMajority,
     KeepOldest,
+    Lease,
+    LeaseMajority,
+    LocalLease,
     StaticQuorum,
 )
 from tapio.cluster.gossip import Gossip
@@ -55,7 +58,10 @@ __all__ = [
     "Join",
     "KeepMajority",
     "KeepOldest",
+    "Lease",
+    "LeaseMajority",
     "Leave",
+    "LocalLease",
     "Member",
     "MemberStatus",
     "Ordering",

@@ -19,11 +19,21 @@ oldest member", therefore names the *same* winner on both sides without either
 side saying a word. The loser downs itself and shuts down; the winner downs the
 loser and carries on. One decision, computed twice, agreeing.
 
-That is why every strategy here is a pure function of a view: given the same
-membership and the same reachability it returns the same verdict, and the whole
-argument for correctness is that the two sides feed it mirror-image inputs. A
-strategy that broke a tie by racing for a lease some third party holds is not
-deterministic in this sense and is not here yet.
+Four of the strategies here are pure functions of a view: given the same
+membership and the same reachability they return the same verdict, and the
+whole argument for correctness is that the two sides feed them mirror-image
+inputs. [LeaseMajority][tapio.cluster.downing.LeaseMajority] is the exception.
+It breaks a tie the count cannot, an even split with no majority, by reaching
+for a [Lease][tapio.cluster.downing.Lease] that only one side can hold. That
+reaches outside the view, so the decision is asynchronous and the safety
+argument is different: not that both sides compute the same answer, but that
+the lease lets only one of them win.
+
+That one exception is why deciding is asynchronous even though most of it does
+no waiting. A pure strategy returns at once; the lease one waits on an outside
+lock. Making them all asynchronous keeps one protocol rather than two, and an
+`async def` that never awaits is still a pure function of its inputs, so the
+mirror-image argument the pure strategies rest on is untouched.
 
 The verdict is the set of addresses to down. Applied on the winning side those
 are the unreachable members, which downing lifts out of the way of convergence.
@@ -45,6 +55,9 @@ __all__ = [
     "DownStrategy",
     "KeepMajority",
     "KeepOldest",
+    "Lease",
+    "LeaseMajority",
+    "LocalLease",
     "StaticQuorum",
 ]
 
@@ -53,12 +66,14 @@ __all__ = [
 class DownStrategy(Protocol):
     """What a cluster does when some members are unreachable.
 
-    Every implementation is a pure function of the view, so that the two sides
+    Most implementations are a pure function of the view, so that the two sides
     of a partition reach an agreeing verdict from mirror-image inputs without a
     message passing between them.
+    [LeaseMajority][tapio.cluster.downing.LeaseMajority] is the one that reaches
+    outside the view, which is why deciding is asynchronous.
     """
 
-    def decide(self, state: Gossip) -> frozenset[str]:
+    async def decide(self, state: Gossip) -> frozenset[str]:
         """Return the addresses to down, given a view with unreachable members.
 
         Args:
@@ -133,7 +148,7 @@ class DownAll:
     rule cannot name a single winner.
     """
 
-    def decide(self, state: Gossip) -> frozenset[str]:
+    async def decide(self, state: Gossip) -> frozenset[str]:
         """Down everyone, or nobody when there is no split to resolve.
 
         Args:
@@ -174,7 +189,7 @@ class KeepMajority:
     role: str | None = None
     """The role to count, or `None` to count every member."""
 
-    def decide(self, state: Gossip) -> frozenset[str]:
+    async def decide(self, state: Gossip) -> frozenset[str]:
         """Keep the majority side, downing the minority.
 
         Args:
@@ -244,7 +259,7 @@ class StaticQuorum:
             )
             raise ValueError(msg)
 
-    def decide(self, state: Gossip) -> frozenset[str]:
+    async def decide(self, state: Gossip) -> frozenset[str]:
         """Keep the side that alone reaches the quorum, downing the rest.
 
         Args:
@@ -295,7 +310,7 @@ class KeepOldest:
     role: str | None = None
     """The role the oldest is chosen among, or `None` to choose among every member."""
 
-    def decide(self, state: Gossip) -> frozenset[str]:
+    async def decide(self, state: Gossip) -> frozenset[str]:
         """Keep the oldest member's side, unless it is alone and told to yield.
 
         Args:
@@ -344,3 +359,149 @@ def _seniority(member: Member) -> tuple[float, str]:
         Its sort key, lowest being oldest.
     """
     return (member.up_number if member.up_number else math.inf, member.address)
+
+
+@runtime_checkable
+class Lease(Protocol):
+    """An outside lock that at most one owner holds, for breaking a tie.
+
+    A split with no majority, an even one, cannot be resolved from the view: it
+    is symmetric, so any rule read from its shape keeps both halves or neither.
+    A lease breaks the symmetry from outside. Both sides try to take the same
+    lease, it lets only one owner hold it, and the side that holds it survives
+    while the side that cannot down themselves.
+
+    For this to mean anything the lease has to live somewhere both sides can
+    still reach when they cannot reach each other, which is to say outside the
+    partition: a row in a database, a Kubernetes lease, a key in etcd. A lease
+    held inside the split, [LocalLease][tapio.cluster.downing.LocalLease] being
+    the extreme case of one held in a single process, cannot arbitrate a
+    partition it is on one side of, so it is for tests and for systems that
+    share a process rather than for a real cluster.
+
+    An owner is a string, and the whole cluster resolving one split uses one
+    name for it, so a side either all takes the lease or all fails to. Acquiring
+    is therefore re-entrant: it succeeds when the lease is free or already held
+    by this owner, and fails only when another owner holds it.
+    """
+
+    async def acquire(self, owner: str) -> bool:
+        """Try to hold the lease for an owner.
+
+        Args:
+            owner: Who is asking, which for downing is the identity of a whole
+                side rather than one node, so that a side agrees with itself.
+
+        Returns:
+            Whether the lease is held by this owner now. True when it was free
+            or already this owner's, False when another owner holds it.
+        """
+        ...
+
+    async def release(self, owner: str) -> None:
+        """Give the lease up, if this owner holds it.
+
+        Args:
+            owner: Who is releasing. A release by anyone else is ignored, so a
+                late release cannot take a lease away from the side that has
+                since won it.
+        """
+        ...
+
+
+@final
+class LocalLease:
+    """A lease held in one process, for tests and for systems that share one.
+
+    It cannot arbitrate a real partition, because a partition splits processes
+    and this lease is on one side of that split. What it does arbitrate is
+    several systems in a single process, which is exactly the shape a test of
+    [LeaseMajority][tapio.cluster.downing.LeaseMajority] takes: every node holds
+    the same object, so the lease mediates between them the way an outside one
+    would mediate between machines. In production a lease reaches an outside
+    service instead, and this class is not that.
+    """
+
+    __slots__ = ("_owner",)
+
+    def __init__(self) -> None:
+        """Start with the lease free."""
+        self._owner: str | None = None
+
+    async def acquire(self, owner: str) -> bool:
+        """Take the lease for an owner, if it is free or already theirs.
+
+        Args:
+            owner: Who is asking.
+
+        Returns:
+            Whether this owner holds it now.
+        """
+        if self._owner is None or self._owner == owner:
+            self._owner = owner
+            return True
+        return False
+
+    async def release(self, owner: str) -> None:
+        """Free the lease, if this owner holds it.
+
+        Args:
+            owner: Who is releasing.
+        """
+        if self._owner == owner:
+            self._owner = None
+
+    def __repr__(self) -> str:
+        """Render who holds the lease, if anyone."""
+        return f"LocalLease(owner={self._owner!r})"
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class LeaseMajority:
+    """Keep the side that takes an outside lease, so an even split still has one winner.
+
+    The strategy for a split the count cannot decide. Two equal halves have no
+    majority, and every deterministic rule keeps both or neither, so this hands
+    the decision to a [Lease][tapio.cluster.downing.Lease] that only one side
+    can hold. The side that takes it survives and downs the other; the side that
+    cannot downs itself. Because the lease admits one owner, exactly one side
+    lives, which is the guarantee no view-only rule can make about an even
+    split.
+
+    Every node names its own side to the lease, by the lowest address on it, so
+    all of a side asks with one owner and the lease's re-entrancy lets them all
+    hold it or all fail together. The two sides name different owners, so the
+    lease keeps them apart.
+
+    Whichever side reaches the lease first wins it, so a partition of a running
+    cluster can leave the smaller side standing if it got there first. That is
+    safe, since only one side ever lives, but it is not the most available
+    outcome. Preferring the majority by making the minority wait before it
+    reaches for the lease is a refinement this does not make yet.
+    """
+
+    lease: Lease
+    """The outside lock the sides race for. It must live outside the partition."""
+
+    async def decide(self, state: Gossip) -> frozenset[str]:
+        """Keep this side if it can take the lease, and down it if it cannot.
+
+        Args:
+            state: This node's view.
+
+        Returns:
+            The unreachable side's addresses when this side takes the lease, and
+            this side's own when it cannot.
+        """
+        reachable, unreachable = _sides(state)
+        if not unreachable:
+            return frozenset()
+        owner = min(_addresses(reachable))
+        if await self.lease.acquire(owner):
+            return _addresses(unreachable)
+        return _addresses(reachable)
+
+    def __repr__(self) -> str:
+        """Render the lease, which is the whole of the configuration."""
+        return f"LeaseMajority(lease={self.lease!r})"

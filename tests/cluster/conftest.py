@@ -92,6 +92,7 @@ async def cluster_of(
     *,
     settings: ClusterSettings = QUICK,
     downing: DownStrategy | None = None,
+    terminate_on_down: bool = False,
 ) -> AsyncIterator[tuple[Node, ...]]:
     """Start `count` systems, each with a cluster daemon and nothing joined yet.
 
@@ -105,6 +106,8 @@ async def cluster_of(
         settings: How they gossip.
         downing: The strategy every node resolves a split with, or `None` to
             leave a split blocking convergence, which is the default.
+        terminate_on_down: Whether a node that downs itself shuts its own system
+            down, as opposed to leaving it running for the test to inspect.
 
     Yields:
         The nodes, in the order they were started.
@@ -117,7 +120,12 @@ async def cluster_of(
             nodes.append(
                 Node(
                     system=system,
-                    cluster=Cluster(system, settings, downing=downing),
+                    cluster=Cluster(
+                        system,
+                        settings,
+                        downing=downing,
+                        terminate_on_down=terminate_on_down,
+                    ),
                     faults=faults,
                 )
             )
