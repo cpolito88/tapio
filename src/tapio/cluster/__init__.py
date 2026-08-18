@@ -18,6 +18,13 @@ system and the actor system knows nothing about clustering.
 
 from tapio.cluster.clock import Ordering, VectorClock
 from tapio.cluster.cluster import Cluster
+from tapio.cluster.downing import (
+    DownAll,
+    DownStrategy,
+    KeepMajority,
+    KeepOldest,
+    StaticQuorum,
+)
 from tapio.cluster.gossip import Gossip
 from tapio.cluster.member import Member, MemberStatus
 from tapio.cluster.messages import (
@@ -37,11 +44,15 @@ from tapio.cluster.reachability import (
 
 __all__ = [
     "Cluster",
+    "DownAll",
+    "DownStrategy",
     "Gossip",
     "GossipEnvelope",
     "Heartbeat",
     "HeartbeatReply",
     "Join",
+    "KeepMajority",
+    "KeepOldest",
     "Leave",
     "Member",
     "MemberStatus",
@@ -50,6 +61,7 @@ __all__ = [
     "ReachabilityRecord",
     "ReachabilityStatus",
     "RingMonitor",
+    "StaticQuorum",
     "VectorClock",
     "WireMessage",
     "monitored_by",
