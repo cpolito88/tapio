@@ -86,9 +86,12 @@ duplicated method pair in TD-02.
     arguments. Add a test under `tests/remote/test_spawner.py` for a factory
     whose args model holds an `ActorRef`.
   - **Estimate**: 3-5 hours
-  - **Confidence**: Verified (by reading; the crash path is traced through the
-    code, not reproduced by an executed test). No existing test exercises an
-    args model containing a ref.
+  - **Confidence**: Reproduced. A live in-process run (a spawner offering a
+    factory whose args model declares an `ActorRef`, sent a `Spawn` whose args
+    carry a ref string, as a peer's would) raised `RefResolutionError` out of
+    `arguments` → `_answer` → the `on_spawn` handler, stopped the spawner
+    (`Terminated`), and sent no `SpawnFailed` reply. No existing test exercises
+    an args model containing a ref.
   - **Depends on**: -
 
 - [ ] **[TD-02]** `src/tapio/cluster/reachability.py:87-101,131-147` — Remove the duplicate of `Reachability.status`/`says`
@@ -125,36 +128,36 @@ as pure functions" goal requires. No large-scale restructuring is justified by
 present pain, and the audit bar for proposing one is deliberately high.
 
 ## Needs investigation
-These are open questions, not tasks. Each needs a team decision or a
-confirming test before it could become one.
+All four items opened here have been resolved with the maintainer. Kept for the
+record, with the decision on each.
 
 1. **Should `_MAX_CATCH_UP` be reachable/tunable?** `actor/timers.py:35` fixes
-   the fixed-rate catch-up burst at 10 ticks as a module constant. It is a
-   sensible default, but there is no per-timer override and the "dropped N
-   ticks" path (`_give_up_catching_up`, `timers.py:270-292`) has no dedicated
-   test that I could find. Question: is the constant intended to stay
-   non-configurable, and is the drop-and-resync path covered? If not, a
-   regression test would be cheap insurance rather than a code change.
+   the fixed-rate catch-up burst at 10 ticks as a module constant.
+   **Resolved: no change.** The drop-and-resync path is already covered by
+   `tests/actor/test_timers.py::test_a_fixed_rate_timer_caps_the_burst_after_a_long_stall`
+   (asserts "ticks behind and dropped them"). The constant stays
+   non-configurable: no present need justifies a per-timer knob.
 
 2. **`Heartbeat` names two unrelated frame types.** `remote/transport.Heartbeat`
    (a `LinkFrame`, link liveness, used in `association.py:726`) and
    `cluster/messages.Heartbeat` (a `WireMessage`, member liveness, used in
-   `daemon.py:241,364`) share a class name across layers. No module imports
-   both, so there is no bug today, but a reader grepping `Heartbeat` gets two
-   different concepts. Question: is this acceptable, or is a rename (e.g.
-   `LinkBeat` vs `MemberHeartbeat`) worth the churn? I did not turn it into a
-   task because the collision is contained and both are documented.
+   `daemon.py:241,364`) share a class name across layers. Confirmed that no
+   module imports both, so there is no bug. **Resolved: leave as-is.** The
+   collision is contained and both are documented; a rename is not worth the
+   churn.
 
 3. **`expect_no_message` bypasses `receive`'s queue discipline.**
-   `testkit/probe.py:228` awaits `self._messages.get()` directly rather than
-   going through `_next`. It is correct as written, but it means a message that
-   arrives just after the window closes is left on the queue for the next
-   `receive`, which is the intended behaviour only if callers expect it.
-   Question for the team: is that the documented contract, and is there a test
-   asserting a late message is still delivered to a subsequent `receive`?
+   `testkit/probe.py:228` awaits `self._messages.get()` directly. A message
+   arriving after the window closes is left on the queue for the next
+   `receive`, and there was no test pinning that contract; there is also a
+   theoretical tie race if a message arrives in the same instant the window
+   times out. **Resolved: regression test added.**
+   `tests/testkit/test_probe.py::test_expect_no_message_leaves_a_later_message_for_receive`
+   pins the common-case contract; the tie boundary is called out in the test's
+   docstring and left unhardened, since this is a negative-assertion test helper
+   and the impact is negligible.
 
-4. **Confirm the TD-01 crash against a live spawner.** The spawner defect is
-   verified by reading, but a one-off test that registers a factory whose args
-   model holds an `ActorRef` and asserts the current (bad) behaviour would turn
-   "suspected from the code" into "reproduced", and then double as the
-   regression test for the fix.
+4. **Confirm the TD-01 crash against a live spawner.** **Resolved: reproduced.**
+   A live in-process run confirmed the crash (see TD-01's updated Confidence).
+   The reproduction doubles as the shape of the regression test that should
+   accompany the TD-01 fix.

@@ -123,6 +123,24 @@ async def test_expect_no_message_fails_when_something_arrives(system: ActorSyste
         await probe.expect_no_message(timedelta(milliseconds=20))
 
 
+async def test_expect_no_message_leaves_a_later_message_for_receive(
+    system: ActorSystem,
+):
+    """A message sent after the quiet window is still there for the next receive.
+
+    expect_no_message consumes nothing when it passes, so the probe stays
+    usable and a reply that lands just after the window closes is not lost.
+    This pins the common case; a message arriving in the same instant the
+    window times out is a tie this does not try to force.
+    """
+    probe: TestProbe[Greeted] = TestProbe(system, Greeted)
+
+    await probe.expect_no_message(timedelta(milliseconds=20))
+    probe.tell(Greeted(whom="world"))
+
+    assert await probe.receive(timedelta(milliseconds=200)) == Greeted(whom="world")
+
+
 async def test_a_probe_watches_and_expects_a_stop(system: ActorSystem):
     probe: TestProbe[Greeted] = TestProbe(system, Greeted)
     worker = system.spawn(retiring(), "worker")
