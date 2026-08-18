@@ -25,6 +25,7 @@ from typing import final
 from tapio.actor.ref import ActorRef
 from tapio.actor.system import ActorSystem
 from tapio.cluster.daemon import DAEMON_NAME, ClusterDaemon
+from tapio.cluster.downing import DownStrategy
 from tapio.cluster.gossip import Gossip
 from tapio.cluster.member import Member, MemberStatus, rank_of
 from tapio.cluster.messages import ClusterMessage, Leave, Seeds
@@ -40,7 +41,11 @@ class Cluster:
     """One node's membership in a cluster: how it joins, and what it sees."""
 
     def __init__(
-        self, system: ActorSystem, settings: ClusterSettings | None = None
+        self,
+        system: ActorSystem,
+        settings: ClusterSettings | None = None,
+        *,
+        downing: DownStrategy | None = None,
     ) -> None:
         """Start this node's cluster daemon, without joining anything yet.
 
@@ -49,6 +54,13 @@ class Cluster:
                 since members address each other by their canonical addresses.
             settings: How often to gossip and how patient to be. The defaults
                 when omitted.
+            downing: What to do about an unreachable member. Omitted leaves one
+                blocking convergence for ever, which is the safe default until
+                an operator says how this cluster would rather resolve a split.
+                Pass a strategy such as
+                [KeepMajority][tapio.cluster.downing.KeepMajority] or
+                [DownAll][tapio.cluster.downing.DownAll] to have the losing
+                side downed and, for this node, to have it down itself.
 
         Raises:
             ClusterError: If the system has remoting switched off, so it has
@@ -81,6 +93,7 @@ class Cluster:
             settings=self._settings,
             relent=relent,
             linked=linked,
+            strategy=downing,
         )
         self._ref: ActorRef[ClusterMessage] = system.spawn_system_actor(
             self._daemon.behavior(), DAEMON_NAME
@@ -199,6 +212,28 @@ class Cluster:
                 "the nodes this one can see."
             )
             raise ClusterError(msg) from None
+
+    async def when_downed(self) -> None:
+        """Wait until a downing strategy has made this node down itself.
+
+        A downed member may not rejoin as itself, so the usual response is to
+        shut the system down:
+
+        ```python
+        await cluster.when_downed()
+        await system.terminate()
+        ```
+
+        Ending the process is left to the application on purpose, the same way
+        [leave][tapio.cluster.cluster.Cluster.leave] leaves it, so a node that
+        is only one part of a larger service decides for itself what a downing
+        means for the rest of it.
+
+        It never returns when downing is switched off, since nothing then downs
+        this node, and never returns for a node that leaves gracefully: leaving
+        walks a member out through the lattice and is not a downing.
+        """
+        await self._daemon.downed.wait()
 
     async def leave(
         self,

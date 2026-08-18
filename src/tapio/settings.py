@@ -188,6 +188,18 @@ class ClusterSettings(BaseSettings):
     strategies of its own. Set this well above `heartbeat_interval`, since a
     fixed window has no opinion about how variable the network is."""
 
+    down_after: timedelta = timedelta(seconds=7)
+    """How long an unreachable split must hold still before a strategy acts.
+
+    Downing cannot be taken back, so it waits for the split to settle: the set
+    of unreachable members has to stay the same for this long before the leader
+    downs anybody. A shorter disturbance, a pause or a link that flaps, is
+    ridden out rather than resolved. Only consulted when a downing strategy is
+    configured, and measured from when the split was first seen, so the whole
+    wait before a member is downed is this on top of `unreachable_after`. Set
+    it above the few gossip rounds a real partition takes to be seen the same
+    way across a side."""
+
     join_timeout: timedelta = timedelta(seconds=30)
     """How long `join_seed_nodes` waits to see this node reach `Up`."""
 

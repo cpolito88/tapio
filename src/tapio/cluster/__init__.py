@@ -28,6 +28,7 @@ from tapio.cluster.downing import (
 from tapio.cluster.gossip import Gossip
 from tapio.cluster.member import Member, MemberStatus
 from tapio.cluster.messages import (
+    ClusterDowned,
     GossipEnvelope,
     Heartbeat,
     HeartbeatReply,
@@ -44,6 +45,7 @@ from tapio.cluster.reachability import (
 
 __all__ = [
     "Cluster",
+    "ClusterDowned",
     "DownAll",
     "DownStrategy",
     "Gossip",
