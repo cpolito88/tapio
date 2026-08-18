@@ -18,7 +18,9 @@ supervision, and Pydantic models throughout.
 > quarantine, an explicit reconnect, and starting an actor on another node.
 > Nodes can form a cluster and agree on who is in it, watch one another for
 > silence, and, given a downing strategy, resolve a partition by downing the
-> losing side rather than blocking on it for ever.
+> losing side rather than blocking on it for ever. Applications react to
+> membership through cluster events delivered to an actor's mailbox, and can run
+> a singleton on the oldest member of a role or route work over a group of them.
 
 > **Why this exists.** `tapio` is a testbed for AI agentic development. The
 > point of the project is to find out what coding agents can carry on their
@@ -51,6 +53,9 @@ trees. It keeps the mythological lineage of Akka (Sámi) and Apache Pekko
   configured, resolve a partition by downing the losing side (keep the
   majority, a static quorum, the oldest, down everything, or hand an even
   split to an outside lease), the losing side downing itself
+- **Cluster surface**: react to membership as events on an actor's mailbox, run
+  a singleton on the oldest member of a role, or spread work over a group router
+  of them
 
 It is a **library, not infrastructure**. Pip-install it into the service you
 already have. Nodes find each other from a seed list you deploy with them, so

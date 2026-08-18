@@ -31,7 +31,7 @@ first.
 | `src/tapio/` | the library, shipped in the wheel |
 | `src/tapio/actor/` | paths, refs, behaviors, cell, mailbox, system |
 | `src/tapio/remote/` | addressing, the wire format, the link and the associations over it |
-| `src/tapio/cluster/` | membership by gossip and its merge, the reachability a ring of monitors builds, and the strategies that down a partition's losing side |
+| `src/tapio/cluster/` | membership by gossip and its merge, the reachability a ring of monitors builds, the strategies that down a partition's losing side, and the surface an application reacts through: cluster events, roles, a singleton with handoff, and a group router |
 | `src/tapio/dispatch/` | the event loop a system's tasks run on |
 | `src/tapio/testkit/` | helpers for testing actor code, shipped |
 | `tests/` | unit tests, mirroring the source packages, plus `tests/examples/` and `tests/benchmarks/` |

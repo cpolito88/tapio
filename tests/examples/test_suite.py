@@ -14,6 +14,7 @@ from tapio_examples import (
     blocking_offload,
     chat_sessions,
     cluster_join,
+    cluster_singleton,
     counter,
     dead_letters,
     death_watch,
@@ -39,6 +40,7 @@ from tapio_examples import (
 ASSERTED = {
     "ask_timeout",
     "cluster_join",
+    "cluster_singleton",
     "blocking_offload",
     "chat_sessions",
     "counter",
@@ -464,6 +466,18 @@ async def test_cluster_join():
     assert lines[5:] == [
         "node2: node1 is removed",
         "node3: node1 is removed",
+    ]
+
+
+async def test_cluster_singleton():
+    with assert_no_leaked_tasks():
+        lines = await cluster_singleton.main()
+
+    # The oldest member runs it, and when that member leaves the next oldest
+    # takes it over, with nothing having told the second manager to.
+    assert lines == [
+        "the coordinator runs on node1, the oldest member",
+        "node1 left, so the coordinator moved to node2",
     ]
 
 

@@ -18,17 +18,29 @@ library, it is opt-in, and it is why this actor and not another.
 import asyncio
 import random
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import timedelta
-from typing import final
+from typing import Any, cast, final
 
 from tapio.actor.behavior import Behavior, Behaviors
+from tapio.actor.cell import LocalActorRef
 from tapio.actor.context import ActorContext
 from tapio.actor.events import EventStream, Subscription
+from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
-from tapio.actor.signals import PostStop, Signal
+from tapio.actor.signals import PostStop, Signal, Terminated
 from tapio.actor.timers import TimerScheduler
 from tapio.cluster.clock import Ordering
 from tapio.cluster.downing import DownStrategy
+from tapio.cluster.events import (
+    ClusterEvent,
+    LeaderChanged,
+    MemberRemoved,
+    MemberUp,
+    ReachableMember,
+    SelfDown,
+    UnreachableMember,
+)
 from tapio.cluster.gossip import Gossip, leader_actions
 from tapio.cluster.member import Member, MemberStatus
 from tapio.cluster.messages import (
@@ -44,7 +56,9 @@ from tapio.cluster.messages import (
     Leave,
     LinkChanged,
     Seeds,
+    Subscribe,
     Tick,
+    Unsubscribe,
     WireMessage,
 )
 from tapio.cluster.monitor import RingMonitor, deadline_detectors
@@ -55,7 +69,7 @@ from tapio.remote.failure import PeerReachable, PeerUnreachable
 from tapio.remote.registry import RefRegistry
 from tapio.settings import ClusterSettings
 
-__all__ = ["DAEMON_NAME", "ClusterDaemon", "daemon_uri"]
+__all__ = ["DAEMON_NAME", "ClusterDaemon", "daemon_uri", "local_daemon"]
 
 DAEMON_NAME = "cluster"
 """What the daemon is called under `/system`, and half of its well-known name."""
@@ -66,6 +80,57 @@ _GOSSIP_TIMER = "gossip"
 _JOIN_TIMER = "join"
 _FORM_TIMER = "form"
 _HEARTBEAT_TIMER = "heartbeat"
+
+
+async def local_daemon(
+    ctx: ActorContext[Any],
+) -> ActorRef[ClusterMessage] | None:
+    """Resolve this node's own cluster daemon, if it has started yet.
+
+    For an actor that clusters with its own system: a
+    [ClusterSingleton][tapio.cluster.singleton.ClusterSingleton] manager or a
+    group router, both of which subscribe to the daemon and run in the same
+    system as it. The daemon publishes itself as a well-known name, so resolving
+    it needs no incarnation uid.
+
+    Args:
+        ctx: The calling actor's context. Its own address names the daemon.
+
+    Returns:
+        The live local ref to the daemon, or `None` when the daemon is not
+        registered yet. `None` rather than a dead-letter ref, so a caller can
+        tell "not ready, ask again" from "the address named a peer": the daemon
+        is a system actor that starts moments after the system does, and an
+        actor spawned in the same breath as the cluster may look before it is
+        there.
+    """
+    address = str(ctx.self_ref.address)
+    ref = await ctx.resolve(daemon_uri(address), expect=Subscribe)
+    if isinstance(ref, LocalActorRef):
+        return cast("ActorRef[ClusterMessage]", ref)
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class _Digest:
+    """A snapshot of what this node's view says, taken to be diffed for events.
+
+    Events are the difference between two of these, one from before a message
+    was handled and one from after, so that every path that moves membership
+    produces the right events without each one having to remember to.
+    """
+
+    members: dict[str, Member]
+    """The primary member at each address, by address."""
+
+    unreachable: frozenset[str]
+    """The live members at least one node currently cannot hear."""
+
+    leader: str | None
+    """Who this node computes as the leader."""
+
+    self_status: MemberStatus | None
+    """This node's own status, or `None` before it has joined."""
 
 
 def daemon_uri(address: str) -> str:
@@ -150,6 +215,12 @@ class ClusterDaemon:
         self._split_since = 0.0
         self._downed = asyncio.Event()
         self._downed_announced = False
+        # Actors that asked to hear about membership changes, by their path so
+        # that subscribing twice replaces rather than duplicates. Each is
+        # watched, so one that stops is forgotten without an Unsubscribe.
+        self._subscribers: dict[
+            ActorPath, tuple[ActorRef[Any], frozenset[type[ClusterEvent]]]
+        ] = {}
         self._monitor = RingMonitor(
             address=address,
             size=settings.monitored_peers,
@@ -231,6 +302,10 @@ class ClusterDaemon:
                 ) -> Behavior[ClusterMessage]:
                     if isinstance(signal, PostStop):
                         self._stop_watching_the_links()
+                    elif isinstance(signal, Terminated):
+                        # A subscriber stopped, so forget it. Nothing else is
+                        # watched, so this is the only reason one arrives.
+                        self._subscribers.pop(signal.ref.path, None)
                     return Behaviors.same()
 
                 return Behaviors.receive(
@@ -248,9 +323,16 @@ class ClusterDaemon:
         message: ClusterMessage,
     ) -> Behavior[ClusterMessage]:
         """Handle one message, then act if this node leads a converged view."""
+        # Only snapshotted when somebody is listening, so a daemon with no
+        # subscribers does none of the work of producing events.
+        before = self._digest() if self._subscribers else None
         match message:
             case Seeds():
                 self._start_joining(timers, message.addresses)
+            case Subscribe():
+                self._subscribe(ctx, message)
+            case Unsubscribe():
+                self._unsubscribe(ctx, message.subscriber)
             case Tick():
                 await self._gossip_once(ctx)
             case JoinTick():
@@ -276,6 +358,8 @@ class ClusterDaemon:
         self._lead()
         await self._down()
         self._announce_if_downed()
+        if before is not None:
+            self._emit(before)
         if (
             self.self_member is not None
             and self.self_member.status is MemberStatus.REMOVED
@@ -774,6 +858,143 @@ class ClusterDaemon:
             )
         )
         self._downed.set()
+
+    def _digest(self) -> _Digest:
+        """Snapshot the facts events are made from, to diff against later.
+
+        Returns:
+            The snapshot, holding the primary member at each address, who is
+            unreachable, who leads, and this node's own status.
+        """
+        members: dict[str, Member] = {}
+        for address in {member.address for member in self._state.members}:
+            primary = self._state.member(address)
+            if primary is not None:
+                members[address] = primary
+        me = self.self_member
+        return _Digest(
+            members=members,
+            unreachable=self._unreachable_alive(),
+            leader=self._state.leader,
+            self_status=me.status if me is not None else None,
+        )
+
+    def _emit(self, before: _Digest) -> None:
+        """Tell every subscriber what changed between two views of the cluster.
+
+        Called at the end of every turn, so a change made by any path produces
+        the right events without that path having to know about subscribers.
+        Nothing is computed when nobody is listening.
+
+        Args:
+            before: The snapshot taken before this turn handled its message.
+        """
+        if not self._subscribers:
+            return
+        after = self._digest()
+        for address, member in after.members.items():
+            was = before.members.get(address)
+            was_status = was.status if was is not None else None
+            if member.status is MemberStatus.UP and was_status is not MemberStatus.UP:
+                self._deliver(MemberUp(member=member))
+            elif (
+                member.status is MemberStatus.REMOVED
+                and was_status is not MemberStatus.REMOVED
+            ):
+                self._deliver(MemberRemoved(member=member))
+        for address in sorted(after.unreachable - before.unreachable):
+            gone = after.members.get(address)
+            if gone is not None:
+                self._deliver(UnreachableMember(member=gone))
+        for address in sorted(before.unreachable - after.unreachable):
+            back = after.members.get(address)
+            # A member that went unreachable and was then removed is reported
+            # removed, not reachable again: it is gone, and its reachability
+            # was dropped with it.
+            if back is not None and back.status not in (
+                MemberStatus.DOWN,
+                MemberStatus.REMOVED,
+            ):
+                self._deliver(ReachableMember(member=back))
+        if before.leader != after.leader:
+            self._deliver(LeaderChanged(leader=after.leader))
+        if (
+            after.self_status is MemberStatus.DOWN
+            and before.self_status is not MemberStatus.DOWN
+        ):
+            me = self.self_member
+            if me is not None:
+                self._deliver(SelfDown(member=me))
+
+    def _deliver(self, event: ClusterEvent) -> None:
+        """Send one event to every subscriber that asked for its kind.
+
+        Args:
+            event: The event to deliver.
+        """
+        for ref, wanted in self._subscribers.values():
+            if not wanted or type(event) in wanted:
+                ref.tell(event)
+
+    def _subscribe(self, ctx: ActorContext[ClusterMessage], message: Subscribe) -> None:
+        """Record a subscriber and hand it the current membership as events.
+
+        Watching it is what lets a subscriber that stops be forgotten without
+        an Unsubscribe. The replay is why a subscriber that starts after the
+        cluster has formed still learns who is up: it hears the state it missed
+        as the events that would have carried it, then each change as it comes.
+
+        Args:
+            ctx: This actor's context, for the death watch.
+            message: The subscription, naming the subscriber and what it wants.
+        """
+        ref = message.subscriber
+        wanted = frozenset(message.events)
+        if ref.path not in self._subscribers:
+            ctx.watch(ref)
+        self._subscribers[ref.path] = (ref, wanted)
+        self._replay(ref, wanted)
+
+    def _unsubscribe(
+        self, ctx: ActorContext[ClusterMessage], subscriber: ActorRef[Any]
+    ) -> None:
+        """Forget a subscriber that wants to keep running and stop listening.
+
+        Args:
+            ctx: This actor's context, for dropping the death watch.
+            subscriber: The actor to forget. Harmless if it was not subscribed.
+        """
+        if self._subscribers.pop(subscriber.path, None) is not None:
+            ctx.unwatch(subscriber)
+
+    def _replay(
+        self, ref: ActorRef[Any], wanted: frozenset[type[ClusterEvent]]
+    ) -> None:
+        """Send a new subscriber the events that describe the current view.
+
+        Args:
+            ref: The subscriber.
+            wanted: The events it asked for, empty meaning all of them.
+        """
+
+        def wants(event: type[ClusterEvent]) -> bool:
+            return not wanted or event in wanted
+
+        if wants(MemberUp):
+            for member in self._state.alive:
+                if member.status is MemberStatus.UP:
+                    ref.tell(MemberUp(member=member))
+        if wants(UnreachableMember):
+            for address in sorted(self._unreachable_alive()):
+                gone = self._state.member(address)
+                if gone is not None:
+                    ref.tell(UnreachableMember(member=gone))
+        if wants(LeaderChanged):
+            ref.tell(LeaderChanged(leader=self._state.leader))
+        if wants(SelfDown):
+            me = self.self_member
+            if me is not None and me.status is MemberStatus.DOWN:
+                ref.tell(SelfDown(member=me))
 
     def _is_member_of(self, state: Gossip) -> bool:
         """Whether this node appears in a view it is about to adopt."""
