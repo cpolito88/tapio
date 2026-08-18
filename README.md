@@ -2,6 +2,9 @@
 
 [![CI](https://github.com/cpolito88/tapio/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/cpolito88/tapio/actions/workflows/ci.yml?query=branch%3Amain)
 [![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Fcpolito88%2Fe24a1b7f2d4f05b76fa10fb594e54347%2Fraw%2Ftapio-coverage.json)](https://github.com/cpolito88/tapio/actions/workflows/ci.yml?query=branch%3Amain)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Typed: mypy strict](https://img.shields.io/badge/mypy-strict-2a6db2)](https://mypy-lang.org/)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 A Pekko-inspired actor toolkit for Python. Typed, asyncio-native actors with
 supervision, and Pydantic models throughout.
