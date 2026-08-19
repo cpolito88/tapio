@@ -14,6 +14,7 @@ from tapio_examples import (
     blocking_offload,
     chat_sessions,
     cluster_join,
+    cluster_management,
     cluster_singleton,
     counter,
     dead_letters,
@@ -40,6 +41,7 @@ from tapio_examples import (
 ASSERTED = {
     "ask_timeout",
     "cluster_join",
+    "cluster_management",
     "cluster_singleton",
     "blocking_offload",
     "chat_sessions",
@@ -467,6 +469,21 @@ async def test_cluster_join():
         "node2: node1 is removed",
         "node3: node1 is removed",
     ]
+
+
+async def test_cluster_management():
+    with assert_no_leaked_tasks():
+        lines = await cluster_management.main()
+
+    # An operator reads the whole cluster through one node's port, downs a
+    # third node it never touches, and sees the membership settle to what is
+    # left. The down travels as gossip, so a node the operator did not ask is
+    # what the example waits on before reading again.
+    assert lines[0].startswith(
+        "operator sees 3 members, leader tapio://node1@127.0.0.1:"
+    )
+    assert lines[1] == "asked node1 to down node3"
+    assert lines[2] == "after downing node3, 2 members remain live"
 
 
 async def test_cluster_singleton():

@@ -26,6 +26,7 @@ from tapio.remote.registry import register_message
 __all__ = [
     "ClusterDowned",
     "ClusterMessage",
+    "Down",
     "FormTick",
     "GossipEnvelope",
     "Heartbeat",
@@ -173,6 +174,30 @@ class Unsubscribe(Message):
 
 
 @final
+class Down(Message):
+    """Ask this node to down a member, because an operator decided it is gone.
+
+    Local, like [Seeds][tapio.cluster.messages.Seeds]: it arrives from this
+    node's own management endpoint rather than across a link, so it is not
+    registered on the wire. It carries the address explicitly because an
+    operator downs another member far more often than the node it is speaking
+    to.
+
+    Downing is ordinarily a strategy's decision about which side of a split
+    survives. This is the operator's escape hatch: the manual verdict for a
+    member a strategy will not reach, either because none is configured or
+    because the member is unreachable to everyone and no strategy fires without
+    a split. It moves the member up the lattice to `Down` exactly as a strategy
+    would, so gossip carries the decision and the downed member hears it and
+    shuts itself down. A `Down` cannot be taken back, which is the whole reason
+    it is a member's last honest status before `Removed`.
+    """
+
+    address: AddressStr
+    """The member to down."""
+
+
+@final
 class Tick(Message):
     """Gossip to one peer, and act if this node leads a converged view."""
 
@@ -240,6 +265,7 @@ ClusterMessage: TypeAlias = (
     | Seeds
     | Subscribe
     | Unsubscribe
+    | Down
     | Tick
     | JoinTick
     | FormTick

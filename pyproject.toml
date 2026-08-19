@@ -34,6 +34,11 @@ dependencies = [
     "typing-extensions>=4.10",
 ]
 
+# The operator command for a running cluster: read membership, ask a member to
+# leave, or down one, over a node's management port.
+[project.scripts]
+tapio-cluster = "tapio.cluster.cli:main"
+
 # Registers the fixtures in tapio.testkit.plugin, so a project that installs
 # tapio-py can ask for `actor_system` with nothing added to its conftest.
 [project.entry-points.pytest11]

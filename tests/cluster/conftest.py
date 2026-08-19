@@ -12,7 +12,12 @@ from datetime import timedelta
 
 from tapio.actor import ActorSystem
 from tapio.cluster import Cluster, DownStrategy, MemberStatus
-from tapio.settings import ClusterSettings, RemoteSettings, TapioSettings
+from tapio.settings import (
+    ClusterSettings,
+    ManagementSettings,
+    RemoteSettings,
+    TapioSettings,
+)
 from tapio.testkit.remote import LinkFaults, link_faults
 
 QUICK = ClusterSettings(
@@ -106,6 +111,7 @@ async def cluster_of(
     settings: ClusterSettings = QUICK,
     downing: DownStrategy | None = None,
     terminate_on_down: bool = False,
+    management: ManagementSettings | None = None,
 ) -> AsyncIterator[tuple[Node, ...]]:
     """Start `count` systems, each with a cluster daemon and nothing joined yet.
 
@@ -121,6 +127,8 @@ async def cluster_of(
             leave a split blocking convergence, which is the default.
         terminate_on_down: Whether a node that downs itself shuts its own system
             down, as opposed to leaving it running for the test to inspect.
+        management: Open a management endpoint on every node, or `None` to leave
+            it off. Each node binds port 0, so the endpoints do not collide.
 
     Yields:
         The nodes, in the order they were started.
@@ -138,6 +146,7 @@ async def cluster_of(
                         settings,
                         downing=downing,
                         terminate_on_down=terminate_on_down,
+                        management=management,
                     ),
                     faults=faults,
                 )
