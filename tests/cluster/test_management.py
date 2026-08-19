@@ -14,7 +14,7 @@ import pytest
 from tapio.cluster import MemberStatus
 from tapio.cluster.management import verify_management_security
 from tapio.errors import InsecureRemoteConfig
-from tapio.settings import ManagementSettings
+from tapio.settings import ManagementSettings, TLSSettings
 from tapio.testkit import assert_no_leaked_tasks
 from tests.cluster.conftest import Node, cluster_of, seeds_of
 from tests.failures import eventually
@@ -206,6 +206,33 @@ def test_binding_beyond_loopback_with_a_token_is_allowed():
     )
     # Does not raise: a token is what the bind beyond loopback was missing.
     verify_management_security(beyond)
+
+
+def test_mutual_tls_satisfies_the_beyond_loopback_rule():
+    # A cafile means the port requires a client certificate, which
+    # authenticates the operator the way a token does. The files are not read
+    # here, only the policy is checked, so the paths need not exist.
+    mutual = ManagementSettings(  # type: ignore[call-arg]
+        _env_file=None,  # type: ignore[call-arg]
+        bind_host="0.0.0.0",
+        tls=TLSSettings(
+            _env_file=None, certfile="s.pem", keyfile="s.key", cafile="ca.pem"
+        ),  # type: ignore[call-arg]
+    )
+    verify_management_security(mutual)
+
+
+def test_server_only_tls_does_not_satisfy_it():
+    # No cafile: the port proves who it is but not who the caller is, so a
+    # stranger who trusts the certificate can still down a member. That is not
+    # enough to bind beyond loopback.
+    server_only = ManagementSettings(  # type: ignore[call-arg]
+        _env_file=None,  # type: ignore[call-arg]
+        bind_host="0.0.0.0",
+        tls=TLSSettings(_env_file=None, certfile="s.pem", keyfile="s.key"),  # type: ignore[call-arg]
+    )
+    with pytest.raises(InsecureRemoteConfig):
+        verify_management_security(server_only)
 
 
 async def test_management_is_off_unless_it_is_configured():

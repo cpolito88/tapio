@@ -9,13 +9,14 @@ tapio-cluster leave tapio://orders@10.0.0.2:2551
 tapio-cluster down  tapio://orders@10.0.0.3:2551
 ```
 
-It speaks plain HTTP to
-[ManagementSettings][tapio.settings.ManagementSettings], so the only thing it
-needs at runtime is a `typer` for its own argument parsing and the standard
-library for the requests, and the same calls are a `curl` away for anyone who
-would rather script them. What it reports is one node's view, which is the truth
-once the cluster has converged and that node's best guess until then, the same
-caveat every gossip-based answer carries.
+It speaks HTTP to [ManagementSettings][tapio.settings.ManagementSettings], or
+HTTPS when the node is configured for TLS and the command is given `--tls` (or a
+`--cafile` or `--client-cert`, which imply it). The only thing it needs at
+runtime is a `typer` for its own argument parsing and the standard library for
+the requests, and the same calls are a `curl` away for anyone who would rather
+script them. What it reports is one node's view, which is the truth once the
+cluster has converged and that node's best guess until then, the same caveat
+every gossip-based answer carries.
 
 A leave or a down is answered the moment the node has been asked, not once the
 member has gone: the decision travels as gossip, so the command prints that the
@@ -24,6 +25,7 @@ node accepted it and the next `status` shows it taking effect.
 
 import http.client
 import json
+import ssl
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Annotated, Any
@@ -55,6 +57,10 @@ class _Target:
     port: int
     token: str | None
     as_json: bool
+    use_tls: bool
+    cafile: str | None
+    client_cert: str | None
+    client_key: str | None
 
 
 @app.callback()
@@ -76,9 +82,41 @@ def _configure(
             "--json", help="Print the node's raw JSON answer rather than a table."
         ),
     ] = False,
+    tls: Annotated[
+        bool,
+        typer.Option("--tls", help="Reach the node over HTTPS."),
+    ] = False,
+    cafile: Annotated[
+        str | None,
+        typer.Option(
+            help="Verify the node's certificate against this CA. Implies TLS."
+        ),
+    ] = None,
+    client_cert: Annotated[
+        str | None,
+        typer.Option(
+            help="Present this client certificate for mutual TLS. Implies TLS."
+        ),
+    ] = None,
+    client_key: Annotated[
+        str | None,
+        typer.Option(help="The client certificate's private key, if it is separate."),
+    ] = None,
 ) -> None:
     """Read a tapio cluster and move a member through its management port."""
-    ctx.obj = _Target(host=host, port=port, token=token, as_json=as_json)
+    ctx.obj = _Target(
+        host=host,
+        port=port,
+        token=token,
+        as_json=as_json,
+        # Naming a CA or a client certificate is asking for TLS as much as the
+        # flag is, so either turns it on rather than being silently ignored
+        # without it.
+        use_tls=tls or cafile is not None or client_cert is not None,
+        cafile=cafile,
+        client_cert=client_cert,
+        client_key=client_key,
+    )
 
 
 @app.command()
@@ -148,7 +186,13 @@ def _request(
     Raises:
         typer.Exit: With code `2`, if the node could not be reached.
     """
-    connection = http.client.HTTPConnection(target.host, target.port, timeout=10)
+    connection: http.client.HTTPConnection
+    if target.use_tls:
+        connection = http.client.HTTPSConnection(
+            target.host, target.port, timeout=10, context=_ssl_context(target)
+        )
+    else:
+        connection = http.client.HTTPConnection(target.host, target.port, timeout=10)
     headers = {"Content-Type": "application/json"}
     if target.token:
         headers["Authorization"] = f"Bearer {target.token}"
@@ -168,6 +212,26 @@ def _request(
     except ValueError:
         parsed = {}
     return code, parsed if isinstance(parsed, dict) else {}
+
+
+def _ssl_context(target: _Target) -> ssl.SSLContext:
+    """Build the TLS context the client dials the node with.
+
+    Verifies the node's certificate, against a named CA when one is given and
+    against the system trust store otherwise, and presents a client certificate
+    when one is named, which is what a node configured for mutual TLS asks for.
+
+    Args:
+        target: The connection details, for the CA and client certificate.
+
+    Returns:
+        A client context. Hostname checking is left on, so a certificate that
+        does not name the host reached is refused rather than trusted.
+    """
+    context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=target.cafile)
+    if target.client_cert is not None:
+        context.load_cert_chain(target.client_cert, target.client_key)
+    return context
 
 
 def _fail(payload: Mapping[str, Any]) -> None:

@@ -12,9 +12,9 @@ from click.testing import Result
 from typer.testing import CliRunner
 
 from tapio.cluster.cli import app
-from tapio.settings import ManagementSettings
+from tapio.settings import ManagementSettings, TLSSettings
 from tapio.testkit import assert_no_leaked_tasks
-from tests.cluster.conftest import Node, cluster_of, seeds_of
+from tests.cluster.conftest import Node, TlsCerts, cluster_of, seeds_of
 from tests.failures import eventually
 
 MANAGED = ManagementSettings(_env_file=None, bind_port=0)  # type: ignore[call-arg]
@@ -90,3 +90,55 @@ async def test_a_refused_request_exits_one():
 
     assert result.exit_code == 1
     assert "error" in result.stderr
+
+
+def _tls_managed(certs: TlsCerts) -> ManagementSettings:
+    """A management endpoint that speaks mutual TLS with the given certificates."""
+    return ManagementSettings(  # type: ignore[call-arg]
+        _env_file=None,  # type: ignore[call-arg]
+        bind_port=0,
+        tls=TLSSettings(  # type: ignore[call-arg]
+            _env_file=None,  # type: ignore[call-arg]
+            certfile=certs.server_cert,
+            keyfile=certs.server_key,
+            cafile=certs.ca,
+        ),
+    )
+
+
+async def test_status_over_mutual_tls(mutual_tls_certs: TlsCerts):
+    with assert_no_leaked_tasks():
+        async with cluster_of(1, management=_tls_managed(mutual_tls_certs)) as nodes:
+            await _joined(nodes)
+
+            result = await _run(
+                "--port",
+                _port(nodes[0]),
+                "--cafile",
+                mutual_tls_certs.ca,
+                "--client-cert",
+                mutual_tls_certs.client_cert,
+                "--client-key",
+                mutual_tls_certs.client_key,
+                "status",
+            )
+
+            assert result.exit_code == 0
+            assert nodes[0].address in result.stdout
+
+
+async def test_mutual_tls_refuses_a_client_with_no_certificate(
+    mutual_tls_certs: TlsCerts,
+):
+    with assert_no_leaked_tasks():
+        async with cluster_of(1, management=_tls_managed(mutual_tls_certs)) as nodes:
+            await _joined(nodes)
+
+            # Trusts the server, but presents no client certificate, so the
+            # server refuses the handshake and the node cannot be reached.
+            result = await _run(
+                "--port", _port(nodes[0]), "--cafile", mutual_tls_certs.ca, "status"
+            )
+
+    assert result.exit_code == 2
+    assert "could not reach" in result.stderr

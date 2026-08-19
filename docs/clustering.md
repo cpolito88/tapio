@@ -403,6 +403,25 @@ The token is presented as `Authorization: Bearer <token>` and compared in
 constant time. On loopback it is optional, since reaching the port at all
 already means being on the machine.
 
+The port also speaks TLS, using the same
+[TLSSettings][tapio.settings.TLSSettings] remoting does:
+
+```python
+Cluster(system, management=ManagementSettings(
+    bind_host="0.0.0.0",
+    tls=TLSSettings(certfile="server.pem", keyfile="server.key", cafile="ca.pem"),
+))
+```
+
+With `certfile` and `keyfile` the port answers HTTPS, and the command reaches
+it with `--tls` (or a `--cafile` that trusts the server's certificate). Add
+`cafile` on the node and the port also requires a client certificate signed by
+that authority, which authenticates the operator the way a token does. Mutual
+TLS is therefore the second way to satisfy the bind-beyond-loopback rule: a
+bearer token alone travels in a header, so a plaintext bind beyond loopback
+leaks it, while a token over TLS or a client certificate does not. The command
+presents its certificate with `--client-cert` and `--client-key`.
+
 ## Addressing, and the one uid rule this bends
 
 A cluster daemon publishes itself as a well-known name at `/system/cluster`,

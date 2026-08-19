@@ -144,6 +144,7 @@ class Cluster:
                 snapshot=self._snapshot,
                 daemon=self._ref,
                 token=management.token,
+                tls=management.tls,
                 address=self.address,
             )
             system.spawn_system_actor(self._management.behavior(), MANAGEMENT_NAME)

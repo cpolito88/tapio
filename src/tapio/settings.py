@@ -270,11 +270,25 @@ class ManagementSettings(BaseSettings):
     token: SecretStr | None = None
     """The bearer token an operator presents, or `None` to ask for nothing.
 
-    Required to bind anywhere but loopback: a port that can down a member,
-    reachable from any host with nothing to prove, fails to start rather than
-    serving strangers. On loopback it is optional, since reaching the port at
-    all already means being on the machine. Compared in constant time, and
-    presented as `Authorization: Bearer <token>`.
+    One of the two ways to prove an operator is one, the other being a client
+    certificate under `tls`. At least one is required to bind anywhere but
+    loopback: a port that can down a member, reachable from any host with
+    nothing to prove, fails to start rather than serving strangers. On loopback
+    it is optional, since reaching the port at all already means being on the
+    machine. Compared in constant time, and presented as
+    `Authorization: Bearer <token>`.
+    """
+
+    tls: TLSSettings | None = None
+    """Certificates for the management port, or `None` for plaintext HTTP.
+
+    The same [TLSSettings][tapio.settings.TLSSettings] remoting uses. With
+    `certfile` and `keyfile`, the port speaks HTTPS and an operator's client
+    verifies it. Add `cafile` and the port also requires a client certificate
+    signed by that authority, which authenticates the operator the way a token
+    does: mutual TLS is therefore a second way to satisfy the bind-beyond-
+    loopback rule, where a bearer token alone travels in a header an eavesdropper
+    on a plaintext link would read.
     """
 
 

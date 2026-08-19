@@ -40,8 +40,8 @@ from tapio.cluster.messages import ClusterMessage, Down, Leave
 from tapio.errors import InsecureRemoteConfig
 from tapio.logging import runtime_logger
 from tapio.message import Message
-from tapio.remote.transport import _is_loopback
-from tapio.settings import ManagementSettings
+from tapio.remote.transport import _is_loopback, server_ssl_context
+from tapio.settings import ManagementSettings, TLSSettings
 
 __all__ = [
     "ClusterManagement",
@@ -67,17 +67,24 @@ def verify_management_security(settings: ManagementSettings) -> None:
 
     The mirror of [verify_bind_security][tapio.remote.transport.verify_bind_security]
     for the management port. Reaching this port is enough to down a member, so
-    binding it where another host can reach it, with no token to check, fails to
-    start rather than serving strangers.
+    binding it where another host can reach it, with no way to tell an operator
+    from a stranger, fails to start rather than serving strangers. Two things
+    tell them apart: a bearer `token`, and a client certificate, which is `tls`
+    with a `cafile` the port checks a client's certificate against. Either is
+    enough; TLS that only proves the server is not, since it authenticates the
+    wrong end.
 
     Args:
         settings: The management configuration about to be used.
 
     Raises:
-        InsecureRemoteConfig: If `bind_host` is not a loopback address and no
-            `token` is set.
+        InsecureRemoteConfig: If `bind_host` is not a loopback address and
+            neither a token nor mutual TLS is configured.
     """
-    if settings.token is not None or _is_loopback(settings.bind_host):
+    authenticates_the_operator = settings.token is not None or (
+        settings.tls is not None and settings.tls.cafile is not None
+    )
+    if authenticates_the_operator or _is_loopback(settings.bind_host):
         return
     host = (
         "'' (which means every interface)"
@@ -85,10 +92,11 @@ def verify_management_security(settings: ManagementSettings) -> None:
         else repr(settings.bind_host)
     )
     msg = (
-        f"cluster management is configured to bind {host} with no token. "
-        "This port can down a member, so binding it beyond loopback requires "
-        "ManagementSettings(token=...); bind 127.0.0.1 instead if only this "
-        "host is meant to manage the cluster."
+        f"cluster management is configured to bind {host} with nothing to "
+        "authenticate an operator. This port can down a member, so binding it "
+        "beyond loopback requires ManagementSettings(token=...) or mutual TLS "
+        "(tls with a cafile); bind 127.0.0.1 instead if only this host is meant "
+        "to manage the cluster."
     )
     raise InsecureRemoteConfig(msg)
 
@@ -104,6 +112,7 @@ class ClusterManagement:
         snapshot: Callable[[], Mapping[str, Any]],
         daemon: ActorRef[ClusterMessage],
         token: SecretStr | None,
+        tls: TLSSettings | None,
         address: str,
     ) -> None:
         """Describe a node's management endpoint, before its actor exists.
@@ -118,12 +127,16 @@ class ClusterManagement:
             daemon: This node's cluster daemon, where a leave or a down is sent.
             token: The bearer token an operator must present, or `None` to ask
                 for nothing.
+            tls: Certificates for the port, or `None` for plaintext HTTP. When
+                set the port speaks HTTPS, and requires a client certificate too
+                when the settings carry a `cafile`.
             address: This node's canonical address, for the log.
         """
         self._listener = listener
         self._snapshot = snapshot
         self._daemon = daemon
         self._token = token
+        self._tls = tls
         self._address = address
         self._server: asyncio.Server | None = None
         self._serving: asyncio.Task[None] | None = None
@@ -173,11 +186,22 @@ class ClusterManagement:
         )
 
     async def _serve(self) -> None:
-        """Accept connections on the already-bound socket."""
+        """Accept connections on the already-bound socket.
+
+        The TLS context, when there is one, is applied here at the server rather
+        than at the socket, the same way remoting does it: the listener is a
+        plain socket bound at construction, and every connection accepted through
+        it is wrapped as it arrives.
+        """
+        context = server_ssl_context(self._tls) if self._tls is not None else None
         self._server = await asyncio.start_server(
-            self._on_connection, sock=self._listener
+            self._on_connection, sock=self._listener, ssl=context
         )
-        _log.debug("cluster management is answering on %s", self._address)
+        _log.debug(
+            "cluster management is answering on %s%s",
+            self._address,
+            " over TLS" if context is not None else "",
+        )
 
     def _on_connection(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
