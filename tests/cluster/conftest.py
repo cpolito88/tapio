@@ -125,9 +125,11 @@ def mutual_tls_certs(tmp_path_factory: pytest.TempPathFactory) -> TlsCerts:
 
     Real certificates rather than mocks, so a test drives the actual TLS
     handshake. The server certificate names the loopback address so a client
-    checking the hostname is satisfied. Built with openssl, since neither
-    cryptography nor trustme is a dependency; a machine without openssl skips
-    the tests that ask for this.
+    checking the hostname is satisfied, and every certificate carries the key
+    usage extensions a strict verifier requires: Python 3.13 turns on strict
+    X.509 checking by default, where a CA with no keyUsage extension is refused.
+    Built with openssl, since neither cryptography nor trustme is a dependency;
+    a machine without openssl skips the tests that ask for this.
     """
     if shutil.which("openssl") is None:
         pytest.skip("openssl is not available to generate certificates")
@@ -153,6 +155,10 @@ def mutual_tls_certs(tmp_path_factory: pytest.TempPathFactory) -> TlsCerts:
         "-nodes",
         "-subj",
         "/CN=Test CA",
+        "-addext",
+        "basicConstraints=critical,CA:TRUE",
+        "-addext",
+        "keyUsage=critical,keyCertSign,cRLSign",
     )
     openssl(
         "req",
@@ -167,6 +173,10 @@ def mutual_tls_certs(tmp_path_factory: pytest.TempPathFactory) -> TlsCerts:
         "/CN=127.0.0.1",
         "-addext",
         "subjectAltName=IP:127.0.0.1",
+        "-addext",
+        "keyUsage=critical,digitalSignature,keyEncipherment",
+        "-addext",
+        "extendedKeyUsage=serverAuth",
     )
     openssl(
         "x509",
@@ -196,6 +206,10 @@ def mutual_tls_certs(tmp_path_factory: pytest.TempPathFactory) -> TlsCerts:
         "-nodes",
         "-subj",
         "/CN=operator",
+        "-addext",
+        "keyUsage=critical,digitalSignature",
+        "-addext",
+        "extendedKeyUsage=clientAuth",
     )
     openssl(
         "x509",
@@ -211,6 +225,8 @@ def mutual_tls_certs(tmp_path_factory: pytest.TempPathFactory) -> TlsCerts:
         path("client.pem"),
         "-days",
         "1",
+        "-copy_extensions",
+        "copy",
     )
     return TlsCerts(
         ca=path("ca.pem"),
