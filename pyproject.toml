@@ -31,13 +31,14 @@ classifiers = [
 dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.2",
+    "typer>=0.12",
     "typing-extensions>=4.10",
 ]
 
 # The operator command for a running cluster: read membership, ask a member to
 # leave, or down one, over a node's management port.
 [project.scripts]
-tapio-cluster = "tapio.cluster.cli:main"
+tapio-cluster = "tapio.cluster.cli:app"
 
 # Registers the fixtures in tapio.testkit.plugin, so a project that installs
 # tapio-py can ask for `actor_system` with nothing added to its conftest.
