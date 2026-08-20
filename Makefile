@@ -75,6 +75,10 @@ bench: ## Run benchmarks (msg/s, spawn cost, ask latency)
 bench-scale: ## Measure RSS and latency at 1e3/1e4/1e5 resident actors
 	$(UV) run python -m tests.benchmarks.resident
 
+.PHONY: bench-cluster
+bench-cluster: ## Measure convergence and gossip bandwidth at 5/20/50 nodes
+	$(UV) run python -m tests.benchmarks.cluster
+
 .PHONY: examples
 examples: ## Execute every example end to end
 	$(UV) run pytest tests/examples
