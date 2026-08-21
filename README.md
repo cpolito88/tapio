@@ -193,27 +193,27 @@ Requires Python 3.11+ (for `asyncio.timeout()` and `typing.Self`).
 
 ## Numbers
 
-Measured with `make bench` and `make bench-scale`, which anybody can run. Both
-print what they ran on, and this is what they printed:
+Measured with `make bench`, `make bench-scale` and `make bench-cluster`, which
+anybody can run. Each prints what it ran on, and this is what they printed:
 
 ```
-Intel(R) Core(TM) i7-5600U CPU @ 2.60GHz, 4 cores, 8 GB RAM
-Linux 7.1.5-arch1-2
-CPython 3.11.11, pydantic 2.13.4
-measured 2026-08-07
+Apple M1 Pro, 8 cores, 17 GB RAM
+Darwin 25.5.0
+CPython 3.13.2, pydantic 2.13.4
+measured 2026-08-20
 ```
 
-The figures below are the best of twenty rounds, on a laptop that was doing
-other things at the time. Take the ratios seriously and the absolute numbers
-as an order of magnitude: that is a 2015 mobile part, and a current server
-core is considerably faster.
+The figures below are from twenty rounds, on a laptop that was doing other
+things at the time. Take the ratios seriously and the absolute numbers as an
+order of magnitude: a server core running nothing else does better on the
+absolute figures, so the ratios are the durable part.
 
 **Messages per second**, one sender to one actor, ten thousand at a time:
 
 | Message | `validate_on_tell=True` | `validate_on_tell=False` | What validation costs |
 |---|---|---|---|
-| one `int` field | 183,000/s | 241,000/s | 1.3x |
-| ten fields, two of them nested models | 55,000/s | 166,000/s | 3.0x |
+| one `int` field | 450,000/s | 637,000/s | 1.4x |
+| ten fields, two of them nested models | 261,000/s | 618,000/s | 2.4x |
 
 That is the design bet of this library, priced. Revalidation on delivery is
 not free and it is not 10x either: it is a property of your message, and the
@@ -223,16 +223,16 @@ setting is there for the case where you have measured it and it matters.
 
 | | |
 |---|---|
-| Starting an actor | 105 us |
-| `ask` round trip | 121 us |
+| Starting an actor | 24 us |
+| `ask` round trip | 77 us |
 
 **Across a link**, two systems over loopback, so the network itself is nearly
 free and what is left is the codec and the socket:
 
 | | Local | Remote | Ratio |
 |---|---|---|---|
-| Messages per second | 183,000/s | 9,200/s | 20x slower |
-| `ask` round trip | 121 us | 1.2 ms | 10x slower |
+| Messages per second | 450,000/s | 24,000/s | 19x slower |
+| `ask` round trip | 77 us | 410 us | 5x slower |
 
 JSON on the wire is the cost there, and it is the reason the codec sits behind
 one module with the frame format versioned: a binary codec is an additive
@@ -242,9 +242,9 @@ change rather than a rewrite.
 
 | Actors | RSS | Per actor | `ask` p50 | `ask` p99 |
 |---|---|---|---|---|
-| 1,000 | 53 MB | 14.9 KB | 89 us | 216 us |
-| 10,000 | 190 MB | 14.8 KB | 93 us | 1,260 us |
-| 100,000 | 1,557 MB | 14.8 KB | 104 us | 597 us |
+| 1,000 | 60 MB | 15.2 KB | 54 us | 164 us |
+| 10,000 | 197 MB | 14.9 KB | 48 us | 132 us |
+| 100,000 | 1,583 MB | 15.0 KB | 50 us | 216 us |
 
 Memory per actor is flat, and the median round trip to one actor among a
 hundred thousand is the same as to one among a thousand: a mailbox nobody is
@@ -252,6 +252,29 @@ sending to costs nothing to have. The p99 column is the honest part of this
 table. It does not grow with the number of actors, it wanders, because what
 puts a tail on a round trip here is the garbage collector walking a large
 heap rather than anything in the runtime.
+
+**A cluster, at scale**, measured with `make bench-cluster` on the same
+machine:
+
+| Nodes | Converges in | Gossip frame | Per node |
+|---|---|---|---|
+| 5 | ~10 rounds | 1.0 KB | 1.6 KB/s |
+| 20 | ~19 rounds | 3.2 KB | 4.0 KB/s |
+| 50 | ~22 rounds | 9.1 KB | 9.0 KB/s |
+
+A gossip frame carries a node's whole view, so it grows with the cluster, and
+the table shows the growth is linear: about 180 bytes a member, whether there
+are five or fifty. Per-node bandwidth is a few kilobytes a second, one gossip
+frame and a handful of heartbeats each. That is the scale claim, as a number:
+adding a node costs every other node a couple of hundred bytes a second, not a
+new connection to everyone.
+
+Convergence is counted in gossip rounds rather than seconds, and it varies from
+run to run because a node gossips to a peer it picks at random. Seconds are
+only rounds times the one-second gossip interval anyway, and the fifty-node
+figure is the pessimistic end: all the nodes share one event loop here, which
+no real deployment does, so at that size the loop is the bottleneck rather than
+anything in the runtime.
 
 ## Development
 
