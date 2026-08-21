@@ -150,6 +150,16 @@ Generated from the source, so it cannot drift from what is installed.
 
 ::: tapio.settings.ClusterSettings
 
+## Cluster management
+
+::: tapio.cluster.cli
+
+::: tapio.cluster.management.ClusterManagement
+
+::: tapio.cluster.management.open_management_listener
+
+::: tapio.settings.ManagementSettings
+
 ## Remote spawning
 
 ::: tapio.remote.spawner.remote_behavior

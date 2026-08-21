@@ -348,6 +348,80 @@ The message type is named rather than read off a routee, because the routees are
 on other nodes and there is no spawned child here to read it from. That is the
 only difference in how the two routers are built.
 
+## Managing a cluster
+
+Reading a cluster's membership and downing a stuck member are things an
+operator does from outside the application, so they happen over a small HTTP
+port a node opens rather than through a code path the application has to carry.
+A node given [ManagementSettings][tapio.settings.ManagementSettings] answers a
+few requests: one reads what it believes, and the others ask it to let a member
+leave or to down one.
+
+```python
+--8<-- "examples/tapio_examples/cluster_management.py"
+```
+
+The `tapio-cluster` command is the client, and the same requests are a `curl`
+away for anyone who would rather script them:
+
+```bash
+tapio-cluster --port 25530 status
+tapio-cluster --port 25530 leave tapio://orders@10.0.0.2:2551
+tapio-cluster --port 25530 down  tapio://orders@10.0.0.3:2551
+```
+
+An operator reaches the cluster through any one node, since every node holds
+the whole view. What a `status` reports is that node's view, which is the truth
+once the cluster has converged and its best guess until then, the same caveat
+every gossip-based answer carries. A `leave` or a `down` is answered the moment
+the node has been asked, not once the member has gone: the decision travels as
+gossip like every other one, so the node replies `202 Accepted` and the next
+`status` shows it taking effect.
+
+Downing over this port is the operator's version of the move a
+[downing strategy][tapio.cluster.downing.DownStrategy] makes on its own. It is
+for a member no strategy will reach: one that is unreachable to everyone, so no
+split fires a
+strategy, or a cluster running with no strategy configured at all. The member
+goes to `down` exactly as a strategy would put it there, and a `down` cannot be
+taken back, so the downed member hears the decision as gossip and shuts itself
+down.
+
+The port can down a member, so it is a serious surface, and it is off unless it
+is configured, like remoting. When it is on it binds loopback by default.
+Binding it anywhere another host can reach requires a token, the same refusal
+remoting makes about a secret:
+
+```python
+Cluster(system, management=ManagementSettings(
+    bind_host="0.0.0.0",
+    token=SecretStr("..."),  # required beyond loopback, or the node will not start
+))
+```
+
+The token is presented as `Authorization: Bearer <token>` and compared in
+constant time. On loopback it is optional, since reaching the port at all
+already means being on the machine.
+
+The port also speaks TLS, using the same
+[TLSSettings][tapio.settings.TLSSettings] remoting does:
+
+```python
+Cluster(system, management=ManagementSettings(
+    bind_host="0.0.0.0",
+    tls=TLSSettings(certfile="server.pem", keyfile="server.key", cafile="ca.pem"),
+))
+```
+
+With `certfile` and `keyfile` the port answers HTTPS, and the command reaches
+it with `--tls` (or a `--cafile` that trusts the server's certificate). Add
+`cafile` on the node and the port also requires a client certificate signed by
+that authority, which authenticates the operator the way a token does. Mutual
+TLS is therefore the second way to satisfy the bind-beyond-loopback rule: a
+bearer token alone travels in a header, so a plaintext bind beyond loopback
+leaks it, while a token over TLS or a client certificate does not. The command
+presents its certificate with `--client-cert` and `--client-key`.
+
 ## Addressing, and the one uid rule this bends
 
 A cluster daemon publishes itself as a well-known name at `/system/cluster`,

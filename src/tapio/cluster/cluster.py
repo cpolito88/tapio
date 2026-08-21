@@ -29,6 +29,10 @@ from tapio.cluster.daemon import DAEMON_NAME, ClusterDaemon
 from tapio.cluster.downing import DownStrategy
 from tapio.cluster.events import ClusterEvent
 from tapio.cluster.gossip import Gossip
+from tapio.cluster.management import (
+    ClusterManagement,
+    open_management_listener,
+)
 from tapio.cluster.member import Member, MemberStatus, rank_of
 from tapio.cluster.messages import (
     ClusterDowned,
@@ -40,9 +44,12 @@ from tapio.cluster.messages import (
 )
 from tapio.errors import ClusterError
 from tapio.remote.address import Address
-from tapio.settings import ClusterSettings
+from tapio.settings import ClusterSettings, ManagementSettings
 
 __all__ = ["Cluster"]
+
+MANAGEMENT_NAME = "cluster-management"
+"""What the management endpoint is called under `/system`."""
 
 
 @final
@@ -56,6 +63,7 @@ class Cluster:
         *,
         downing: DownStrategy | None = None,
         terminate_on_down: bool = False,
+        management: ManagementSettings | None = None,
     ) -> None:
         """Start this node's cluster daemon, without joining anything yet.
 
@@ -79,10 +87,17 @@ class Cluster:
                 [when_downed][tapio.cluster.cluster.Cluster.when_downed]
                 instead. It has no effect without a `downing` strategy, since
                 nothing then downs this node.
+            management: A small HTTP surface an operator reaches this node on,
+                to read its membership or to ask it to let a member leave or
+                down one. Off when omitted, like remoting: a port that can down
+                a member is opened on purpose, not by default. The
+                [tapio-cluster][tapio.cluster.cli] command speaks to it.
 
         Raises:
             ClusterError: If the system has remoting switched off, so it has
                 no address other nodes could dial.
+            InsecureRemoteConfig: If `management` would answer beyond loopback
+                with no token, the same refusal remoting makes about a secret.
         """
         endpoint = system.remote
         if endpoint is None:
@@ -94,6 +109,12 @@ class Cluster:
             raise ClusterError(msg)
         self._system = system
         self._settings = settings if settings is not None else ClusterSettings()
+        # Bound before the daemon is spawned so a management port configured to
+        # listen to the world with no token fails the whole construction rather
+        # than leaving a daemon running beside a bind that never happened.
+        self._management_listener = (
+            open_management_listener(management) if management is not None else None
+        )
 
         def relent(address: str) -> None:
             """Stop refusing a member remoting gave up on."""
@@ -116,6 +137,18 @@ class Cluster:
         self._ref: ActorRef[ClusterMessage] = system.spawn_system_actor(
             self._daemon.behavior(), DAEMON_NAME
         )
+        self._management: ClusterManagement | None = None
+        if self._management_listener is not None and management is not None:
+            self._management = ClusterManagement(
+                listener=self._management_listener,
+                snapshot=self._snapshot,
+                members=self._live_member_addresses,
+                daemon=self._ref,
+                token=management.token,
+                tls=management.tls,
+                address=self.address,
+            )
+            system.spawn_system_actor(self._management.behavior(), MANAGEMENT_NAME)
         self._down_watch: Subscription | None = None
         self._shutdown: asyncio.Task[None] | None = None
         if downing is not None and terminate_on_down:
@@ -153,6 +186,20 @@ class Cluster:
     def address(self) -> str:
         """This node's canonical address, in the form members are named by."""
         return self._daemon.address
+
+    @property
+    def management_address(self) -> str | None:
+        """Where an operator reaches this node, or `None` if management is off.
+
+        The host and port actually bound, in `host:port` form, which is what a
+        test that asked for port `0` reads to find the port it got.
+        """
+        if self._management_listener is None:
+            return None
+        host, port = self._management_listener.getsockname()[:2]
+        # An IPv6 host carries colons of its own, so bracket it: the port is
+        # what follows the last colon only when the host cannot hold one.
+        return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
 
     @property
     def state(self) -> Gossip:
@@ -227,6 +274,80 @@ class Cluster:
             role, oldest first.
         """
         return tuple(member for member in self.members if role in member.roles)
+
+    def _snapshot(self) -> dict[str, Any]:
+        """Render what this node believes as the data a JSON reply is built from.
+
+        Read by the management endpoint from a connection task rather than from
+        the daemon's own turn. That is safe because it reads an immutable gossip
+        value and never awaits, so it runs whole between two of the daemon's
+        turns and sees one consistent view. Removed members are left out: they
+        are tombstones the operator has no action left to take on, and a status
+        that never shrank would only grow.
+
+        Returns:
+            The node's address, who it computes as leader, whether its view has
+            converged, and each member it still holds with its status, roles and
+            reachability.
+        """
+        state = self._daemon.state
+        unreachable = state.reachability.unreachable
+        live = self._live_members(state)
+        addresses = {member.address for member in live}
+        members = [
+            {
+                "address": member.address,
+                "uid": member.uid,
+                "status": member.status.value,
+                "roles": sorted(member.roles),
+                "up_number": member.up_number,
+                "reachable": member.address not in unreachable,
+            }
+            for member in live
+        ]
+        return {
+            "address": self._daemon.address,
+            "leader": state.leader,
+            "converged": state.converged,
+            "members": members,
+            "unreachable": sorted(a for a in unreachable if a in addresses),
+        }
+
+    @staticmethod
+    def _live_members(state: Gossip) -> list[Member]:
+        """The members a node still holds, sorted by address, tombstones dropped.
+
+        The one place that decides what counts as a member the operator can
+        still act on, shared by the status a read renders and the membership a
+        leave or a down is checked against, so the two never disagree about
+        whether an address is known.
+
+        Args:
+            state: The gossip snapshot to read.
+
+        Returns:
+            Each member that is not `Removed`, ordered by address.
+        """
+        members = (
+            state.member(address)
+            for address in sorted({member.address for member in state.members})
+        )
+        return [
+            member
+            for member in members
+            if member is not None and member.status is not MemberStatus.REMOVED
+        ]
+
+    def _live_member_addresses(self) -> frozenset[str]:
+        """The addresses this node holds a live member record for.
+
+        Read by the management endpoint the same way and between the same turns
+        as [_snapshot][tapio.cluster.cluster.Cluster._snapshot], to answer a
+        leave or a down for a member the node does not know with a `404`.
+        """
+        return frozenset(
+            member.address for member in self._live_members(self._daemon.state)
+        )
 
     def subscribe(self, subscriber: ActorRef[Any], *events: type[ClusterEvent]) -> None:
         """Have cluster events delivered to an actor's mailbox.

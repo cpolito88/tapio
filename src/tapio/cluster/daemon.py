@@ -46,6 +46,7 @@ from tapio.cluster.member import Member, MemberStatus
 from tapio.cluster.messages import (
     ClusterDowned,
     ClusterMessage,
+    Down,
     FormTick,
     GossipEnvelope,
     Heartbeat,
@@ -359,6 +360,8 @@ class ClusterDaemon:
                 await self._merge(ctx, message)
             case Leave():
                 self._start_leaving(message.address)
+            case Down():
+                self._down_member(message.address)
             case LinkChanged():
                 self._link_changed(message)
 
@@ -732,6 +735,36 @@ class ClusterDaemon:
         _log.info("%s is leaving", address)
         self._state = self._state.with_member(
             member.with_status(MemberStatus.LEAVING)
+        ).bumped_by(self._address)
+
+    def _down_member(self, address: str) -> None:
+        """Down a member because an operator asked, not because a strategy did.
+
+        The same lattice move a strategy makes, reached by a person instead:
+        the member goes to `Down`, the version is bumped, and gossip carries the
+        decision to everyone including the member named, which then hears it and
+        shuts itself down. It needs no converged view and no leader, because
+        downing only ever moves up the lattice, so an operator downing a member
+        on one node and gossip downing it on another is one decision made twice.
+
+        A member already `Down` or `Removed` is left alone: it has reached the
+        end an operator was asking for, and moving it again would be a version
+        bump that says nothing. An address that names no member is refused in
+        words, since an operator that mistyped an address should hear so rather
+        than have nothing happen.
+
+        Args:
+            address: The member to down.
+        """
+        member = self._state.member(address)
+        if member is None:
+            _log.warning("cannot down %s: it is not a member here", address)
+            return
+        if member.status in (MemberStatus.DOWN, MemberStatus.REMOVED):
+            return
+        _log.warning("%s is downed by an operator", address)
+        self._state = self._state.with_member(
+            member.with_status(MemberStatus.DOWN)
         ).bumped_by(self._address)
 
     def _lead(self) -> None:

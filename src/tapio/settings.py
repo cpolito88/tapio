@@ -8,7 +8,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from tapio.actor.mailbox import MailboxConfig, OverflowStrategy
 
-__all__ = ["ClusterSettings", "RemoteSettings", "TLSSettings", "TapioSettings"]
+__all__ = [
+    "ClusterSettings",
+    "ManagementSettings",
+    "RemoteSettings",
+    "TLSSettings",
+    "TapioSettings",
+]
 
 
 class TLSSettings(BaseSettings):
@@ -232,6 +238,58 @@ class ClusterSettings(BaseSettings):
 
     leave_timeout: timedelta = timedelta(seconds=30)
     """How long `leave` waits to see this node reach `Removed` everywhere."""
+
+
+class ManagementSettings(BaseSettings):
+    """Where a node answers an operator, and what proves the operator is one.
+
+    Passed to [Cluster][tapio.cluster.cluster.Cluster] alongside the cluster,
+    the same way [ClusterSettings][tapio.settings.ClusterSettings] is: managing
+    a cluster is something an operator does to a system that already exists, not
+    part of how the system is addressed. A node with these open runs a small
+    HTTP surface that reads its membership and asks it to let a member leave or
+    down one. The [tapio-cluster][tapio.cluster.cli] command speaks to it.
+
+    Off unless it is configured, like remoting, since a port that can down a
+    member is a serious surface. When it is on, it binds loopback by default,
+    for the same reason remoting does: the default is set for someone who has
+    not thought about who can reach it yet.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="TAPIO_MANAGEMENT_", frozen=True)
+
+    bind_host: str = "127.0.0.1"
+    """The interface to answer operators on. Loopback by default: this port can
+    down a member, so reaching it from another host is a decision to make on
+    purpose rather than a default to inherit."""
+
+    bind_port: int = 25530
+    """The port to answer operators on. `0` takes whatever the OS hands out,
+    which is what a test binds so no two of them argue over a number."""
+
+    token: SecretStr | None = None
+    """The bearer token an operator presents, or `None` to ask for nothing.
+
+    One of the two ways to prove an operator is one, the other being a client
+    certificate under `tls`. At least one is required to bind anywhere but
+    loopback: a port that can down a member, reachable from any host with
+    nothing to prove, fails to start rather than serving strangers. On loopback
+    it is optional, since reaching the port at all already means being on the
+    machine. Compared in constant time, and presented as
+    `Authorization: Bearer <token>`.
+    """
+
+    tls: TLSSettings | None = None
+    """Certificates for the management port, or `None` for plaintext HTTP.
+
+    The same [TLSSettings][tapio.settings.TLSSettings] remoting uses. With
+    `certfile` and `keyfile`, the port speaks HTTPS and an operator's client
+    verifies it. Add `cafile` and the port also requires a client certificate
+    signed by that authority, which authenticates the operator the way a token
+    does: mutual TLS is therefore a second way to satisfy the bind-beyond-
+    loopback rule, where a bearer token alone travels in a header an eavesdropper
+    on a plaintext link would read.
+    """
 
 
 class TapioSettings(BaseSettings):
