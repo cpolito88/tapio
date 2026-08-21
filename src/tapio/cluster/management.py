@@ -51,11 +51,19 @@ __all__ = [
 
 _log = runtime_logger("cluster")
 
-# A request that never sends its headers costs this and not a parked task. The
-# body is bounded separately, by Content-Length, since an operator's leave is a
-# few dozen bytes and nothing here has a reason to read more.
+# The header buffer is the stream's read limit, so a request that keeps sending
+# headers without ever ending them is refused once it passes this, rather than
+# growing without bound. The body is bounded separately, by Content-Length,
+# since an operator's leave is a few dozen bytes and nothing here has a reason to
+# read more.
 _MAX_HEADER_BYTES: Final = 16 * 1024
 _MAX_BODY_BYTES: Final = 64 * 1024
+
+# How long one request has to arrive and be answered. A connection that opens
+# and then sends nothing, or dribbles its bytes, is closed at this deadline
+# rather than parking a task for as long as it stays open. It bounds the write
+# too, so a peer that stops reading cannot hold the response half-sent.
+_REQUEST_TIMEOUT: Final = 30.0
 
 
 class _ManagementMessage(Message):
@@ -110,6 +118,7 @@ class ClusterManagement:
         *,
         listener: socket.socket,
         snapshot: Callable[[], Mapping[str, Any]],
+        members: Callable[[], frozenset[str]],
         daemon: ActorRef[ClusterMessage],
         token: SecretStr | None,
         tls: TLSSettings | None,
@@ -124,6 +133,9 @@ class ClusterManagement:
             snapshot: Reads what this node believes about the cluster, as the
                 plain data a JSON response is built from. Called between the
                 daemon's turns, so it must not await.
+            members: The addresses this node currently holds a live member
+                record for, read the same way and used to answer a leave or a
+                down for a member the node does not know with a `404`.
             daemon: This node's cluster daemon, where a leave or a down is sent.
             token: The bearer token an operator must present, or `None` to ask
                 for nothing.
@@ -134,6 +146,7 @@ class ClusterManagement:
         """
         self._listener = listener
         self._snapshot = snapshot
+        self._members = members
         self._daemon = daemon
         self._token = token
         self._tls = tls
@@ -195,7 +208,10 @@ class ClusterManagement:
         """
         context = server_ssl_context(self._tls) if self._tls is not None else None
         self._server = await asyncio.start_server(
-            self._on_connection, sock=self._listener, ssl=context
+            self._on_connection,
+            sock=self._listener,
+            ssl=context,
+            limit=_MAX_HEADER_BYTES,
         )
         _log.debug(
             "cluster management is answering on %s%s",
@@ -232,11 +248,20 @@ class ClusterManagement:
         wrong. Everything that can go wrong with a request, a header line too
         long or a body that is not the JSON it claimed, becomes a status code
         rather than an exception, because the peer is whoever reached the port
-        and the answer to a bad request is to say so and hang up.
+        and the answer to a bad request is to say so and hang up. A request that
+        does not arrive within the deadline is a `408`, so a peer that opens a
+        connection and then stalls cannot hold a task open for as long as it
+        likes.
         """
         try:
-            status, body = await self._answer(reader)
-        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, OSError):
+            async with asyncio.timeout(_REQUEST_TIMEOUT):
+                status, body = await self._answer(reader)
+        except TimeoutError:
+            status, body = (
+                _HTTP_REQUEST_TIMEOUT,
+                _error("the request was not sent in time"),
+            )
+        except (asyncio.IncompleteReadError, OSError):
             # The peer went away or never finished its request. There is nobody
             # to tell, so the connection is just closed.
             status, body = None, b""
@@ -247,8 +272,9 @@ class ClusterManagement:
         try:
             if status is not None:
                 writer.write(_response(status, body))
-                await writer.drain()
-        except OSError:
+                async with asyncio.timeout(_REQUEST_TIMEOUT):
+                    await writer.drain()
+        except (OSError, TimeoutError):
             pass
         finally:
             with contextlib.suppress(OSError):
@@ -264,8 +290,11 @@ class ClusterManagement:
             The status to send and the JSON body, or a `None` status when the
             request was too malformed to answer and the connection is dropped.
         """
-        head = await reader.readuntil(b"\r\n\r\n")
-        if len(head) > _MAX_HEADER_BYTES:
+        try:
+            head = await reader.readuntil(b"\r\n\r\n")
+        except asyncio.LimitOverrunError:
+            # The headers passed the read buffer without ending. That is the
+            # request being too large, not the peer going away, so it is a code.
             return _HTTP_REQUEST_TOO_LARGE, _error("the request headers are too large")
         method, path, headers = _parse_head(head)
         if self._token is not None and not self._authorized(headers):
@@ -341,9 +370,8 @@ class ClusterManagement:
         return _HTTP_ACCEPTED, _json({"accepted": action, "address": address})
 
     def _member_addresses(self) -> frozenset[str]:
-        """The addresses this node currently holds a member record for."""
-        members = self._snapshot().get("members", ())
-        return frozenset(member["address"] for member in members)
+        """The addresses this node currently holds a live member record for."""
+        return self._members()
 
     async def _close(self) -> None:
         """Stop listening, and let go of every connection still open.
@@ -501,4 +529,5 @@ _HTTP_BAD_REQUEST: Final = (400, "Bad Request")
 _HTTP_UNAUTHORIZED: Final = (401, "Unauthorized")
 _HTTP_NOT_FOUND: Final = (404, "Not Found")
 _HTTP_METHOD_NOT_ALLOWED: Final = (405, "Method Not Allowed")
+_HTTP_REQUEST_TIMEOUT: Final = (408, "Request Timeout")
 _HTTP_REQUEST_TOO_LARGE: Final = (413, "Content Too Large")

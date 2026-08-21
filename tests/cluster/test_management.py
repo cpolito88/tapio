@@ -7,6 +7,7 @@ checked by watching the member it named actually move.
 """
 
 import asyncio
+import contextlib
 import json
 
 import pytest
@@ -190,6 +191,46 @@ async def test_malformed_requests_answer_with_the_right_code():
             assert not_a_member == 404
             # A member the node does know is accepted, even when it is itself.
             assert downing_self == 202
+
+
+async def test_a_stalled_request_is_timed_out_not_parked(monkeypatch):
+    # A short deadline so the test does not wait the real one out. A client that
+    # opens a connection and never ends its headers is answered 408 and closed,
+    # rather than holding a connection task for as long as it stays open;
+    # assert_no_leaked_tasks would fail if the task were left parked.
+    monkeypatch.setattr("tapio.cluster.management._REQUEST_TIMEOUT", 0.2)
+    with assert_no_leaked_tasks():
+        async with cluster_of(1, management=MANAGED) as nodes:
+            await _joined(nodes)
+            port = _port(nodes[0])
+
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(b"GET /status HTTP/1.1\r\n")  # no blank line ever follows
+            await writer.drain()
+            raw = await asyncio.wait_for(reader.read(), timeout=5.0)
+            writer.close()
+            await writer.wait_closed()
+
+    assert b"408" in raw
+
+
+async def test_headers_that_never_end_answer_413():
+    with assert_no_leaked_tasks():
+        async with cluster_of(1, management=MANAGED) as nodes:
+            await _joined(nodes)
+            port = _port(nodes[0])
+
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            # A header far past the read buffer, with no blank line to end it.
+            writer.write(b"GET /status HTTP/1.1\r\nX-Big: " + b"a" * (32 * 1024))
+            with contextlib.suppress(ConnectionResetError, BrokenPipeError):
+                await writer.drain()
+            raw = await asyncio.wait_for(reader.read(), timeout=5.0)
+            writer.close()
+            with contextlib.suppress(ConnectionResetError, BrokenPipeError):
+                await writer.wait_closed()
+
+    assert b"413" in raw
 
 
 def test_binding_beyond_loopback_without_a_token_is_refused():

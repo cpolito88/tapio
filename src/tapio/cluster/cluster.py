@@ -142,6 +142,7 @@ class Cluster:
             self._management = ClusterManagement(
                 listener=self._management_listener,
                 snapshot=self._snapshot,
+                members=self._live_member_addresses,
                 daemon=self._ref,
                 token=management.token,
                 tls=management.tls,
@@ -196,7 +197,9 @@ class Cluster:
         if self._management_listener is None:
             return None
         host, port = self._management_listener.getsockname()[:2]
-        return f"{host}:{port}"
+        # An IPv6 host carries colons of its own, so bracket it: the port is
+        # what follows the last colon only when the host cannot hold one.
+        return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
 
     @property
     def state(self) -> Gossip:
@@ -289,22 +292,19 @@ class Cluster:
         """
         state = self._daemon.state
         unreachable = state.reachability.unreachable
-        addresses = {member.address for member in state.members}
-        members: list[dict[str, Any]] = []
-        for address in sorted(addresses):
-            member = state.member(address)
-            if member is None or member.status is MemberStatus.REMOVED:
-                continue
-            members.append(
-                {
-                    "address": member.address,
-                    "uid": member.uid,
-                    "status": member.status.value,
-                    "roles": sorted(member.roles),
-                    "up_number": member.up_number,
-                    "reachable": member.address not in unreachable,
-                }
-            )
+        live = self._live_members(state)
+        addresses = {member.address for member in live}
+        members = [
+            {
+                "address": member.address,
+                "uid": member.uid,
+                "status": member.status.value,
+                "roles": sorted(member.roles),
+                "up_number": member.up_number,
+                "reachable": member.address not in unreachable,
+            }
+            for member in live
+        ]
         return {
             "address": self._daemon.address,
             "leader": state.leader,
@@ -312,6 +312,42 @@ class Cluster:
             "members": members,
             "unreachable": sorted(a for a in unreachable if a in addresses),
         }
+
+    @staticmethod
+    def _live_members(state: Gossip) -> list[Member]:
+        """The members a node still holds, sorted by address, tombstones dropped.
+
+        The one place that decides what counts as a member the operator can
+        still act on, shared by the status a read renders and the membership a
+        leave or a down is checked against, so the two never disagree about
+        whether an address is known.
+
+        Args:
+            state: The gossip snapshot to read.
+
+        Returns:
+            Each member that is not `Removed`, ordered by address.
+        """
+        members = (
+            state.member(address)
+            for address in sorted({member.address for member in state.members})
+        )
+        return [
+            member
+            for member in members
+            if member is not None and member.status is not MemberStatus.REMOVED
+        ]
+
+    def _live_member_addresses(self) -> frozenset[str]:
+        """The addresses this node holds a live member record for.
+
+        Read by the management endpoint the same way and between the same turns
+        as [_snapshot][tapio.cluster.cluster.Cluster._snapshot], to answer a
+        leave or a down for a member the node does not know with a `404`.
+        """
+        return frozenset(
+            member.address for member in self._live_members(self._daemon.state)
+        )
 
     def subscribe(self, subscriber: ActorRef[Any], *events: type[ClusterEvent]) -> None:
         """Have cluster events delivered to an actor's mailbox.
