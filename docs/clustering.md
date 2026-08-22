@@ -108,7 +108,9 @@ in address order: somebody has to be able to accept the first join.
 
 A leader with an unreachable member converges on nothing and therefore does
 nothing. Joins wait, leaves wait, and the cluster keeps running. That blocking
-is what downing will exist to resolve.
+is what a [downing strategy][tapio.cluster.downing.DownStrategy] resolves;
+without one configured, it is where the cluster stays until the member answers
+again or an operator downs it.
 
 ## Leaving
 
