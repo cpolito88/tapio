@@ -11,7 +11,7 @@ import asyncio
 from click.testing import Result
 from typer.testing import CliRunner
 
-from tapio.cluster.cli import app
+from tapio.cluster.cli import _print_status, app
 from tapio.settings import ManagementSettings, TLSSettings
 from tapio.testkit import assert_no_leaked_tasks
 from tests.cluster.conftest import Node, TlsCerts, cluster_of, seeds_of
@@ -50,6 +50,24 @@ async def test_status_prints_the_members():
             assert result.exit_code == 0
             assert nodes[0].address in result.stdout
             assert "up" in result.stdout
+
+
+def test_status_table_tolerates_a_member_missing_fields(capsys):
+    # A member record without address or status prints a placeholder rather
+    # than raising a KeyError and dumping a traceback at the operator. The
+    # payload is another node's answer, so a version skew must still leave a
+    # readable table.
+    _print_status(
+        {
+            "address": "tapio://a@127.0.0.1:2551",
+            "leader": None,
+            "converged": False,
+            "members": [{"roles": ["web"]}],
+        }
+    )
+
+    out = capsys.readouterr().out
+    assert "?" in out
 
 
 async def test_down_from_the_command_line_moves_the_member():

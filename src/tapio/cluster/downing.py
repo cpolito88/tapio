@@ -42,13 +42,12 @@ self-down means. The daemon reads which case it is in from whether its own
 address is in the set.
 """
 
-import math
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Protocol, final, runtime_checkable
 
 from tapio.cluster.gossip import Gossip
-from tapio.cluster.member import Member
+from tapio.cluster.member import Member, seniority
 
 __all__ = [
     "DownAll",
@@ -330,7 +329,7 @@ class KeepOldest:
         candidates = (*here, *there)
         if not candidates:
             return _addresses((*reachable, *unreachable))
-        oldest = min(candidates, key=_seniority)
+        oldest = min(candidates, key=seniority)
         oldest_here = any(m.key == oldest.key for m in here)
         elders_side, other_side = (
             (reachable, unreachable) if oldest_here else (unreachable, reachable)
@@ -342,23 +341,6 @@ class KeepOldest:
     def __repr__(self) -> str:
         """Render whether a lone oldest yields, and the role it is chosen among."""
         return f"KeepOldest(down_if_alone={self.down_if_alone}, role={self.role!r})"
-
-
-def _seniority(member: Member) -> tuple[float, str]:
-    """Order members oldest first, by when the leader accepted them.
-
-    A lower `up_number` was accepted earlier and is older. Zero means the leader
-    has not accepted the member yet, so it has no place in the order and sorts
-    as the youngest, not the oldest. The address breaks a tie so the choice is
-    deterministic.
-
-    Args:
-        member: The member to place.
-
-    Returns:
-        Its sort key, lowest being oldest.
-    """
-    return (member.up_number if member.up_number else math.inf, member.address)
 
 
 @runtime_checkable
@@ -383,6 +365,16 @@ class Lease(Protocol):
     name for it, so a side either all takes the lease or all fails to. Acquiring
     is therefore re-entrant: it succeeds when the lease is free or already held
     by this owner, and fails only when another owner holds it.
+
+    tapio holds the lease for the life of the decision and never releases it:
+    the winning side keeps it so that a node arriving late reads the same
+    winner. A real lease must therefore expire on its own, the way an etcd or
+    Kubernetes lease does once its holder stops renewing it. A lease that never
+    expires cannot arbitrate a later, independently composed split, because the
+    earlier winner still holds it under a name the new sides do not use, so both
+    new sides fail to acquire and down themselves.
+    [LocalLease][tapio.cluster.downing.LocalLease] is that never-expiring case,
+    which is one more reason it is for tests only.
     """
 
     async def acquire(self, owner: str) -> bool:
@@ -395,16 +387,6 @@ class Lease(Protocol):
         Returns:
             Whether the lease is held by this owner now. True when it was free
             or already this owner's, False when another owner holds it.
-        """
-        ...
-
-    async def release(self, owner: str) -> None:
-        """Give the lease up, if this owner holds it.
-
-        Args:
-            owner: Who is releasing. A release by anyone else is ignored, so a
-                late release cannot take a lease away from the side that has
-                since won it.
         """
         ...
 
@@ -442,15 +424,6 @@ class LocalLease:
             return True
         return False
 
-    async def release(self, owner: str) -> None:
-        """Free the lease, if this owner holds it.
-
-        Args:
-            owner: Who is releasing.
-        """
-        if self._owner == owner:
-            self._owner = None
-
     def __repr__(self) -> str:
         """Render who holds the lease, if anyone."""
         return f"LocalLease(owner={self._owner!r})"
@@ -479,6 +452,10 @@ class LeaseMajority:
     safe, since only one side ever lives, but it is not the most available
     outcome. Preferring the majority by making the minority wait before it
     reaches for the lease is a refinement this does not make yet.
+
+    The winning side keeps the lease and never gives it back, so the lease must
+    be one that expires on its own; see [Lease][tapio.cluster.downing.Lease] for
+    why a never-expiring lease cannot resolve a second, later split.
     """
 
     lease: Lease

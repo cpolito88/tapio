@@ -260,14 +260,18 @@ def _print_status(payload: Mapping[str, Any]) -> None:
     if not members:
         typer.echo("members:   (none)")
         return
-    width = max(max(len(member["address"]) for member in members), len("ADDRESS"))
+    # Every field is read with `.get`, so a member record missing one prints a
+    # placeholder rather than crashing the whole table with a traceback. The
+    # payload comes from a node of the same project, but a version skew or a
+    # partial answer should still leave an operator with a readable table.
+    addresses = [str(member.get("address", "?")) for member in members]
+    width = max(max(len(address) for address in addresses), len("ADDRESS"))
     typer.echo(f"\n{'ADDRESS':<{width}}  {'STATUS':<8}  {'REACH':<11}  ROLES")
-    for member in members:
+    for member, address in zip(members, addresses, strict=True):
+        status = str(member.get("status", "?"))
         reach = "reachable" if member.get("reachable", True) else "unreachable"
         roles = ", ".join(member.get("roles", ())) or "-"
-        typer.echo(
-            f"{member['address']:<{width}}  {member['status']:<8}  {reach:<11}  {roles}"
-        )
+        typer.echo(f"{address:<{width}}  {status:<8}  {reach:<11}  {roles}")
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised as a console script

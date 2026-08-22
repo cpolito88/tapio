@@ -36,7 +36,7 @@ from tapio.actor.ref import ActorRef
 from tapio.actor.timers import TimerScheduler
 from tapio.cluster.daemon import local_daemon
 from tapio.cluster.events import MemberRemoved, MemberUp
-from tapio.cluster.member import Member
+from tapio.cluster.member import Member, seniority
 from tapio.cluster.messages import Subscribe
 from tapio.logging import runtime_logger
 from tapio.message import Message
@@ -228,19 +228,18 @@ class _Manager:
             _log.info("%s hands off cluster singleton %r", self._address, self._name)
 
     def _oldest(self) -> Member | None:
-        """The role member with the lowest `up_number`, or `None` if there are none.
+        """The oldest role member, or `None` if there are none.
 
-        The address breaks a tie that `up_number` alone cannot, though a member
-        that is up always has one, so the tie is only reached before the first
-        acceptance.
+        Oldest by [seniority][tapio.cluster.member.seniority], the same
+        definition a downing strategy uses, so a `KeepOldest` split and this
+        singleton agree on which member that is. Only members seen `MemberUp`
+        reach here, and an up member always carries an `up_number`, so the
+        before-acceptance case seniority guards against does not arise here; the
+        address still breaks a tie between equal numbers.
         """
         if not self._hosts:
             return None
-
-        def order(member: Member) -> tuple[int, str]:
-            return (member.up_number, member.address)
-
-        return min(self._hosts.values(), key=order)
+        return min(self._hosts.values(), key=seniority)
 
     def __repr__(self) -> str:
         """Render the singleton name, its role, and how many hosts are known."""

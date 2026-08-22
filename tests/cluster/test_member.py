@@ -4,7 +4,7 @@ import pytest
 from hypothesis import given
 from pydantic import ValidationError
 
-from tapio.cluster.member import Member, MemberStatus
+from tapio.cluster.member import Member, MemberStatus, seniority
 from tests.cluster.strategies import ADDRESSES, members
 
 ALPHA, BETA, _ = ADDRESSES
@@ -107,3 +107,30 @@ def test_merging_is_associative(a: Member, b: Member, c: Member):
 @given(members)
 def test_merging_is_idempotent(member: Member):
     assert member.merge(member) == member
+
+
+def test_seniority_orders_the_lower_up_number_as_older():
+    older = Member(address=BETA, uid=1).with_status(MemberStatus.UP, up_number=1)
+    younger = Member(address=ALPHA, uid=1).with_status(MemberStatus.UP, up_number=5)
+
+    # Acceptance order, not address order, is what oldest means: the lower
+    # up_number wins even though its address sorts later.
+    assert min((younger, older), key=seniority) is older
+
+
+def test_seniority_sorts_an_unaccepted_member_as_the_youngest():
+    accepted = Member(address=BETA, uid=1).with_status(MemberStatus.UP, up_number=1)
+    unaccepted = Member(address=ALPHA, uid=1)  # still joining, up_number 0
+
+    # up_number 0 means "not accepted yet", so it is the youngest and never the
+    # oldest, however low its address sorts. This is the guard the singleton and
+    # the downing strategies share so a still-joining member is not called
+    # oldest.
+    assert min((accepted, unaccepted), key=seniority) is accepted
+
+
+def test_seniority_breaks_a_tie_on_the_address():
+    first = Member(address=ALPHA, uid=1).with_status(MemberStatus.UP, up_number=2)
+    second = Member(address=BETA, uid=1).with_status(MemberStatus.UP, up_number=2)
+
+    assert min((second, first), key=seniority) is first

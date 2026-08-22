@@ -136,6 +136,29 @@ def test_the_member_at_an_address_falls_back_to_a_tombstone():
     assert state.member(ALPHA).status is MemberStatus.REMOVED
 
 
+def test_primaries_agrees_with_member_at_every_address():
+    # primaries builds in one pass what member picks one address at a time, so
+    # the two must never disagree: a restart (live wins over the tombstone) and
+    # a plain tombstone (the only record there is) both have to come out the
+    # same whichever way they are read.
+    restarted_dead = up(ALPHA, uid=1).with_status(MemberStatus.DOWN)
+    restarted_live = Member(address=ALPHA, uid=2, status=MemberStatus.JOINING)
+    removed = up(BETA, uid=1).with_status(MemberStatus.REMOVED)
+    plain = up(GAMMA, uid=1)
+
+    state = Gossip(members=(restarted_dead, restarted_live, removed, plain))
+
+    primaries = state.primaries()
+
+    assert set(primaries) == {ALPHA, BETA, GAMMA}
+    for address in (ALPHA, BETA, GAMMA):
+        assert primaries[address] == state.member(address)
+
+
+def test_primaries_is_empty_without_members():
+    assert Gossip().primaries() == {}
+
+
 def test_the_leader_is_the_first_up_member_in_address_order():
     state = Gossip(members=(up(GAMMA), up(BETA), up(ALPHA)))
 
