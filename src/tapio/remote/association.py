@@ -239,6 +239,7 @@ class Association:
         "_reader",
         "_ready",
         "_ref",
+        "_retiring",
         "_socket",
         "_uid",
         "_watched_here",
@@ -295,6 +296,11 @@ class Association:
         # ahead of it. This one exists as soon as there is a socket, so a
         # cancellation between the two still has something to close.
         self._socket: Link | None = link
+        # The link a simultaneous dial retired, held from the moment it loses
+        # the race until it is closed. `_resume` closes it, but that runs in a
+        # task that a shutdown can cancel before its first line, so the field is
+        # what lets `_release` and `detach` close it when `_resume` never runs.
+        self._retiring: Link | None = None
 
     @property
     def peer(self) -> Address:
@@ -500,22 +506,34 @@ class Association:
         # time, and it is what keeps the order across the swap.
         self._link = None
         self._accepted = link
+        # The losing socket is put in `_retiring` before the task that closes
+        # it is spawned, so a shutdown that cancels that task before it runs a
+        # line still finds the link to close in `_release`.
         previous, self._socket = self._socket, link
+        self._retiring = previous
         reader, self._reader = self._reader, None
         self._reader = self._host.dispatcher.spawn_task(
-            self._resume(previous, reader), name=f"tapio-link:{self._peer}"
+            self._resume(reader), name=f"tapio-link:{self._peer}"
         )
 
-    async def _resume(
-        self, previous: Link | None, reader: "asyncio.Task[None] | None"
-    ) -> None:
+    async def _resume(self, reader: "asyncio.Task[None] | None") -> None:
         """Retire the link that lost the dial, then read the one that won."""
-        if reader is not None:
-            reader.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await reader
-        if previous is not None:
-            await previous.close()
+        try:
+            if reader is not None:
+                reader.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await reader
+        finally:
+            # Close the retired link even if this task is cancelled while the
+            # old reader is ending. It is taken out of `_retiring` here so that
+            # `_release` does not close it a second time, and closed with a
+            # synchronous `writer.close()` first, so the socket is released even
+            # under cancellation. If this task is cancelled before its first
+            # line runs, this never executes and `_release` closes `_retiring`
+            # instead.
+            retiring, self._retiring = self._retiring, None
+            if retiring is not None:
+                await retiring.close()
         await self._run()
 
     def close(self, detail: str) -> None:
@@ -554,11 +572,16 @@ class Association:
             with contextlib.suppress(asyncio.CancelledError):
                 await reader
         link = self._socket or self._accepted
+        retiring, self._retiring = self._retiring, None
         self._link = None
         self._socket = None
         self._accepted = None
         if link is not None:
             await link.close()
+        # A dial race retired a link into `_retiring`, and the task that would
+        # have closed it never ran because this detach cancelled it first.
+        if retiring is not None and retiring is not link:
+            await retiring.close()
         self._host.forget(self)
 
     async def wait_connected(self, timeout: float) -> None:  # noqa: ASYNC109 - the dial deadline
@@ -999,11 +1022,18 @@ class Association:
             with contextlib.suppress(asyncio.CancelledError):
                 await reader
         link = self._socket or self._accepted
+        retiring, self._retiring = self._retiring, None
         self._link = None
         self._socket = None
         self._accepted = None
         if link is not None:
             await link.close()
+        # A dial race retired a link into `_retiring`, and `_resume` was
+        # cancelled before it could close it, since cancelling the reader above
+        # is what cancelled `_resume`. Close it here so its socket is not left
+        # for the garbage collector.
+        if retiring is not None and retiring is not link:
+            await retiring.close()
         while self._pending:
             outbound = self._pending.popleft()
             if isinstance(outbound, Outbound):

@@ -15,9 +15,13 @@ from tapio.actor import (
     Terminated,
 )
 from tapio.actor.dead_letters import DeadLetterReason
+from tapio.dispatch.dispatcher import Dispatcher
 from tapio.errors import MessageEncodingError
+from tapio.remote.address import Address
+from tapio.remote.association import Association
 from tapio.remote.codec import LENGTH_PREFIX, encode
 from tapio.remote.transport import framed, is_link_frame, link_body
+from tapio.settings import RemoteSettings
 from tapio.testkit import assert_no_leaked_tasks
 from tests.failures import eventually
 from tests.remote.peers import (
@@ -535,3 +539,88 @@ async def test_a_watch_that_cannot_be_sent_is_answered_at_once():
                 assert association.watching == ()
             finally:
                 await system.terminate()
+
+
+class _RecordingLink:
+    """A link that records only whether it was closed.
+
+    Enough of the link surface for an association to hold it and close it,
+    with none of a real socket, so a test can watch it being released.
+    """
+
+    def __init__(self) -> None:
+        """Start open."""
+        self.closed = False
+
+    @property
+    def peer(self) -> str:
+        """A fixed peer address, since nothing here dials."""
+        return "tapio://retired@127.0.0.1:1"
+
+    async def read_frame(self) -> bytes:
+        """Never called: this link is only ever retired."""
+        raise AssertionError("a retired link is not read")
+
+    async def write_frame(self, data: bytes) -> None:
+        """Never called: this link is only ever retired."""
+        raise AssertionError("a retired link is not written")
+
+    async def write_link(self, message: object) -> None:
+        """Never called: this link is only ever retired."""
+        raise AssertionError("a retired link is not written")
+
+    async def close(self) -> None:
+        """Record that the association closed this link."""
+        self.closed = True
+
+
+class _LoneHost:
+    """The little of an endpoint an isolated association needs to shut down.
+
+    Reports the system as closing, so ending the association raises no watch,
+    and forgets nothing, since it holds no table.
+    """
+
+    def __init__(self) -> None:
+        """Bind to the running loop, with default remoting settings."""
+        self.settings = RemoteSettings(_env_file=None, bind_port=0)  # type: ignore[call-arg]
+        self.dispatcher = Dispatcher.from_running_loop()
+        self.is_closing = True
+
+    def forget(self, association: object) -> None:
+        """Do nothing: there is no table to remove the association from."""
+
+
+def _lone_association() -> Association:
+    """An association with no reader and no link, ready to be shut down."""
+    peer = Address.parse("tapio://peer@127.0.0.1:2551")
+    return Association(host=_LoneHost(), peer=peer, initiator=peer)  # type: ignore[arg-type]
+
+
+async def test_release_closes_the_link_a_dial_race_retired():
+    # A simultaneous dial retires the losing link into `_retiring`, closed by
+    # the `_resume` task. A shutdown can cancel that task before it runs a line,
+    # so `_release` must close the retired link itself or its socket is left for
+    # the garbage collector. Without that, this link is never closed.
+    with assert_no_leaked_tasks():
+        association = _lone_association()
+        retired = _RecordingLink()
+        association._retiring = retired
+
+        await association._release()
+
+        assert retired.closed
+
+
+async def test_detach_closes_the_link_a_dial_race_retired():
+    # The same retired link, on the endpoint's late-adopt path: an association
+    # adopted after the stop sweep gets `detach` rather than a `PostStop`, and
+    # it too must close a link a dial race left behind.
+    with assert_no_leaked_tasks():
+        association = _lone_association()
+        retired = _RecordingLink()
+        association._retiring = retired
+
+        await association.detach()
+
+        assert retired.closed
