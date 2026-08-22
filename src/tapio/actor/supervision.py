@@ -32,8 +32,8 @@ class Decision(enum.Enum):
     RESUME = "resume"
     """Keep the actor, its behavior, and its state, and take the next message.
 
-    The failed message is gone. Right when the failure is about the message
-    rather than about the actor.
+    The failed message is gone. This is the right choice when the failure is
+    about the message rather than about the actor.
     """
 
     RESTART = "restart"

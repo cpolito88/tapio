@@ -124,7 +124,7 @@ class StashBuffer(Generic[T]):
         return held
 
     def __repr__(self) -> str:
-        """Render how full it is, which is what a reader wants to see."""
+        """Show how full it is."""
         return f"StashBuffer({len(self._held)}/{self._capacity})"
 
 

@@ -104,9 +104,9 @@ class EventStream:
                 _log.exception("an event subscriber raised; continuing")
 
     def __iter__(self) -> Iterator[type[Message]]:
-        """Iterate the types currently subscribed to, which tests find useful."""
+        """Iterate the event types currently subscribed to, for tests to check."""
         return iter([event_type for event_type, _ in self._subscribers.values()])
 
     def __repr__(self) -> str:
-        """Render the totals, which is what a reader wants to see."""
+        """Show the running totals."""
         return f"EventStream(total={self._total}, subscribers={len(self._subscribers)})"

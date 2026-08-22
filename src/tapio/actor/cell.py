@@ -644,8 +644,8 @@ class ActorCell(Generic[T]):
         """Run a blocking call on the system's pool, parking this actor.
 
         The actor is awaiting for the duration, so its mailbox fills up behind
-        the call. The loop stays free, which is the whole point, and this
-        actor does not.
+        the call. Keeping the loop free is the whole point; this actor is the
+        one that pays for it, parked until the call returns.
 
         Args:
             fn: The blocking callable.

@@ -167,7 +167,8 @@ class ActorContext(ABC, Generic[T]):
         **The actor is parked for the duration.** It is awaiting, so it is not
         reading its mailbox: messages queue up behind the call, and on a
         bounded mailbox the overflow strategy will fire while it waits. The
-        loop is free, which is the point, but this actor is not.
+        loop is free, which is the point, but this actor is parked until the
+        call returns.
 
         **The call cannot be cancelled.** Python cannot interrupt a thread
         that is inside a C call. Cancelling the actor abandons the result and
