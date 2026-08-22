@@ -30,6 +30,8 @@ from tapio_examples import (
     rate_limiter,
     remote_ask,
     remote_spawn,
+    rolling_restart,
+    split_brain,
     stash_on_startup,
     state_machine,
     supervision_backoff,
@@ -59,6 +61,8 @@ ASSERTED = {
     "rate_limiter",
     "remote_ask",
     "remote_spawn",
+    "rolling_restart",
+    "split_brain",
     "stash_on_startup",
     "state_machine",
     "supervision_backoff",
@@ -495,6 +499,39 @@ async def test_cluster_singleton():
     assert lines == [
         "the coordinator runs on node1, the oldest member",
         "node1 left, so the coordinator moved to node2",
+    ]
+
+
+async def test_rolling_restart():
+    with assert_no_leaked_tasks():
+        lines = await rolling_restart.main()
+
+    # The two nodes that are not the anchor are restarted one at a time, and
+    # each time the cluster comes back to three members with node1 still
+    # leading. The last line is the point: the coordinator started once, on
+    # node1, so the restarts happened underneath a service that never moved.
+    assert lines == [
+        "3 up, leader node1, coordinator on node1",
+        "restarted node2: 3 up, leader still node1",
+        "restarted node3: 3 up, leader still node1",
+        "coordinator ran only on node1, and only once",
+    ]
+
+
+async def test_split_brain():
+    with assert_no_leaked_tasks():
+        lines = await split_brain.main()
+
+    # Three strategies resolve the same kind of split three different ways, and
+    # each line reports both sides. In every one both sides reach the same
+    # verdict, which is what keeps the cluster from becoming two.
+    assert lines == [
+        "KeepMajority: the cut-off node downed itself, and the other four "
+        "stay up and agree it is down",
+        "DownAll: the same split downs every node on both sides, since it "
+        "keeps no side at all",
+        "LeaseMajority on an even split: one node took the lease and stays up, "
+        "the other downed itself",
     ]
 
 
