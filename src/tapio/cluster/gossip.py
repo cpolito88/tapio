@@ -106,6 +106,33 @@ class Gossip(Message):
         live = [m for m in found if m.status not in _GONE]
         return max(live or found, key=lambda m: (m.rank, m.uid))
 
+    def primaries(self) -> dict[str, Member]:
+        """Return the primary member at every address, in one pass.
+
+        The same choice [member][tapio.cluster.gossip.Gossip.member] makes for
+        one address, made for all of them at once: the live incarnation wins
+        over a tombstone, and among incarnations that are all live or all gone
+        the one furthest through its life wins. It exists so a caller that needs
+        every address does not call `member` in a loop, which is quadratic in
+        the membership because each call rescans it.
+
+        Returns:
+            The primary member keyed by address. Empty when there are no
+            members.
+        """
+        live: dict[str, Member] = {}
+        best: dict[str, Member] = {}
+        for member in self.members:
+            rank = (member.rank, member.uid)
+            held = best.get(member.address)
+            if held is None or rank > (held.rank, held.uid):
+                best[member.address] = member
+            if member.status not in _GONE:
+                held_live = live.get(member.address)
+                if held_live is None or rank > (held_live.rank, held_live.uid):
+                    live[member.address] = member
+        return {address: live.get(address, member) for address, member in best.items()}
+
     @property
     def alive(self) -> tuple[Member, ...]:
         """Every member that has not been downed or removed."""

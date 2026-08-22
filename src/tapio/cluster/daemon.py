@@ -907,11 +907,7 @@ class ClusterDaemon:
             The snapshot, holding the primary member at each address, who is
             unreachable, who leads, and this node's own status.
         """
-        members: dict[str, Member] = {}
-        for address in {member.address for member in self._state.members}:
-            primary = self._state.member(address)
-            if primary is not None:
-                members[address] = primary
+        members = self._state.primaries()
         me = self.self_member
         return _Digest(
             members=members,
