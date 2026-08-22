@@ -12,10 +12,10 @@ adds no new rule about who owns a task, and the existing leak check covers it.
 
 Delivery is **at-most-once**. No acks, no retries, no resend buffer: a frame
 written to a socket that then failed is lost, and it dead-letters here if the
-failure is visible from this side. Acks would make delivery at-least-once,
-which is not better, only different, and would oblige every receiving actor to
-be idempotent. That belongs in the user's protocol, where they know what is
-safe to repeat.
+failure is visible from this side. Acks would make delivery at-least-once.
+That is not an improvement, only a different trade-off, and it would oblige
+every receiving actor to be idempotent. That belongs in the user's protocol,
+where they know what is safe to repeat.
 
 An association also holds the death watches that cross it, in both
 directions: the local watchers of actors over there, and the local actors
@@ -668,10 +668,11 @@ class Association:
     def _write_budget(self) -> float:
         """How long a write has to reach a peer before the peer counts as gone.
 
-        The silence window, reused rather than configured twice. A peer this
-        system cannot get bytes into for as long as it would tolerate hearing
-        nothing is unreachable by the same standard, and a second setting
-        would only be a way for the two to disagree.
+        The silence window, reused rather than configured twice. If this
+        system cannot get any bytes into a peer for as long as it would
+        tolerate hearing nothing back, that peer is unreachable by the same
+        standard. A second setting would only be a way for the two to
+        disagree.
         """
         return self._host.settings.unreachable_after.total_seconds()
 

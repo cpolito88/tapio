@@ -88,5 +88,5 @@ class ActorPath:
         return f"{SCHEME}://{self.system}/{body}{fragment}"
 
     def __repr__(self) -> str:
-        """Render as the string form, which is what a reader wants to see."""
+        """Render as the string form."""
         return f"ActorPath({str(self)!r})"

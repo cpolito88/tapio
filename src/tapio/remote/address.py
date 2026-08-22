@@ -114,7 +114,7 @@ class Address:
         return f"{SCHEME}://{self.system}@{self.host}:{self.port}"
 
     def __repr__(self) -> str:
-        """Render as the string form, which is what a reader wants to see."""
+        """Render as the string form."""
         return f"Address({str(self)!r})"
 
 

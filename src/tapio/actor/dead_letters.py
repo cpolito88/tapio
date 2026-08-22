@@ -309,11 +309,11 @@ class DeadLetterOffice:
         self._last_summary = now
 
     def __iter__(self) -> Iterator[Callable[[DeadLetter], None]]:
-        """Iterate the current subscribers, which tests find useful."""
+        """Iterate the current subscribers, for tests to check."""
         return iter(list(self._subscribers.values()))
 
     def __repr__(self) -> str:
-        """Render the totals, which is what a reader wants to see."""
+        """Show the running totals."""
         return (
             f"DeadLetterOffice(total={self._total}, "
             f"subscribers={len(self._subscribers)})"

@@ -293,5 +293,5 @@ class RemoteRef(ActorRef[T]):
             raise MessageEncodingError(msg) from error
 
     def __repr__(self) -> str:
-        """Render the full string form, since where this points is the point."""
+        """Render the full string form: where this ref points is what names it."""
         return f"RemoteRef({format_ref(self.address, self.path)!r})"

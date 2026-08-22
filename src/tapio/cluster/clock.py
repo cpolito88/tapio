@@ -145,7 +145,7 @@ class VectorClock(Message):
         return Ordering.SAME
 
     def __repr__(self) -> str:
-        """Render the counters in node order, which is what a reader wants."""
+        """Render the counters in node order."""
         body = ", ".join(
             f"{node}={count}" for node, count in sorted(self.counters.items())
         )

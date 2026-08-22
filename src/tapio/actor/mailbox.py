@@ -1,10 +1,11 @@
 """The two-lane mailbox: signals outrank user messages.
 
-One mailbox object with two deques and a single waiter, not two queues. The
-obvious alternative is two `asyncio.Queue`s selected with
-`wait(FIRST_COMPLETED)`, and it has a race this design avoids: the losing
-`get()` task has to survive across iterations, because cancelling it discards
-a message it has already dequeued. With one waiter that race cannot happen.
+This is one mailbox object with two deques and a single waiter, not two
+queues. The obvious alternative is two `asyncio.Queue`s selected with
+`wait(FIRST_COMPLETED)`, but that has a race this design avoids: the losing
+`get()` task must survive across iterations, because cancelling it would
+discard a message it has already dequeued. With a single waiter that race
+cannot happen.
 
 The user lane can be bounded. The system lane never is: a capacity that could
 refuse a stop signal would make shutdown unreliable, so backpressure applies
@@ -32,9 +33,9 @@ __all__ = [
 Envelope: TypeAlias = Message | Signal
 """What a mailbox holds: a user message, or a runtime signal.
 
-A union rather than a wrapper object. An envelope class would buy a place to
-hang a sender, which nothing reads yet, at the price of one allocation per
-message on the hottest path in the library.
+This is a union, not a wrapper class. A wrapper would give us a place to
+store a sender, but nothing reads a sender yet, and it would cost one extra
+allocation per message on the busiest path in the library.
 """
 
 
@@ -44,13 +45,13 @@ class OverflowStrategy(StrEnum):
     FAIL = "fail"
     """Raise `MailboxFullError` in the sender.
 
-    Note the direction: the *receiver's* backpressure surfaces inside the
-    *sender*, so it is the sender's supervisor that sees it. That is the right
-    place for the decision, since only the sender knows whether to retry, shed
-    or escalate, and it surprises people, so it is said here and in the docs.
+    The error surfaces in the sender, not the receiver, so the sender's
+    supervisor is the one that sees it. This is deliberate: only the sender
+    knows whether to retry, shed, or escalate. It surprises people, so it is
+    stated here and in the docs.
 
-    A send from another thread cannot raise anywhere useful, so it dead-letters
-    instead. That asymmetry is the one wart in the design.
+    A send from another thread has nowhere useful to raise, so it dead-letters
+    instead. This asymmetry is a known rough edge.
     """
 
     DROP_NEW = "drop-new"
@@ -58,8 +59,8 @@ class OverflowStrategy(StrEnum):
 
     DROP_OLDEST = "drop-oldest"
     """Discard the message at the head of the queue, which goes to dead
-    letters, and enqueue the arriving one. For a stream of readings where only
-    the latest matters, this is the strategy that keeps the useful one."""
+    letters, and enqueue the arriving one. When only the latest reading
+    matters, this is the strategy that keeps the useful one."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,13 +168,13 @@ class Mailbox:
     def put_front(self, message: Message) -> None:
         """Put a message back at the head of the user lane.
 
-        For unstashing, which is a replay rather than a send. These messages
-        were accepted once already, and they go back where they would have
-        been, ahead of everything that queued up while the actor was not ready
-        for them. Capacity is not consulted, for the same reason the system
-        lane has none. A replay that could be refused would make
-        `unstash_all` a request rather than a guarantee, and the messages have
-        nowhere else to go.
+        This is used for unstashing, which replays a message rather than
+        sending a new one. These messages were accepted once already, so they
+        go back ahead of everything that queued up while the actor was not
+        ready for them. Capacity is not checked, for the same reason the
+        system lane has no capacity: a replay that could be refused would make
+        `unstash_all` a best effort rather than a guarantee, and the messages
+        have nowhere else to go.
         """
         self._user.appendleft(message)
         self._nonempty.set()
@@ -231,9 +232,10 @@ class Mailbox:
             The next signal if any is queued, otherwise the next user message.
 
         Raises:
-            RuntimeError: If a second reader is already waiting. One waiter is
-                what makes the wakeup above safe. A mailbox has exactly one
-                consumer, its own cell, so this is checked and not assumed.
+            RuntimeError: If a second reader is already waiting. A single
+                waiter is what makes the wakeup above safe. A mailbox has
+                exactly one consumer, its own cell, so we check this rather
+                than assume it.
         """
         if self._consuming:
             msg = (
@@ -262,9 +264,9 @@ class Mailbox:
     async def get_system(self) -> Signal:
         """Take the next signal, ignoring the user lane entirely.
 
-        For the one state where an actor is absent rather than idle. A cell
-        backing off before a restart stops taking user messages, so its
-        mailbox keeps filling, but a stop must still reach it inside the
+        This covers the one state where an actor is absent rather than idle. A
+        cell backing off before a restart stops taking user messages, so its
+        mailbox keeps filling, but a stop signal must still reach it within the
         shutdown deadline.
 
         Returns:
@@ -295,7 +297,7 @@ class Mailbox:
     def take_pending(self) -> Message | None:
         """Pop one queued user message, or `None` when the lane is empty.
 
-        For the cell's termination sequence, which accounts for undelivered
+        The cell's termination sequence calls this to account for undelivered
         messages instead of discarding them with the mailbox.
         """
         return self._user.popleft() if self._user else None
@@ -346,5 +348,5 @@ class Mailbox:
         return len(self._user) + len(self._system)
 
     def __repr__(self) -> str:
-        """Render both lane depths, which is what a reader wants to see."""
+        """Show the depth of each lane."""
         return f"Mailbox(system={len(self._system)}, user={len(self._user)})"

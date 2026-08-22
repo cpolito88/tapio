@@ -102,22 +102,28 @@ the writer is, or accept that a false positive costs you a rebuild.
 
 ## What changes this
 
-This is a known temporary position, not a permanent one. Two things change it,
-and today's defaults are chosen to survive both unchanged:
+This is the default position for a bare pair of nodes, and two things improve
+on it. Both have landed as opt-ins that the defaults leave off, so turning
+either on does not change how a plain two-node link behaves:
 
-- **A phi-accrual failure detector** replaces the fixed timeout, which cuts the
-  false-positive rate by treating a peer that is late as a probability rather
-  than a deadline. This is still ahead.
+- **A phi-accrual failure detector** cuts the false-positive rate by treating a
+  peer that is late as a probability rather than a deadline. It has landed for
+  the cluster's failure detector, where `phi_accrual` selects it; the plain
+  two-node association on this page still uses the fixed window described above.
 - **Membership with a downing strategy** makes the surviving side a fact
   rather than a guess. With a lease, the side that holds it keeps working and
   the other side stops, which is a real answer rather than two contradictory
-  local ones. [Membership](clustering.md) has landed; the downing strategy
-  that acts on it has not, so a member that goes quiet blocks the cluster
-  instead of being written off.
+  local ones. Both have landed: pass a `downing` strategy to `Cluster` and the
+  losing side of a partition is written off while the loser downs itself.
+  Without one, an unreachable member blocks the cluster instead of being
+  guessed about, which is the safe default until an operator says how this
+  cluster would rather resolve a split.
 
 Two nodes is the worst case for every deterministic strategy and the best case
 for a lease, which is worth saying plainly, since two nodes is where most
 deployments start.
 
 If your system cannot tolerate a false `Terminated` today, the honest options
-are to design around it as above, or to wait for the lease.
+are to design around it as above, or to run a cluster with a lease-backed
+downing strategy: `LeaseMajority` with a `Lease` that lives outside the
+partition, so the side that holds it survives and the other side stops.

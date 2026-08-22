@@ -41,7 +41,8 @@ size tapio does not control, so a bound could not be honoured.
 **The actor is still parked.** It is awaiting, so it is not reading its
 mailbox. Messages queue up behind the call, and on a bounded mailbox the
 overflow strategy will fire while it waits. The loop is free, which is the
-point; this actor is not. An actor that spends most of its time in blocking
+point; this actor stays parked until the call returns. An actor that spends
+most of its time in blocking
 calls is a bottleneck of one, and the answer is a pool of them behind a router.
 
 **The call cannot be cancelled.** Python cannot interrupt a thread that is
