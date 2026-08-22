@@ -42,13 +42,12 @@ self-down means. The daemon reads which case it is in from whether its own
 address is in the set.
 """
 
-import math
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Protocol, final, runtime_checkable
 
 from tapio.cluster.gossip import Gossip
-from tapio.cluster.member import Member
+from tapio.cluster.member import Member, seniority
 
 __all__ = [
     "DownAll",
@@ -330,7 +329,7 @@ class KeepOldest:
         candidates = (*here, *there)
         if not candidates:
             return _addresses((*reachable, *unreachable))
-        oldest = min(candidates, key=_seniority)
+        oldest = min(candidates, key=seniority)
         oldest_here = any(m.key == oldest.key for m in here)
         elders_side, other_side = (
             (reachable, unreachable) if oldest_here else (unreachable, reachable)
@@ -342,23 +341,6 @@ class KeepOldest:
     def __repr__(self) -> str:
         """Render whether a lone oldest yields, and the role it is chosen among."""
         return f"KeepOldest(down_if_alone={self.down_if_alone}, role={self.role!r})"
-
-
-def _seniority(member: Member) -> tuple[float, str]:
-    """Order members oldest first, by when the leader accepted them.
-
-    A lower `up_number` was accepted earlier and is older. Zero means the leader
-    has not accepted the member yet, so it has no place in the order and sorts
-    as the youngest, not the oldest. The address breaks a tie so the choice is
-    deterministic.
-
-    Args:
-        member: The member to place.
-
-    Returns:
-        Its sort key, lowest being oldest.
-    """
-    return (member.up_number if member.up_number else math.inf, member.address)
 
 
 @runtime_checkable

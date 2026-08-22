@@ -12,6 +12,7 @@ that learns of a `Down` can never un-learn it, however old the gossip that
 told it.
 """
 
+import math
 from enum import StrEnum
 from typing import Annotated, Final, final
 
@@ -20,7 +21,7 @@ from pydantic import AfterValidator
 from tapio.message import Message
 from tapio.remote.address import Address
 
-__all__ = ["AddressStr", "Member", "MemberStatus", "rank_of", "sort_key"]
+__all__ = ["AddressStr", "Member", "MemberStatus", "rank_of", "seniority", "sort_key"]
 
 
 def _parses_as_an_address(text: str) -> str:
@@ -238,3 +239,25 @@ def sort_key(member: Member) -> tuple[str, int]:
         Its sort key.
     """
     return member.key
+
+
+def seniority(member: Member) -> tuple[float, str]:
+    """Order members oldest first, by when the leader accepted them.
+
+    A lower `up_number` was accepted earlier and is older. Zero means the leader
+    has not accepted the member yet, so it has no place in the order and sorts
+    as the youngest, not the oldest. The address breaks a tie so the choice is
+    deterministic, which is what matters before the first acceptance when every
+    `up_number` is still zero.
+
+    This is the one definition of "oldest member" the cluster has, shared by
+    every feature that reaches for it, so a downing strategy and a singleton
+    cannot disagree about which member that is.
+
+    Args:
+        member: The member to place.
+
+    Returns:
+        Its sort key, lowest being oldest.
+    """
+    return (member.up_number if member.up_number else math.inf, member.address)
