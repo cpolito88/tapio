@@ -206,11 +206,14 @@ handshake as a reply would let a peer whose links churn faster than
 `unreachable_after` look healthy forever without ever answering, which is the
 failure the watching exists to catch.
 
-Silence is judged behind an interface, and today it is a fixed window. A fixed
-window has no opinion about how variable a network is, so
-`unreachable_after` has to sit well above `heartbeat_interval` or a slow
-moment reads as a dead node. Phi-accrual, which learns the spread of a peer's
-timings instead of being told a number, fits behind the same interface.
+Silence is judged behind an interface. The default is a fixed window, which has
+no opinion about how variable a network is, so `unreachable_after` has to sit
+well above `heartbeat_interval` or a slow moment reads as a dead node. Setting
+`phi_accrual` switches to a phi-accrual detector, which learns the spread of a
+peer's timings instead of being told a number and suspects it on a scale that
+means the same confidence whether the link is fast and steady or slow and
+jittery. It reads the same interface, so nothing else about the monitor
+changes, and `phi_threshold` and `phi_acceptable_pause` tune it.
 
 ### One rule this contradicts
 

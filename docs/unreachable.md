@@ -105,9 +105,10 @@ the writer is, or accept that a false positive costs you a rebuild.
 This is a known temporary position, not a permanent one. Two things change it,
 and today's defaults are chosen to survive both unchanged:
 
-- **A phi-accrual failure detector** replaces the fixed timeout, which cuts the
-  false-positive rate by treating a peer that is late as a probability rather
-  than a deadline. This is still ahead.
+- **A phi-accrual failure detector** cuts the false-positive rate by treating a
+  peer that is late as a probability rather than a deadline. It has landed for
+  the cluster's failure detector, where `phi_accrual` selects it; the plain
+  two-node association on this page still uses the fixed window described above.
 - **Membership with a downing strategy** makes the surviving side a fact
   rather than a guess. With a lease, the side that holds it keeps working and
   the other side stops, which is a real answer rather than two contradictory
