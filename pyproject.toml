@@ -23,6 +23,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: Implementation :: CPython",
     "Operating System :: OS Independent",
     "Topic :: Software Development :: Libraries :: Application Frameworks",
@@ -30,6 +31,10 @@ classifiers = [
 ]
 dependencies = [
     "pydantic>=2.7",
+    # Python 3.14 needs a pydantic whose pinned pydantic-core ships cp314
+    # wheels, which starts at 2.12 (2.11 pins pydantic-core 2.33, with no
+    # 3.14 wheel to install). Older interpreters keep the 2.7 floor.
+    "pydantic>=2.12; python_version >= '3.14'",
     "pydantic-settings>=2.2",
     "typer>=0.12",
     "typing-extensions>=4.10",
