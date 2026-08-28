@@ -84,16 +84,19 @@ def test_one_observer_retracting_does_not_speak_for_another():
     assert not half_healed.is_reachable(GAMMA)
 
 
-def test_a_removed_node_is_forgotten_as_observer_and_as_observed():
-    table = (
-        Reachability()
-        .observing(ALPHA, BETA, UNREACHABLE)
-        .observing(BETA, GAMMA, UNREACHABLE)
-    )
+def test_a_forgotten_observation_is_filtered_not_deleted_so_a_merge_cannot_undo_it():
+    # An observation by a member that is gone is ignored, not removed. Left in
+    # the table, it survives a merge with a peer that still holds it, which a
+    # deletion would not: reachability is judged on who is alive, and BETA is
+    # not, so its claim about GAMMA never counts however the tables meet.
+    table = Reachability().observing(BETA, GAMMA, UNREACHABLE)
+    live = frozenset({ALPHA, GAMMA})
 
-    left = table.without(BETA)
+    merged = table.merge(Reachability().observing(BETA, GAMMA, UNREACHABLE))
 
-    assert left.records == ()
+    assert merged.says(BETA, GAMMA) is UNREACHABLE
+    assert merged.is_reachable(GAMMA, live)
+    assert merged.unreachable_among(live) == frozenset()
 
 
 def test_an_unreachable_record_wins_a_tie_on_version():

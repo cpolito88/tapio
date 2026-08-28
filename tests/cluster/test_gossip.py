@@ -368,20 +368,34 @@ def test_a_downed_member_is_removed():
     assert leader_actions(state).member(ALPHA).status is MemberStatus.REMOVED
 
 
-def test_removing_a_member_forgets_what_was_observed_about_it():
-    state = Gossip(
-        members=(up(ALPHA).with_status(MemberStatus.EXITING), up(BETA)),
+def test_a_removed_observers_claim_is_kept_but_stops_counting():
+    # BETA said GAMMA was unreachable, then left. Its claim is not deleted when
+    # BETA reaches removed, because deleting it is not a join: a peer still
+    # holding the pre-removal view would merge it back. It is kept and ignored
+    # instead, since BETA is no longer a live member, and that holds however
+    # the tables meet.
+    before = Gossip(
+        members=(up(ALPHA), up(BETA).with_status(MemberStatus.EXITING), up(GAMMA)),
+        seen=frozenset({ALPHA, BETA, GAMMA}),
         reachability=Reachability().observing(
-            BETA, ALPHA, ReachabilityStatus.UNREACHABLE
+            BETA, GAMMA, ReachabilityStatus.UNREACHABLE
         ),
     )
 
-    removed = leader_actions(state)
+    removed = leader_actions(before)
+    assert removed.member(BETA).status is MemberStatus.REMOVED
 
-    # Otherwise the cluster would go on reporting a member unreachable that it
-    # has already written off, and block convergence on nobody's behalf.
-    assert removed.reachability.records == ()
-    assert removed.converged is False or removed.seen == state.seen
+    # The record is kept rather than dropped, but it no longer pins GAMMA,
+    # since BETA is no longer among the observers that count.
+    assert removed.reachability.says(BETA, GAMMA) is ReachabilityStatus.UNREACHABLE
+    assert GAMMA not in removed.unreachable
+
+    # A peer still holding the pre-removal view merges in. The record is in
+    # both, but BETA's tombstone travels with it, so GAMMA stays reachable. A
+    # deletion would have let this merge bring the claim back.
+    merged = removed.merge(before)
+    assert merged.reachability.says(BETA, GAMMA) is ReachabilityStatus.UNREACHABLE
+    assert GAMMA not in merged.unreachable
 
 
 def test_the_leader_has_nothing_to_do_in_a_settled_cluster():

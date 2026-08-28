@@ -338,7 +338,10 @@ def leader_actions(state: Gossip) -> Gossip:
     A member that reaches `Removed` is kept as a tombstone rather than
     dropped. Dropping it would let a peer holding an older view put it back
     by merging the record in again, since a merge unions the members it is
-    given.
+    given. Its reachability observations are kept for the same reason and for
+    the same mechanism: they are ignored because their observer is no longer a
+    live member, not deleted, since deleting them is not a join and a merge
+    would undo it.
 
     Args:
         state: The converged view.
@@ -354,14 +357,6 @@ def leader_actions(state: Gossip) -> Gossip:
                 continue
             number = _next_up_number(moved) if target is MemberStatus.UP else 0
             moved = moved.with_member(member.with_status(target, up_number=number))
-            if target is MemberStatus.REMOVED:
-                # Its observations go with it. Keeping them would leave the
-                # cluster reporting a member unreachable that it has already
-                # written off, and blocking convergence on a node nobody is
-                # waiting for.
-                moved = moved.model_copy(
-                    update={"reachability": moved.reachability.without(member.address)}
-                )
             break
     return moved
 
