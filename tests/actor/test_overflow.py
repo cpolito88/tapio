@@ -147,6 +147,30 @@ async def test_cancelling_one_waiter_does_not_strand_the_others():
     assert mailbox.user_size == 1
 
 
+async def test_a_sender_cancelled_after_being_granted_a_slot_passes_it_on():
+    # A freed slot is committed to one waiting sender before that sender
+    # resumes. If it is cancelled in that window the slot must move on to the
+    # next sender, not vanish, or the whole lane wedges over free capacity.
+    mailbox = bounded(1, OverflowStrategy.FAIL)
+    mailbox.put(Ping(n=0))
+
+    first = asyncio.create_task(mailbox.offer(Ping(n=1)))
+    second = asyncio.create_task(mailbox.offer(Ping(n=2)))
+    await asyncio.sleep(0)
+
+    # The slot is freed and granted to `first` before it is cancelled, which
+    # is the ordering test_cancelling_one_waiter_does_not_strand_the_others
+    # never reaches: there the cancel lands while both are still parked.
+    await mailbox.get()
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    async with asyncio.timeout(1):
+        await second
+    assert mailbox.user_size == 1
+
+
 async def test_closing_releases_every_blocked_sender():
     mailbox = bounded(1, OverflowStrategy.FAIL)
     mailbox.put(Ping(n=0))

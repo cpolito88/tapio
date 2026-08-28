@@ -221,6 +221,14 @@ class Mailbox:
             except asyncio.CancelledError:
                 with contextlib.suppress(ValueError):
                     self._space.remove(waiter)
+                # A slot already granted to this sender must not die with it.
+                # The `remove` above is a no-op in that case, because
+                # `_release_slot` had already taken the future out of the
+                # queue and resolved it, so the handover has to be made
+                # explicitly or the freed slot is lost and every other parked
+                # sender stays parked over an empty lane.
+                if waiter.done() and not waiter.cancelled():
+                    self._release_slot()
                 raise
             served = True
         self._append(message)
