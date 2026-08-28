@@ -84,7 +84,9 @@ class Reachability(Message):
         """Return the table in which everyone can hear everyone."""
         return cls()
 
-    def is_reachable(self, address: str) -> bool:
+    def is_reachable(
+        self, address: str, observers: frozenset[str] | None = None
+    ) -> bool:
         """Whether every observer that has an opinion can hear this node.
 
         One observer is enough to make a node unreachable, because a node that
@@ -93,14 +95,20 @@ class Reachability(Message):
 
         Args:
             address: The node in question.
+            observers: The observers whose opinion still counts, or `None` to
+                count every observer. A caller passes the live members here so
+                that a record left by a member since downed no longer pins a
+                healthy node unreachable, which is a claim nobody living is
+                making and nobody can retract.
 
         Returns:
-            Whether nobody currently reports it unreachable.
+            Whether nobody who still counts reports it unreachable.
         """
         return all(
             record.status is not ReachabilityStatus.UNREACHABLE
             for record in self.records
             if record.observed == address
+            and (observers is None or record.observer in observers)
         )
 
     @property
@@ -110,6 +118,28 @@ class Reachability(Message):
             record.observed
             for record in self.records
             if record.status is ReachabilityStatus.UNREACHABLE
+        )
+
+    def unreachable_among(self, observers: frozenset[str]) -> frozenset[str]:
+        """Every node an observer that still counts currently cannot hear.
+
+        The observer-filtered counterpart of
+        [unreachable][tapio.cluster.reachability.Reachability.unreachable]. A
+        record left by a member since downed is skipped, so a dead node's stale
+        claim neither blocks convergence nor steers a downing strategy.
+
+        Args:
+            observers: The observers whose opinion still counts, which is the
+                live members.
+
+        Returns:
+            The observed nodes at least one live observer cannot hear.
+        """
+        return frozenset(
+            record.observed
+            for record in self.records
+            if record.status is ReachabilityStatus.UNREACHABLE
+            and record.observer in observers
         )
 
     def says(self, observer: str, observed: str) -> ReachabilityStatus:

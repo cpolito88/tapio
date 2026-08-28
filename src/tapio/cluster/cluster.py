@@ -291,7 +291,7 @@ class Cluster:
             reachability.
         """
         state = self._daemon.state
-        unreachable = state.reachability.unreachable
+        unreachable = state.unreachable
         live = self._live_members(state)
         addresses = {member.address for member in live}
         members = [

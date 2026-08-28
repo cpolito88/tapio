@@ -238,6 +238,27 @@ def test_a_downed_member_neither_blocks_convergence_nor_takes_part_in_it():
     assert state.converged
 
 
+def test_a_downed_members_observation_stops_counting():
+    # The mirror of the test above, with the roles swapped: the observer is
+    # downed, not the observed. ALPHA said BETA was unreachable and was then
+    # downed. Only ALPHA could ever retract that, and it is gone, so left
+    # counting it would pin the healthy BETA unreachable for good: the view
+    # would never converge, and a downing strategy would be steered to down a
+    # member that is answering. Judging reachability on live observers only is
+    # what stops that.
+    state = Gossip(
+        members=(up(ALPHA).with_status(MemberStatus.DOWN), up(BETA)),
+        seen=frozenset({BETA}),
+        reachability=Reachability().observing(
+            ALPHA, BETA, ReachabilityStatus.UNREACHABLE
+        ),
+    )
+
+    assert state.converged
+    assert BETA not in state.unreachable
+    assert state.leader == BETA
+
+
 def test_a_new_version_is_seen_by_nobody_but_its_author():
     state = Gossip(members=(up(ALPHA), up(BETA)), seen=frozenset({ALPHA, BETA}))
 

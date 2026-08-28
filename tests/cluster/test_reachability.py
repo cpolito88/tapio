@@ -28,6 +28,31 @@ def test_one_observer_is_enough_to_make_a_node_unreachable():
     assert table.unreachable == frozenset({BETA})
 
 
+def test_an_observation_by_a_stale_observer_can_be_filtered_out():
+    # A member that made an observation and was then downed can never retract
+    # it, so the reader filters by who still counts: pass the live observers
+    # and a dead node's claim is skipped, both when asking about one node and
+    # when listing them all.
+    table = (
+        Reachability()
+        .observing(ALPHA, GAMMA, UNREACHABLE)
+        .observing(BETA, GAMMA, UNREACHABLE)
+    )
+    live = frozenset({BETA, GAMMA})
+
+    # ALPHA is gone, so only BETA's claim about GAMMA still counts.
+    assert not table.is_reachable(GAMMA, live)
+    assert table.unreachable_among(live) == frozenset({GAMMA})
+
+    # With ALPHA the only claimant gone, GAMMA is reachable again.
+    only_alpha = Reachability().observing(ALPHA, GAMMA, UNREACHABLE)
+    assert only_alpha.is_reachable(GAMMA, live)
+    assert only_alpha.unreachable_among(live) == frozenset()
+    # Unfiltered, the record still stands: the filter is the caller's choice.
+    assert not only_alpha.is_reachable(GAMMA)
+    assert only_alpha.unreachable == frozenset({GAMMA})
+
+
 def test_an_observer_can_take_back_what_it_said():
     table = Reachability().observing(ALPHA, BETA, UNREACHABLE)
 
