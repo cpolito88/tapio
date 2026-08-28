@@ -493,6 +493,56 @@ async def test_a_peer_that_accepts_no_bytes_is_declared_unreachable():
             await two.terminate()
 
 
+async def test_a_close_from_the_reader_survives_a_full_outbound_lane():
+    # The interleaving TAP-09 describes. The link is up, the peer stops
+    # reading, the bounded outbound lane fills, and then the peer closes the
+    # socket. The reader raises on the closed link and asks the association to
+    # close, and that Close travels the same full lane. It must not be refused:
+    # if it is, the reader task dies with a MailboxFullError, `_release` never
+    # runs, and the socket and task leak while `_closing` blocks every retry.
+    with assert_no_leaked_tasks():
+        one = ActorSystem(
+            "alpha",
+            remoting(
+                outbound_capacity=2,
+                unreachable_after=timedelta(milliseconds=300),
+                heartbeat_interval=timedelta(seconds=60),
+            ),
+        )
+        two = ActorSystem("beta", remoting())
+        try:
+            assert one.remote is not None
+            one.remote.set_link_filter(stalled_writes(after=1))
+            seen: list[int] = []
+            ticker = two.spawn(counting(seen), "ticker")
+
+            remote = await one.resolve(uri(two, ticker), expect=Tick)
+            remote.tell(Tick(n=1))
+            await eventually(lambda: seen == [1])
+
+            # This one parks the association inside a stalled write, so the
+            # writes that follow queue in the mailbox behind it.
+            remote.tell(Tick(n=2))
+            await asyncio.sleep(0.05)
+            # Fill the bounded lane, so a Close has no slot to land in.
+            remote.tell(Tick(n=3))
+            remote.tell(Tick(n=4))
+
+            # The peer closing is what makes the reader give up on the link and
+            # call close() while the lane is full.
+            await two.terminate()
+
+            # With the guard, the actor stops on its next turn and the
+            # association is released. Without it, this never happens.
+            await eventually(
+                lambda: one.remote.associations == (),  # type: ignore[union-attr]
+                within=5.0,
+            )
+        finally:
+            await one.terminate()
+            await two.terminate()
+
+
 async def test_a_watch_that_cannot_be_sent_is_answered_at_once():
     # A watch travels through the same mailbox as user traffic, so a full
     # outbound buffer can drop it. The peer then never registers it and no

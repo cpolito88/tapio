@@ -549,7 +549,22 @@ class Association:
         self._fail_ready(detail)
         ref = self._ref
         if ref is not None:
-            ref.tell(Close(detail=detail))
+            try:
+                ref.tell(Close(detail=detail))
+            except MailboxFullError:
+                # Three of this method's callers run in the reader task, where
+                # the bounded outbound lane can be completely full, so the stop
+                # cannot be queued. `_closing` is already set, so the actor
+                # stops on its next turn instead: `_on_message` turns any
+                # further message into a stop. Without this guard the
+                # MailboxFullError would escape the reader task and leave the
+                # association wedged, since every later verdict short-circuits
+                # on `_closing` and never retries the close.
+                _log.debug(
+                    "outbound lane to %s is full; the association will stop on "
+                    "its next turn",
+                    self._peer,
+                )
 
     async def detach(self) -> None:
         """Close the link when this association's actor never got to stop.
@@ -643,6 +658,13 @@ class Association:
         self, message: AssociationMessage
     ) -> Behavior[AssociationMessage]:
         """Write what is queued, beat when there is nothing to write, or stop."""
+        if self._closing and not isinstance(message, Close):
+            # A close was requested but could not be queued, because the
+            # outbound lane was full when `close` ran in the reader task. Stop
+            # on the first turn after it: any further work on a closing
+            # association is moot, and stopping runs `_release`, which closes
+            # the socket and dead-letters what never left.
+            return Behaviors.stopped()
         match message:
             case Outbound():
                 await self._write(message)
