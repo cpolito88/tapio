@@ -88,10 +88,10 @@ class Directive(enum.Enum):
     """Stop this actor."""
 
     EMPTY = "empty"
-    """Handle no user message; signals still arrive."""
+    """Report every user message as unhandled; signals still arrive."""
 
     IGNORE = "ignore"
-    """Consume every message and do nothing."""
+    """Consume every user message silently; signals still arrive."""
 
     UNHANDLED = "unhandled"
     """Report the message as unhandled, keeping the current behavior."""
@@ -705,12 +705,22 @@ class Behaviors:
 
     @staticmethod
     def empty() -> Behavior[T]:
-        """Handle nothing: user messages are unhandled, signals still arrive."""
+        """Handle nothing: user messages are unhandled, signals still arrive.
+
+        A signal goes to the last real behavior the actor held, so an actor
+        that becomes `empty()` still runs its `PostStop` and still hears a
+        `Terminated` from an actor it was watching.
+        """
         return typing.cast(Behavior[T], _EMPTY)
 
     @staticmethod
     def ignore() -> Behavior[T]:
-        """Consume every message and do nothing with it."""
+        """Consume every user message silently, and keep taking signals.
+
+        Like `empty()`, except a user message is dropped without being reported
+        as unhandled. Signals still arrive, so `PostStop` runs and a held
+        resource is released.
+        """
         return typing.cast(Behavior[T], _IGNORE)
 
     @staticmethod

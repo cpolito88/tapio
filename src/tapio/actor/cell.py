@@ -370,6 +370,12 @@ class ActorCell(Generic[T]):
         # still comes back as what it started as.
         self._initial = behavior
         self._behavior: Behavior[T] = behavior
+        # The last behavior that could take a signal. A directive such as
+        # `empty()` or `ignore()` carries no handler of its own, so signals go
+        # here rather than being dropped: they still belong to the actor, and
+        # `PostStop` in particular is where a held resource is released. It is
+        # set whenever the actor becomes a real behavior and reset at restart.
+        self._signalling: ReceivingBehavior[T] | None = None
         self._supervisors: tuple[_Supervisor, ...] = ()
         # Per supervisor, not per actor. Each layer brings its own limit,
         # window and backoff, and they are separate budgets: one layer's
@@ -474,7 +480,7 @@ class ActorCell(Generic[T]):
         known by then.
         """
         behavior = self._evaluate(self._initial)
-        self._behavior = behavior
+        self._install_behavior(behavior)
         if directive_of(behavior) is Directive.STOPPED:
             # Deferred construction decided there was nothing to run. The
             # caller still gets a ref, and what it sends dead-letters.
@@ -905,8 +911,14 @@ class ActorCell(Generic[T]):
         return translated
 
     async def _deliver_signal(self, signal: Signal) -> Behavior[T] | None:
-        """Hand a signal to the behavior, or `None` if it has no handler."""
-        behavior = self._behavior
+        """Hand a signal to the behavior, or `None` if it has no handler.
+
+        A directive such as `empty()` or `ignore()` carries no handler of its
+        own, so the signal goes to the last real behavior instead. That is what
+        keeps `PostStop` running its resource release, and `Terminated`
+        reaching a watcher, after an actor has switched to a directive.
+        """
+        behavior = self._signalling
         if not isinstance(behavior, ReceivingBehavior):
             return None
         return await behavior.receive_signal(self._ctx, signal)
@@ -1011,8 +1023,12 @@ class ActorCell(Generic[T]):
             if not await self._backoff(delay):
                 return
 
+        # The failed incarnation's signal handler is not the new one's. Drop it
+        # before rebuilding, so a restart that lands on a directive carries no
+        # stale handler across.
+        self._signalling = None
         try:
-            self._behavior = self._evaluate(self._initial)
+            self._install_behavior(self._evaluate(self._initial))
         except Exception:
             # The behavior itself cannot be rebuilt, so there is nothing to
             # restart into. Failing the restart the same way twice is a loop,
@@ -1112,7 +1128,19 @@ class ActorCell(Generic[T]):
         if directive is Directive.STOPPED:
             await self._stop_self()
             return
-        self._behavior = self._evaluate(nxt, keep_supervisors=True)
+        self._install_behavior(self._evaluate(nxt, keep_supervisors=True))
+
+    def _install_behavior(self, behavior: Behavior[T]) -> None:
+        """Adopt a behavior, remembering it for signals when it can take them.
+
+        A directive carries no signal handler, so it is held as the current
+        behavior but does not become the signal target. That leaves
+        `self._signalling` pointing at the last real behavior, which is where a
+        later `PostStop` or `Terminated` is delivered.
+        """
+        self._behavior = behavior
+        if isinstance(behavior, ReceivingBehavior):
+            self._signalling = behavior
 
     async def _stop_self(self) -> None:
         """Stop because this actor asked to, rather than because a parent did."""
