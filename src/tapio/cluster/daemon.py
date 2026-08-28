@@ -426,19 +426,29 @@ class ClusterDaemon:
             self._subscription = None
 
     def _link_changed(self, message: LinkChanged) -> None:
-        """Take what the transport saw as evidence about a member this node watches.
+        """Take what the transport saw as evidence about any member of this cluster.
 
-        It is narrow on purpose. Only a member on this node's ring is
-        recorded: a peer this system talks to but has not clustered with is
-        nobody's business, and a member somebody else watches is judged by the
-        node whose job it is rather than by whichever node happened to send it
-        something.
+        A member on this node's ring is judged by both sources at once: this
+        observation is folded in with the node's own probe, and the worse of
+        the two stands. A member this node does not watch is judged by the
+        transport alone, because that is the only evidence this node has about
+        it, and it is real evidence: a link this node cannot keep to a member
+        is a member this node cannot reach.
 
-        The transport's verdict is worth having next to this node's own probe
-        because it arrives sooner. A link that failed is known now, while the
-        probe is still inside a window that has not run out. It is retracted
-        by the link coming back and by nothing else, since an answer to a
-        probe says nothing about what the transport is refusing to carry.
+        Recording the unwatched member matters for partition safety. A node
+        watches only `monitored_peers` of the far side, so on a split larger
+        than that the ring reaches only a slice of it. If the rest went
+        unrecorded, each side would count the far members it does not watch as
+        its own and both sides could call themselves the majority. The
+        transport's verdict fills that gap, since a partition drops every link
+        across it, not only the watched ones.
+
+        A peer this system talks to but has not clustered with is still
+        nobody's business: its record would never be cleaned up, so it is
+        ignored. The transport's verdict is also worth having next to the
+        probe because it arrives sooner, and it is retracted by the link
+        coming back and by nothing else, since an answer to a probe says
+        nothing about what the transport is refusing to carry.
         """
         now = _now()
         watched = (
@@ -446,9 +456,16 @@ class ClusterDaemon:
             if message.reachable
             else self._monitor.link_lost(message.peer)
         )
-        if not watched:
+        if watched:
+            self._observe(message.peer, self._monitor.verdicts(now)[message.peer])
             return
-        self._observe(message.peer, self._monitor.verdicts(now)[message.peer])
+        if any(member.address == message.peer for member in self._state.alive):
+            self._observe(
+                message.peer,
+                ReachabilityStatus.REACHABLE
+                if message.reachable
+                else ReachabilityStatus.UNREACHABLE,
+            )
 
     def _follow_the_ring(self) -> None:
         """Watch what the current membership says this node should watch.
