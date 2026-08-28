@@ -138,6 +138,26 @@ class Gossip(Message):
         """Every member that has not been downed or removed."""
         return tuple(m for m in self.members if m.status not in _GONE)
 
+    def _live_observers(self) -> frozenset[str]:
+        """The addresses whose observations still count, which is the live members.
+
+        A member that has been downed or removed may have said another was
+        unreachable before it went. That claim has to stop counting, because
+        the observer that made it is gone and only it could ever retract it, so
+        left in place it would pin a healthy node unreachable for good.
+        """
+        return frozenset(m.address for m in self.alive)
+
+    @property
+    def unreachable(self) -> frozenset[str]:
+        """Every node a live observer currently cannot hear.
+
+        Judged only on observations by members that are still alive, so a
+        record left behind by a downed member neither blocks convergence nor
+        steers a downing strategy.
+        """
+        return self.reachability.unreachable_among(self._live_observers())
+
     @property
     def leader(self) -> str | None:
         """The node allowed to act, when the view is converged.
@@ -151,10 +171,12 @@ class Gossip(Message):
         Returns:
             The leader's address, or `None` when there is nobody to lead.
         """
+        observers = self._live_observers()
         candidates = [
             m
             for m in sorted(self.members, key=sort_key)
-            if m.status not in _GONE and self.reachability.is_reachable(m.address)
+            if m.status not in _GONE
+            and self.reachability.is_reachable(m.address, observers)
         ]
         if not candidates:
             return None
@@ -170,10 +192,11 @@ class Gossip(Message):
         so one unreachable member stops the leader from acting until somebody
         decides what to do about it.
         """
+        observers = self._live_observers()
         for member in self.members:
             if member.status in _GONE:
                 continue
-            if not self.reachability.is_reachable(member.address):
+            if not self.reachability.is_reachable(member.address, observers):
                 return False
             if member.address not in self.seen:
                 return False

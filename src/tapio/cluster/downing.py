@@ -101,7 +101,7 @@ def _sides(state: Gossip) -> tuple[tuple[Member, ...], tuple[Member, ...]]:
         order. This node is always among the reachable, since a node never
         reports itself unreachable.
     """
-    gone = state.reachability.unreachable
+    gone = state.unreachable
     reachable = tuple(m for m in state.alive if m.address not in gone)
     unreachable = tuple(m for m in state.alive if m.address in gone)
     return reachable, unreachable

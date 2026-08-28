@@ -856,8 +856,8 @@ class ClusterDaemon:
         self._apply_downing(await self._strategy.decide(self._state))
 
     def _unreachable_alive(self) -> frozenset[str]:
-        """The live members at least one observer currently cannot hear."""
-        gone = self._state.reachability.unreachable
+        """The live members at least one live observer currently cannot hear."""
+        gone = self._state.unreachable
         return frozenset(m.address for m in self._state.alive if m.address in gone)
 
     def _apply_downing(self, verdict: frozenset[str]) -> None:
