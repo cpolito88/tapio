@@ -201,6 +201,19 @@ back the first, and a link coming up again brings back the second. An answer
 never retracts what the transport said, since a peer that remoting is refusing
 to carry frames to cannot answer at all.
 
+The probe follows the ring, but the transport's verdict is recorded for every
+member, including the ones off this node's ring. This matters for a downing
+strategy's safety. A strategy is safe because the two sides of a partition feed
+it mirror-image views: each side sees the whole of the other as unreachable and
+names the same losing side without a message crossing the split. A node's ring
+reaches only `monitored_peers` of the far side, so on a partition larger than
+that the probe alone would leave each side seeing only a slice of the other and
+counting the rest as its own, and then both sides can call themselves the
+majority. The transport fills the gap, because a partition drops every link
+across it and not only the watched ones. A strategy's safety therefore depends
+on the split being fully observed this way, which is a property of the
+transport noticing every dropped link, not of the ring.
+
 A link coming up is not an answer either. It proves a process is accepting
 connections, and what this node is asking is whether the daemon behind it is
 still replying, so the next probe settles that one round later. Reading a
