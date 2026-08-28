@@ -191,6 +191,41 @@ async def test_terminate_is_idempotent_and_reported():
     assert repr(system) == "ActorSystem('twice', terminating)"
 
 
+async def test_a_cancelled_terminate_does_not_wedge_the_system():
+    # __aexit__ calls terminate(), and a process being shut down is exactly
+    # when the enclosing task gets cancelled: a second SIGINT, a supervising
+    # TaskGroup unwinding, a timeout around the drain. The shutdown the caller
+    # asked for must still finish, because the drain is the system's task and
+    # not the caller's.
+    settings = TapioSettings(shutdown_timeout=timedelta(seconds=0.2))
+
+    def wedged() -> Behavior[Increment]:
+        async def on_message(message: Increment) -> Behavior[Increment]:
+            await asyncio.sleep(30)
+            return Behaviors.same()
+
+        return Behaviors.receive_message(on_message)
+
+    with assert_no_leaked_tasks():
+        system = ActorSystem("cancelled-drain", settings)
+        actor = system.spawn(wedged(), name="worker")
+        # In a handler when the stop arrives, so terminate() has real awaits to
+        # be cancelled at rather than returning at once.
+        actor.tell(Increment())
+        await asyncio.sleep(0.05)
+
+        shutting = asyncio.create_task(system.terminate())
+        await asyncio.sleep(0)
+        shutting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await shutting
+
+        # The drain the caller abandoned still runs to completion.
+        async with asyncio.timeout(15):
+            await system.when_terminated()
+        assert system.is_terminating
+
+
 async def test_a_system_needs_a_running_loop():
     with pytest.raises(RuntimeError):
         await asyncio.to_thread(ActorSystem, "off-loop")
@@ -198,10 +233,10 @@ async def test_a_system_needs_a_running_loop():
 
 async def test_the_shutdown_after_a_guardian_failure_is_a_task_the_system_holds():
     # A guardian failure terminates the tree from a task nobody awaits. The
-    # loop keeps only a weak reference to a task, so the system has to keep
-    # the strong one or a sweep can be collected halfway through. Asserted on
-    # the attribute because a garbage collection this test could force would
-    # not reliably reclaim it: the point is that nothing has to.
+    # loop keeps only a weak reference to a task, so the system has to keep the
+    # strong one or a sweep can be collected halfway through. Asserted on the
+    # attribute because a garbage collection this test could force would not
+    # reliably reclaim it: the point is that nothing has to.
     with assert_no_leaked_tasks():
         system = ActorSystem("escalating")
         actor = system.spawn(
@@ -213,7 +248,9 @@ async def test_the_shutdown_after_a_guardian_failure_is_a_task_the_system_holds(
         with pytest.raises(BoomError):
             await system.when_terminated()
 
-        held = system._terminator
+        # The drain carries the sweep to the end, and when_terminated returns
+        # only once the drain has set the event, so it is finished here.
+        held = system._draining
         assert held is not None
         assert held.done()
 

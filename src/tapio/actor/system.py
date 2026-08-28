@@ -196,7 +196,13 @@ class ActorSystem:
         # The loop holds only a weak reference to a task, so the system holds
         # this one: a shutdown sweep collected halfway through would leave the
         # tree half-stopped with nothing to say so.
-        self._terminator: asyncio.Task[None] | None = None
+        # The drain runs as its own task, held here for two reasons. A caller
+        # of terminate() that gives up waiting must not cancel the shutdown it
+        # asked for, so the work cannot live on the caller's task. And a
+        # guardian failure starts the same drain from a receive loop nobody
+        # awaits, where the loop keeps only a weak reference to a task, so the
+        # strong one has to be the system's or a sweep can be collected halfway.
+        self._draining: asyncio.Task[None] | None = None
         self._failure: BaseException | None = None
 
         self._user: ActorCell[_GuardianMessage] = self._guardian_cell("user")
@@ -595,27 +601,35 @@ class ActorSystem:
         """
         if self._failure is None:
             self._failure = error
-        if self._terminating:
-            return
-        self._terminator = self._runtime.dispatcher.spawn_task(
-            self.terminate(), name=f"tapio-terminate:{path}"
-        )
+        if not self._terminating:
+            self._begin_termination()
 
-    async def terminate(self) -> None:
-        """Stop every actor, bottom-up, and wait for the tree to drain.
+    def _begin_termination(self) -> asyncio.Task[None]:
+        """Start the drain once, and return the task that carries it.
+
+        Idempotent: the first caller spawns the drain and every later one gets
+        the same task back. Both `terminate` and a guardian failure come
+        through here, so there is exactly one drain however the shutdown began.
+        """
+        if self._draining is None:
+            self._terminating = True
+            self._draining = self._runtime.dispatcher.spawn_task(
+                self._drain(), name=f"tapio-drain:{self.name}"
+            )
+        return self._draining
+
+    async def _drain(self) -> None:
+        """Stop the tree and the pool, then mark the system terminated.
+
+        This is the actual shutdown work. It is owned by the system, not by
+        whoever called `terminate`, so a cancelled caller cannot leave the
+        tree half-stopped.
 
         Every cell races one deadline taken from `shutdown_timeout`, so the
         worst case follows that setting and not the depth of the tree. An
         actor still stuck in a handler when the deadline passes is cancelled,
         and the warning names it.
-
-        Calling this more than once is safe. Later callers wait for the first.
         """
-        if self._terminating:
-            await self._terminated.wait()
-            return
-
-        self._terminating = True
         deadline = (
             self._runtime.dispatcher.now()
             + self._settings.shutdown_timeout.total_seconds()
@@ -634,6 +648,21 @@ class ActorSystem:
         self._runtime.terminated = True
         self._terminated.set()
         self._log.debug("terminated")
+
+    async def terminate(self) -> None:
+        """Stop every actor, bottom-up, and wait for the tree to drain.
+
+        Calling this more than once is safe, and so is being cancelled while
+        it runs. The drain itself is a task the system owns, so a caller that
+        gives up waiting, or is cancelled at a bad moment, does not cancel the
+        shutdown: the tree still finishes and later callers still see it. This
+        is the guarantee `ActorCell.stop` keeps for a single cell, one level
+        up for the whole tree.
+        """
+        draining = self._begin_termination()
+        # Shielded for the reason ActorCell.stop is: a caller that gives up
+        # waiting must not cancel the shutdown it asked for.
+        await asyncio.shield(draining)
 
     async def when_terminated(self) -> None:
         """Wait until the system has finished shutting down.
