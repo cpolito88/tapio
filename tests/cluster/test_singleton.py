@@ -100,6 +100,36 @@ async def test_a_singleton_runs_on_the_oldest_member_alone():
             assert probe.max_seen == 1
 
 
+async def test_a_graceful_leave_does_not_overlap_two_instances():
+    probe = Probe()
+    with assert_no_leaked_tasks():
+        async with cluster_of(3) as nodes:
+            await joined(nodes)
+            for node in nodes:
+                node.system.spawn(
+                    ClusterSingleton(instance(probe, node.address), name="coordinator"),
+                    name="singleton",
+                )
+            await eventually(lambda: len(probe.running) == 1, within=5.0)
+            host = next(iter(probe.running))
+            host_node = next(node for node in nodes if node.address == host)
+
+            # A graceful leave, not a crash. The host walks out through
+            # leaving, exiting and removed, and it is the node that drives its
+            # own transition, so it hears MemberLeaving first and lets its
+            # instance go before a successor computed from the removal starts.
+            await host_node.cluster.leave()
+
+            await eventually(
+                lambda: len(probe.running) == 1 and host not in probe.running,
+                within=15.0,
+            )
+            # The one that matters: the successor never ran beside the host,
+            # even for the gossip round between leaving and removed.
+            assert probe.max_seen == 1
+            assert any(address != host for address in probe.starts)
+
+
 async def test_a_singleton_reappears_when_its_host_is_removed():
     probe = Probe()
     with assert_no_leaked_tasks():

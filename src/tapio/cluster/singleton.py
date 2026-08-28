@@ -13,14 +13,19 @@ a total order every node computes the same way from the same gossip. So at a
 converged view exactly one manager runs the instance, with no election and no
 lock.
 
-Handoff is triggered by removal. When the host is removed, whether it left
-gracefully or was downed, every manager hears
-[MemberRemoved][tapio.cluster.events.MemberRemoved] and recomputes the oldest.
-The new oldest starts the instance; the old host, if its system is still
-running, stops the one it was holding. Starting the successor only once the
-host is *removed*, rather than the moment it starts leaving, is what keeps the
-two from overlapping: a crashed host runs nothing, and a host leaving
-gracefully has stopped its instance by the time it reaches `removed`.
+Handoff is triggered by a host going away. A crash is only ever seen as
+removal: every manager hears
+[MemberRemoved][tapio.cluster.events.MemberRemoved], recomputes the oldest, and
+the new oldest starts the instance. A graceful leave is seen earlier, as
+[MemberLeaving][tapio.cluster.events.MemberLeaving], one or more converged
+rounds before the removal. The leaving host drives its own transition, so its
+manager hears `MemberLeaving` first and lets its instance go before any
+successor starts. That order is what keeps the two from overlapping. Starting
+the successor only at removal did not: leadership moves off a member once it
+reaches `exiting`, so the successor learns of the removal first, from its own
+leader actions, and would start while the old host, hearing the removal a round
+or more later, was still running its instance. `MemberRemoved` still drives the
+crash path, where there is no leave to hear.
 
 This is not a proxy. It places the instance and keeps it placed; sending to
 wherever it currently runs is a separate concern, which a group router over the
@@ -35,7 +40,7 @@ from tapio.actor.context import ActorContext
 from tapio.actor.ref import ActorRef
 from tapio.actor.timers import TimerScheduler
 from tapio.cluster.daemon import local_daemon
-from tapio.cluster.events import MemberRemoved, MemberUp
+from tapio.cluster.events import MemberLeaving, MemberRemoved, MemberUp
 from tapio.cluster.member import Member, seniority
 from tapio.cluster.messages import Subscribe
 from tapio.logging import runtime_logger
@@ -66,7 +71,7 @@ class _Reconcile(Message):
     """Retry subscribing to the daemon until it has started."""
 
 
-_ManagerMessage = MemberUp | MemberRemoved | _Reconcile
+_ManagerMessage = MemberUp | MemberLeaving | MemberRemoved | _Reconcile
 
 
 def ClusterSingleton(  # noqa: N802 - a factory named as the thing it builds
@@ -189,6 +194,12 @@ class _Manager:
             case MemberUp():
                 if self._role is None or self._role in message.member.roles:
                     self._hosts[message.member.key] = message.member
+            case MemberLeaving():
+                # The predecessor lets go here rather than at MemberRemoved.
+                # Leadership has moved on by the time it reaches exiting, so a
+                # successor computed from the removal would otherwise start
+                # while this one was still running.
+                self._hosts.pop(message.member.key, None)
             case MemberRemoved():
                 self._hosts.pop(message.member.key, None)
         self._reconcile(ctx)
@@ -208,7 +219,10 @@ class _Manager:
             return
         self._daemon = daemon
         daemon.tell(
-            Subscribe(subscriber=ctx.self_ref, events=(MemberUp, MemberRemoved))
+            Subscribe(
+                subscriber=ctx.self_ref,
+                events=(MemberUp, MemberLeaving, MemberRemoved),
+            )
         )
         timers.cancel(_SUBSCRIBE_TIMER)
 
@@ -220,9 +234,10 @@ class _Manager:
             self._keeper = ctx.spawn(_keeper(self._behavior, self._name), _KEEPER_NAME)
             _log.info("%s runs cluster singleton %r", self._address, self._name)
         elif not am_host and self._keeper is not None:
-            # The host is leaving or gone, so let the instance go. A successor
-            # starts it only when this member is removed, so the two do not run
-            # at once.
+            # The host is leaving or gone, so let the instance go. On a graceful
+            # leave this node hears MemberLeaving first, since it drives its own
+            # transition, so it releases before a successor computed from the
+            # removal starts, and the two do not run at once.
             self._keeper.tell(_Handoff())
             self._keeper = None
             _log.info("%s hands off cluster singleton %r", self._address, self._name)

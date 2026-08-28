@@ -26,6 +26,7 @@ from tapio.message import Message
 __all__ = [
     "ClusterEvent",
     "LeaderChanged",
+    "MemberLeaving",
     "MemberRemoved",
     "MemberUp",
     "ReachableMember",
@@ -50,6 +51,22 @@ class MemberUp(ClusterEvent):
 
     member: Member
     """The member, with its roles and the order it was accepted in."""
+
+
+@final
+class MemberLeaving(ClusterEvent):
+    """A member began leaving gracefully, so it is on its way out.
+
+    Emitted when a member first reaches `leaving` (or `exiting`, if this node's
+    view skipped straight to it), one or more converged rounds before the
+    `removed` that follows. A crashed or downed member never reaches here: it
+    goes to `down` and is only ever seen as `removed`. This is what lets a
+    predecessor let go before a successor computed from the removal starts, so
+    the two do not overlap.
+    """
+
+    member: Member
+    """The member that is leaving, as this node last saw it."""
 
 
 @final
