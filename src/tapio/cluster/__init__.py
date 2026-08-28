@@ -31,6 +31,7 @@ from tapio.cluster.downing import (
 from tapio.cluster.events import (
     ClusterEvent,
     LeaderChanged,
+    MemberLeaving,
     MemberRemoved,
     MemberUp,
     ReachableMember,
@@ -77,6 +78,7 @@ __all__ = [
     "Leave",
     "LocalLease",
     "Member",
+    "MemberLeaving",
     "MemberRemoved",
     "MemberStatus",
     "MemberUp",

@@ -121,9 +121,9 @@ await cluster.leave()
 The member walks out rather than vanishing: `leaving`, then `exiting` once
 every node has seen it, then `removed`. Each step needs a converged view, so
 leaving takes as long as agreement takes, and every node ends up holding the
-same tombstone. Reaching `removed` is what a
-[cluster singleton](#cluster-singletons) waits for before it starts a successor,
-so a member that owns a singleton keeps it until the moment it is written off.
+same tombstone. A [cluster singleton](#cluster-singletons) on the leaving member
+lets go the moment it reaches `leaving`, before any successor starts, so a
+graceful leave never runs two instances at once.
 
 The tombstone is kept rather than pruned. Dropping the record would let a peer
 holding an older view put the member back, since merging two views unions the
@@ -267,8 +267,9 @@ actor's mailbox. An actor subscribes, and from then on it is told what changed:
 cluster.subscribe(worker, MemberUp, MemberRemoved, UnreachableMember)
 ```
 
-There are six events, all carrying the member they are about:
+There are seven events, all carrying the member they are about:
 [MemberUp][tapio.cluster.events.MemberUp],
+[MemberLeaving][tapio.cluster.events.MemberLeaving],
 [MemberRemoved][tapio.cluster.events.MemberRemoved],
 [UnreachableMember][tapio.cluster.events.UnreachableMember],
 [ReachableMember][tapio.cluster.events.ReachableMember],
@@ -325,13 +326,15 @@ leader accepted members in, which every node computes the same way from the same
 gossip. So at a converged view exactly one manager runs the instance, with no
 election and no lock.
 
-Handoff is triggered by removal. When the host is removed, whether it left
-gracefully or was downed, every manager hears `MemberRemoved` and recomputes the
-oldest. The new oldest starts the instance; the old host, if its system is still
-running, stops the one it was holding. Starting the successor only once the host
-is *removed*, rather than the moment it starts leaving, is what keeps the two
-from overlapping: a crashed host runs nothing, and a host that leaves gracefully
-has stopped its instance by the time it reaches `removed`.
+Handoff is triggered by a host going away. A crash is only ever seen as removal:
+every manager hears `MemberRemoved`, recomputes the oldest, and the new oldest
+starts the instance. A graceful leave is seen earlier, as `MemberLeaving`, one
+or more converged rounds before the removal. The leaving host drives its own
+transition, so its manager hears `MemberLeaving` first and lets its instance go
+before any successor starts. That order is what keeps the two from overlapping.
+Waiting for `removed` did not: leadership moves off a member once it reaches
+`exiting`, so the successor learns of the removal first and would start while the
+old host, hearing it a round or more later, was still running its instance.
 
 The instance is a fresh start wherever it runs, not a move of live state. What
 mattered on the old host does not cross to the new one, which is the honest

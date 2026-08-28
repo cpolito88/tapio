@@ -35,6 +35,7 @@ from tapio.cluster.downing import DownStrategy
 from tapio.cluster.events import (
     ClusterEvent,
     LeaderChanged,
+    MemberLeaving,
     MemberRemoved,
     MemberUp,
     ReachableMember,
@@ -81,6 +82,14 @@ _GOSSIP_TIMER = "gossip"
 _JOIN_TIMER = "join"
 _FORM_TIMER = "form"
 _HEARTBEAT_TIMER = "heartbeat"
+
+_LEAVING_STATUSES = frozenset({MemberStatus.LEAVING, MemberStatus.EXITING})
+"""The statuses a member holds while leaving gracefully, before it is removed.
+
+A member first reaching either of these is what `MemberLeaving` reports. Both
+are here so a view that skipped straight to `exiting` still emits the event
+once.
+"""
 
 
 async def local_daemon(
@@ -956,6 +965,15 @@ class ClusterDaemon:
                 and was_status is not MemberStatus.REMOVED
             ):
                 self._deliver(MemberRemoved(member=member))
+            elif (
+                member.status in _LEAVING_STATUSES
+                and was_status not in _LEAVING_STATUSES
+            ):
+                # A member on its way out gracefully, seen before its removal.
+                # A downed member never reaches here, so this is only the
+                # graceful path. It lets a singleton predecessor let go before
+                # a successor computed from the removal starts.
+                self._deliver(MemberLeaving(member=member))
         for address in sorted(after.unreachable - before.unreachable):
             gone = after.members.get(address)
             if gone is not None:
