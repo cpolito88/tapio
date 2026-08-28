@@ -22,6 +22,14 @@ until somebody does.
 The table has no idea where an observation came from, which is what lets the
 detector behind it be replaced. A phi-accrual detector changes how a watcher
 reaches its conclusion and not what is recorded here.
+
+An observation left by a member that has since been downed or removed is not
+deleted, it is ignored. A caller judging reachability passes the observers that
+still count, the live members, so a record whose observer is gone stops
+counting. Deleting it instead would not survive a merge: the merge is a join
+that unions per pair, so any peer still holding the record would put it back.
+Forgetting has to be a property of who is alive, which every node computes the
+same way, not a removal one node makes and another undoes.
 """
 
 from enum import StrEnum
@@ -188,25 +196,6 @@ class Reachability(Message):
             version=previous.version + 1 if previous is not None else 1,
         )
         return Reachability(records=_ordered((*kept, record)))
-
-    def without(self, address: str) -> "Reachability":
-        """Return this table with one node forgotten, as observer and observed.
-
-        A member that has been removed is nobody's business any more, and
-        keeping its observations would block convergence on a node that is
-        gone.
-
-        Args:
-            address: The node to forget.
-
-        Returns:
-            The new table.
-        """
-        return Reachability(
-            records=tuple(
-                r for r in self.records if address not in (r.observer, r.observed)
-            )
-        )
 
     def merge(self, other: "Reachability") -> "Reachability":
         """Return the table that has seen every observation both of these have.
