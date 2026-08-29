@@ -12,7 +12,7 @@ They call the resolved validator directly rather than going through `tell`.
 import re
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from tapio import Message, TapioSettings
 from tapio.actor import ActorPath, ActorRef
@@ -211,6 +211,40 @@ def test_something_that_is_not_a_type_at_all_is_refused():
 def test_a_union_containing_a_plain_basemodel_is_refused():
     with pytest.raises(MessageTypeError, match="subclasses BaseModel"):
         normalize_msg_type(Increment | NotAMessage, origin="test")
+
+
+def test_a_message_that_turns_off_revalidation_is_refused():
+    # Subclassing Message is not the guarantee, the config it carries is.
+    # revalidate_instances="never" makes re-validation on delivery a no-op,
+    # while the setting still reports as on.
+    class Loose(Message):
+        model_config = ConfigDict(revalidate_instances="never")
+        n: int
+
+    with pytest.raises(MessageTypeError, match="revalidate_instances"):
+        normalize_msg_type(Loose, origin="a test")
+
+
+def test_a_message_that_turns_off_frozen_is_refused():
+    # frozen=False breaks the sharing invariant: a sender could mutate a
+    # message a recipient already holds, across a tell that hands over the
+    # identical object.
+    class Mutable(Message):
+        model_config = ConfigDict(frozen=False)
+        n: int
+
+    with pytest.raises(MessageTypeError, match="frozen"):
+        normalize_msg_type(Mutable, origin="a test")
+
+
+def test_a_message_that_only_adds_to_the_config_is_accepted():
+    # Pydantic merges parent and child config, so an ordinary addition keeps
+    # both inherited settings. Only an explicit override of them is refused.
+    class Strict(Message):
+        model_config = ConfigDict(extra="forbid")
+        n: int
+
+    assert normalize_msg_type(Strict, origin="a test") is Strict
 
 
 def test_validation_is_on_by_default():
