@@ -47,7 +47,7 @@ _POLL_INTERVAL = 0.01
 class BlockingPool:
     """The threads one system runs blocking calls on."""
 
-    __slots__ = ("_closed", "_executor", "_prefix", "_size")
+    __slots__ = ("_closed", "_executor", "_match", "_prefix", "_size")
 
     def __init__(self, *, size: int, system: str) -> None:
         """Describe a pool without starting anything.
@@ -58,6 +58,11 @@ class BlockingPool:
         """
         self._size = size
         self._prefix = f"tapio-blocking-{system}"
+        # What the `threads` property matches on. ThreadPoolExecutor names its
+        # threads "{prefix}_{n}", so the trailing separator is what keeps a
+        # system named "orders" from claiming the threads of one named
+        # "orders-eu": "orders_" is not a prefix of "orders-eu_".
+        self._match = f"{self._prefix}_"
         self._executor: ThreadPoolExecutor | None = None
         self._closed = False
 
@@ -94,7 +99,7 @@ class BlockingPool:
         return tuple(
             thread
             for thread in threading.enumerate()
-            if thread.name.startswith(self._prefix) and thread.is_alive()
+            if thread.name.startswith(self._match) and thread.is_alive()
         )
 
     def submit(
