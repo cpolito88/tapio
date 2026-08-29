@@ -584,7 +584,12 @@ class Association:
         self._reader = None
         if reader is not None and reader is not asyncio.current_task():
             reader.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            with contextlib.suppress(BaseException):
+                # However the reader ended is not this cleanup's business:
+                # `_run` has already logged it. Suppressing only CancelledError
+                # let any other reader-task exception skip everything below,
+                # leaving the socket open, the frames undelivered and the
+                # association stuck in the endpoint's table.
                 await reader
         link = self._socket or self._accepted
         retiring, self._retiring = self._retiring, None
@@ -1042,7 +1047,12 @@ class Association:
         self._reader = None
         if reader is not None and reader is not asyncio.current_task():
             reader.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            with contextlib.suppress(BaseException):
+                # However the reader ended is not this cleanup's business:
+                # `_run` has already logged it. Suppressing only CancelledError
+                # let any other reader-task exception skip everything below,
+                # leaving the socket open, the frames undelivered and the
+                # association stuck in the endpoint's table.
                 await reader
         link = self._socket or self._accepted
         retiring, self._retiring = self._retiring, None
