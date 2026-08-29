@@ -217,6 +217,36 @@ class AssociationHost(Protocol):
         ...
 
 
+async def _cancel_and_wait(task: "asyncio.Task[None]") -> None:
+    """Cancel a task and wait for it, keeping the caller's own cancellation.
+
+    `contextlib.suppress(CancelledError)` around `await task` cannot tell the
+    awaited task's cancellation from the caller's own, so it swallows both.
+    Where the caller goes on to do more work after the wait, that difference
+    matters: swallowing its own cancellation makes it carry on after being told
+    to stop. This waits the cancelled task out, and swallows however it ended,
+    but re-raises a cancellation aimed at the caller so it still stops.
+
+    It suits a site that resumes work after the wait, like the reader retiring
+    the link that lost a dial. A site that only finishes cleanup after the wait
+    wants the opposite, to complete regardless, and keeps its own suppression.
+
+    Args:
+        task: The task to cancel and wait for.
+    """
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        current = asyncio.current_task()
+        if current is not None and current.cancelling():
+            raise
+    except Exception:
+        # However the awaited task itself ended is not the caller's to react to
+        # here: whatever owns that task has already accounted for it.
+        pass
+
+
 class Association:
     """One link to one peer: the actor's state, and the reader behind it.
 
@@ -520,9 +550,12 @@ class Association:
         """Retire the link that lost the dial, then read the one that won."""
         try:
             if reader is not None:
-                reader.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await reader
+                # `_resume` is itself the reader task. If a shutdown cancels it
+                # while it waits here, that cancellation is its own, so it must
+                # stop rather than fall through to `_run` and resume reads on a
+                # link it was told to abandon. Suppressing only the awaited
+                # reader's cancellation did not draw that line.
+                await _cancel_and_wait(reader)
         finally:
             # Close the retired link even if this task is cancelled while the
             # old reader is ending. It is taken out of `_retiring` here so that

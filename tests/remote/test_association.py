@@ -1,6 +1,7 @@
 """Tests for the association: messages over a real link."""
 
 import asyncio
+import contextlib
 from datetime import timedelta
 
 import pytest
@@ -18,7 +19,7 @@ from tapio.actor.dead_letters import DeadLetterReason
 from tapio.dispatch.dispatcher import Dispatcher
 from tapio.errors import MessageEncodingError
 from tapio.remote.address import Address
-from tapio.remote.association import Association
+from tapio.remote.association import Association, _cancel_and_wait
 from tapio.remote.codec import LENGTH_PREFIX, encode
 from tapio.remote.transport import framed, is_link_frame, link_body
 from tapio.settings import RemoteSettings
@@ -674,3 +675,92 @@ async def test_detach_closes_the_link_a_dial_race_retired():
         await association.detach()
 
         assert retired.closed
+
+
+class _ResumeProbe(Association):
+    """An association whose `_run` records that reads resumed, rather than dial.
+
+    A subclass so the test can tell whether `_resume` fell through to resume
+    reads after being told to stop, without a real dial happening.
+    """
+
+    resumed = False
+
+    async def _run(self) -> None:  # type: ignore[override]
+        self.resumed = True
+
+
+async def _pending() -> None:
+    """A task that never finishes on its own, for the reader slot."""
+    await asyncio.Event().wait()
+
+
+async def test_resume_does_not_resume_reads_after_its_own_cancellation():
+    # `_resume` runs as the reader task. It cancels the link that lost a dial
+    # and awaits it, then reads the link that won. When a shutdown cancels the
+    # reader while it sits at that await, the cancellation is the reader's own,
+    # so it must stop, not go on to `_run` and resume reads on a socket it was
+    # told to abandon. The cancel is requested before `_resume` runs, so it is
+    # delivered exactly at the `await reader` the bug needs, with no race.
+    with assert_no_leaked_tasks():
+        peer = Address.parse("tapio://peer@127.0.0.1:2551")
+        association = _ResumeProbe(host=_LoneHost(), peer=peer, initiator=peer)  # type: ignore[arg-type]
+
+        reader: asyncio.Task[None] = asyncio.ensure_future(_pending())
+        resume: asyncio.Task[None] = asyncio.ensure_future(association._resume(reader))
+        # One turn: `_resume` cancels the retired reader and parks at
+        # `await reader`, which is the window the bug needs.
+        await asyncio.sleep(0)
+
+        resume.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await resume
+
+        assert association.resumed is False
+
+        # `_resume` already cancelled the reader; drain it for a clean exit.
+        with contextlib.suppress(asyncio.CancelledError):
+            await reader
+
+
+async def test_cancel_and_wait_reraises_the_callers_own_cancellation():
+    # The caller is cancelled while waiting, so it must stop rather than run on.
+    reached = False
+
+    async def caller() -> None:
+        nonlocal reached
+        await _cancel_and_wait(asyncio.ensure_future(_pending()))
+        reached = True
+
+    task: asyncio.Task[None] = asyncio.ensure_future(caller())
+    await asyncio.sleep(0)  # park inside `_cancel_and_wait` at `await task`
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert reached is False
+
+
+async def test_cancel_and_wait_swallows_the_awaited_tasks_cancellation():
+    # The awaited task's own cancellation is not the caller's, so the caller
+    # carries on: this is the ordinary retire path.
+    reached = await _returns_after_waiting(asyncio.ensure_future(_pending()))
+    assert reached is True
+
+
+async def test_cancel_and_wait_swallows_the_awaited_tasks_exception():
+    async def boom() -> None:
+        raise RuntimeError("the reader failed")
+
+    task: asyncio.Task[None] = asyncio.ensure_future(boom())
+    with contextlib.suppress(RuntimeError):
+        await task  # let it finish and retrieve the exception
+
+    reached = await _returns_after_waiting(task)
+    assert reached is True
+
+
+async def _returns_after_waiting(task: "asyncio.Task[None]") -> bool:
+    """Run `_cancel_and_wait` from an uncancelled caller and say it returned."""
+    await _cancel_and_wait(task)
+    return True
