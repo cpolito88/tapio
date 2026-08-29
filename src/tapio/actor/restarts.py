@@ -32,8 +32,9 @@ class RestartLog:
         """Start with nothing recorded."""
         # Kept apart because they answer different questions. The deque is
         # what is still inside the window, which the limit is checked against.
-        # The count is how many restarts this layer has ever made, which is
-        # what the backoff exponent grows with.
+        # The count is what the backoff exponent grows with, and it tracks the
+        # same window: a failure old enough to stop counting against the limit
+        # is old enough to stop lengthening the delay.
         self._times: dict[Hashable, deque[float]] = {}
         self._counts: dict[Hashable, int] = {}
 
@@ -49,11 +50,12 @@ class RestartLog:
             `True` while the layer is within `max_restarts` for its window,
             `False` once this restart takes it over.
         """
-        self._counts[key] = self._counts.get(key, 0) + 1
         if strategy.max_restarts is None:
             # No limit to count against, so nothing is worth keeping. An actor
             # restarting for a month under an unlimited strategy would
-            # otherwise accumulate a month of timestamps.
+            # otherwise accumulate a month of timestamps. There is no window to
+            # age the count against either, so it grows with every restart.
+            self._counts[key] = self._counts.get(key, 0) + 1
             return True
         times = self._times.setdefault(key, deque())
         if strategy.window is not None:
@@ -61,10 +63,19 @@ class RestartLog:
             while times and times[0] < horizon:
                 times.popleft()
         times.append(now)
+        # The exponent grows with the restarts still inside the window, so a
+        # failure the limit has already forgotten does not keep lengthening the
+        # wait. Without this the backoff climbs to its ceiling for an actor that
+        # is never anywhere near its restart limit.
+        self._counts[key] = len(times)
         return len(times) <= strategy.max_restarts
 
     def count(self, key: Hashable) -> int:
-        """How many restarts one supervisor has made, over the actor's life.
+        """How many restarts one supervisor has made inside its window.
+
+        For a limited strategy this is the restarts still inside the window, so
+        it falls back as failures age out; for an unlimited one, which has no
+        window, it is the count over the actor's life.
 
         Args:
             key: The supervisor to report on.
