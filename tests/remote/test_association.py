@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import threading
 from datetime import timedelta
 
 import pytest
@@ -151,6 +152,79 @@ async def test_a_full_outbound_buffer_dead_letters_instead_of_raising():
         assert full
         assert full[0].peer == str(GHOST)
         assert isinstance(full[0].message, Tick)
+
+
+async def test_a_full_outbound_lane_off_loop_still_names_the_peer():
+    # The off-loop sibling of the test above, and of the FAIL mailbox: a
+    # RemoteRef is safe from any thread, so the overflow can arrive from one.
+    # A stalled write parks the association with its bounded mailbox full, and
+    # a tell from a non-loop thread finds no slot. It must dead-letter with the
+    # peer named and OUTBOUND_BUFFER_FULL, the way an on-loop tell does, not as
+    # a bare mailbox-full at the association actor's own path with no peer.
+    with assert_no_leaked_tasks():
+        one = ActorSystem(
+            "alpha",
+            remoting(
+                outbound_capacity=2,
+                # The stalled write holds the actor parked for this long, which
+                # is the window the mailbox stays full in. A second is far more
+                # than the overflow needs and short enough that the write then
+                # times out, freeing the actor for a clean shutdown.
+                unreachable_after=timedelta(seconds=1),
+                heartbeat_interval=timedelta(seconds=60),
+            ),
+        )
+        two = ActorSystem("beta", remoting())
+        try:
+            assert one.remote is not None
+            one.remote.set_link_filter(stalled_writes(after=1))
+            seen: list[int] = []
+            ticker = two.spawn(counting(seen), "ticker")
+            letters: list[DeadLetter] = []
+            one.dead_letters.subscribe(letters.append)
+
+            remote = await one.resolve(uri(two, ticker), expect=Tick)
+            remote.tell(Tick(n=1))
+            await eventually(lambda: seen == [1])
+
+            # Park the association inside a stalled write, then fill the bounded
+            # mailbox behind it, so the next send has no slot.
+            remote.tell(Tick(n=2))
+            await asyncio.sleep(0.05)
+            remote.tell(Tick(n=3))
+            remote.tell(Tick(n=4))
+
+            # The overflow now arrives from another thread, which has nobody to
+            # raise into.
+            thread = threading.Thread(target=lambda: remote.tell(Tick(n=5)))
+            thread.start()
+            thread.join()
+
+            await eventually(
+                lambda: any(
+                    letter.reason == DeadLetterReason.OUTBOUND_BUFFER_FULL
+                    for letter in letters
+                ),
+                within=5.0,
+            )
+            full = [
+                letter
+                for letter in letters
+                if letter.reason == DeadLetterReason.OUTBOUND_BUFFER_FULL
+            ]
+            assert full[0].peer == str(two.address)
+            assert isinstance(full[0].message, Tick)
+
+            # The stalled write times out on its own, which frees the parked
+            # actor and closes the association, so neither system pays the
+            # shutdown deadline on the way out.
+            await eventually(
+                lambda: one.remote.associations == (),  # type: ignore[union-attr]
+                within=5.0,
+            )
+        finally:
+            await one.terminate()
+            await two.terminate()
 
 
 async def test_a_tell_to_a_peer_that_was_never_reachable_dead_letters(

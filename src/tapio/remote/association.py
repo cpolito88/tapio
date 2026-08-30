@@ -415,6 +415,15 @@ class Association:
             )
             self._dead_letter(message, recipient, reason)
             return
+        if not self._host.dispatcher.is_current():
+            # Off-loop, `tell` hops the message onto the loop and swallows any
+            # overflow itself, dead-lettering it at this actor's own path with
+            # no peer. Hop `send` instead, so the overflow is caught here and
+            # accounted for with the peer named, the same as on the loop.
+            self._host.dispatcher.call_soon_threadsafe(
+                self.send, message, frame, recipient
+            )
+            return
         try:
             ref.tell(Outbound(payload=message, frame=frame, recipient=recipient))
         except MailboxFullError as error:
