@@ -75,10 +75,48 @@ def normalize_msg_type(msg_type: object, *, origin: str) -> MessageType:
 
     for member in members:
         if isinstance(member, type) and issubclass(member, Message):
+            _check_config(member, origin=origin)
             continue
         _reject_member(member, origin=origin)
 
     return typing.cast(MessageType, msg_type)
+
+
+def _check_config(member: type[Message], *, origin: str) -> None:
+    """Reject a Message subclass that turned off the config it inherits.
+
+    Subclassing Message is not the guarantee; the config it carries is. A
+    subclass may add to `model_config` freely, since Pydantic merges parent and
+    child, but turning either of these two settings off makes the delivery-time
+    guarantee a silent no-op, which is worse than the plain BaseModel case
+    because that one at least raises.
+
+    Args:
+        member: The Message subclass to check.
+        origin: What declared it, named in the error message.
+
+    Raises:
+        MessageTypeError: If the subclass set `frozen=False` or moved
+            `revalidate_instances` off `"always"`.
+    """
+    config = member.model_config
+    if not config.get("frozen", False):
+        msg = (
+            f"{origin} declares {member.__name__}, which sets frozen=False. A "
+            "message that has been sent is shared with its recipient, so "
+            "changing it afterwards would be a data race across a tell that "
+            "hands over the identical object. A message must stay frozen."
+        )
+        raise MessageTypeError(msg)
+    if config.get("revalidate_instances") != "always":
+        actual = config.get("revalidate_instances")
+        msg = (
+            f"{origin} declares {member.__name__}, which sets "
+            f"revalidate_instances={actual!r}. Re-validating it on delivery "
+            "would check nothing at all, so validate_on_tell would be a silent "
+            "no-op for it. Leave revalidate_instances at 'always'."
+        )
+        raise MessageTypeError(msg)
 
 
 def _reject_member(member: object, *, origin: str) -> None:

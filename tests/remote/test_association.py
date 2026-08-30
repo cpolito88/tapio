@@ -764,3 +764,48 @@ async def _returns_after_waiting(task: "asyncio.Task[None]") -> bool:
     """Run `_cancel_and_wait` from an uncancelled caller and say it returned."""
     await _cancel_and_wait(task)
     return True
+
+
+async def _finished_raising(exc: Exception) -> "asyncio.Task[None]":
+    """A task that has already ended with an exception, for the reader slot."""
+
+    async def boom() -> None:
+        raise exc
+
+    reader: asyncio.Task[None] = asyncio.ensure_future(boom())
+    try:
+        await reader
+    except type(exc):
+        pass
+    return reader
+
+
+async def test_release_finishes_even_when_the_reader_raised():
+    # The reader task can end with an exception that is not CancelledError, and
+    # `_release` runs from PostStop, where a failure is only logged. Suppressing
+    # only CancelledError around `await reader` let any other reader exception
+    # skip the socket close, the dead letters and forget(), silently
+    # downgrading a full release to a partial one. However the reader ended is
+    # `_run`'s to log, not the release's to abort on.
+    with assert_no_leaked_tasks():
+        association = _lone_association()
+        retired = _RecordingLink()
+        association._retiring = retired
+        association._reader = await _finished_raising(RuntimeError("reader failed"))
+
+        await association._release()
+
+        # Everything below `await reader` still ran.
+        assert retired.closed
+
+
+async def test_detach_finishes_even_when_the_reader_raised():
+    with assert_no_leaked_tasks():
+        association = _lone_association()
+        retired = _RecordingLink()
+        association._retiring = retired
+        association._reader = await _finished_raising(RuntimeError("reader failed"))
+
+        await association.detach()
+
+        assert retired.closed

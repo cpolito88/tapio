@@ -161,6 +161,24 @@ async def test_a_token_is_required_when_one_is_configured():
             assert payload["address"] == nodes[0].address
 
 
+async def test_a_non_ascii_bearer_token_is_answered_not_crashed():
+    # Headers are decoded as latin-1, so a bearer value may hold non-ASCII
+    # characters. hmac.compare_digest on str raises TypeError for those, which
+    # escaped the handler before the fix: the connection was dropped instead of
+    # answered, so this request never gets a 401 back.
+    with assert_no_leaked_tasks():
+        async with cluster_of(1, management=GUARDED) as nodes:
+            await _joined(nodes)
+            port = _port(nodes[0])
+
+            # "\xc3\xa9" is the UTF-8 encoding of "e-acute" seen as two latin-1
+            # characters, which is what a real client sending UTF-8 puts on the
+            # wire.
+            code, _ = await _request(port, "GET", "/status", token="\xc3\xa9")
+
+            assert code == 401
+
+
 async def test_malformed_requests_answer_with_the_right_code():
     with assert_no_leaked_tasks():
         async with cluster_of(1, management=MANAGED) as nodes:

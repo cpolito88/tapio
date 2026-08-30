@@ -9,6 +9,7 @@ import pytest
 
 from tapio import Behavior, Behaviors, Message
 from tapio.actor import ActorContext, ActorRef, ActorSystem
+from tapio.dispatch.blocking import BlockingPool
 from tapio.errors import ActorSystemTerminating
 from tapio.settings import TapioSettings
 from tapio.testkit import assert_no_leaked_tasks, assert_no_leaked_threads
@@ -211,6 +212,33 @@ async def test_a_call_still_running_at_the_deadline_is_reported(
     assert "cannot be interrupted" in caplog.text
     release.set()
     await future
+
+
+async def test_a_pool_does_not_claim_a_similarly_named_systems_threads():
+    # System names may share a prefix, since ActorPath allows the separator:
+    # "orders" is a prefix of "orders-eu". The pool must not count the other
+    # system's threads as its own, or its shutdown polls for the full timeout
+    # and its threads property reports threads it does not own.
+    with assert_no_leaked_threads():
+        orders = BlockingPool(size=1, system="orders")
+        orders_eu = BlockingPool(size=1, system="orders-eu")
+        loop = asyncio.get_running_loop()
+
+        started, release = threading.Event(), threading.Event()
+
+        def hold() -> None:
+            started.set()
+            release.wait(5)
+
+        held = orders_eu.submit(loop, hold)
+        await eventually(started.is_set)
+        try:
+            # "orders_" is not a prefix of "orders-eu_", so nothing is claimed.
+            assert orders.threads == ()
+        finally:
+            release.set()
+            await held
+            await orders_eu.shutdown(0.0, now=lambda: -1.0)
 
 
 def _sink() -> Behavior[Answer]:

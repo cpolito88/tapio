@@ -318,7 +318,15 @@ class ClusterManagement:
         scheme, _, value = presented.partition(" ")
         if scheme.lower() != "bearer":
             return False
-        return hmac.compare_digest(value, token.get_secret_value())
+        # Compared as bytes, not str. The header was decoded as latin-1, so it
+        # may hold non-ASCII characters, and hmac.compare_digest on str raises
+        # TypeError for those rather than returning False. Encoding back to
+        # latin-1 recovers the bytes that arrived; the token is compared as its
+        # utf-8 bytes, which agree with latin-1 for the ASCII tokens that are
+        # the normal case.
+        return hmac.compare_digest(
+            value.encode("latin-1"), token.get_secret_value().encode("utf-8")
+        )
 
     def _route(
         self, method: str, path: str, body: bytes
