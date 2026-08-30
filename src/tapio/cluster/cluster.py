@@ -266,9 +266,9 @@ class Cluster:
         [Routers.group][tapio.actor.router.Routers.group] spreads work over
         them.
 
-        Ordered by [seniority][tapio.cluster.member.seniority], the same
-        definition of "oldest" the singleton and the downing strategies use, so
-        taking the first is taking the same member they would.
+        Ordered by `seniority`, the same definition of "oldest" the singleton
+        and the downing strategies use, so taking the first is taking the same
+        member they would.
 
         Args:
             role: The role to filter on.
