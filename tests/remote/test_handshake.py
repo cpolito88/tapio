@@ -10,7 +10,9 @@ import pytest
 from tapio.actor import ActorSystem, DeadLetter
 from tapio.remote.address import Address
 from tapio.remote.codec import encode
+from tapio.remote.protocol import PROTOCOL_VERSION
 from tapio.remote.transport import FrameLink, connect, framed
+from tapio.testkit import assert_no_leaked_tasks
 from tapio.version import __version__
 from tests.failures import eventually
 from tests.remote.peers import GHOST, Tick, counting, dial, remoting
@@ -281,3 +283,81 @@ async def test_a_dialler_refuses_a_protocol_mismatch_before_naming_itself(
     finally:
         server.close()
         await server.wait_closed()
+
+
+async def test_a_handshake_completing_while_the_endpoint_stops_is_closed_cleanly():
+    # The window this guards: the endpoint's actor has begun terminating, so a
+    # spawn under it is refused, but close() has not yet set _closed, so an
+    # inbound handshake still runs to completion. The association _adopt starts
+    # then fails its spawn with ActorSystemTerminating. That must be caught and
+    # the link closed, not left to surface as an unretrieved task exception with
+    # no actor to attribute it to.
+    #
+    # The window is held open on purpose by gating close(), so the race is a
+    # certainty rather than a matter of scheduling luck.
+    with assert_no_leaked_tasks():
+        system = ActorSystem("alpha", remoting())
+        endpoint = system.remote
+        assert endpoint is not None
+        assert endpoint._parent is not None
+
+        # close() parks here, so _closed stays False for the whole window.
+        release_close = asyncio.Event()
+        real_close = endpoint.close
+
+        async def held_close() -> None:
+            await release_close.wait()
+            await real_close()
+
+        endpoint.close = held_close  # type: ignore[method-assign]
+
+        # A raw peer starts the handshake but withholds its client-hello, so the
+        # endpoint's accept parks with the handshake task recorded.
+        port = system.address.port
+        assert port is not None
+        link = await connect(
+            "127.0.0.1", port, max_frame_bytes=1024 * 1024, ssl_context=None
+        )
+        await link.read_link(2.0)
+        await eventually(lambda: bool(endpoint._handshakes))
+        handshake = next(iter(endpoint._handshakes))
+
+        # Terminating sets the endpoint cell terminating, then parks in the held
+        # close(): _terminating is now True while _closed is still False.
+        terminating = asyncio.create_task(system.terminate())
+        await eventually(lambda: endpoint._parent._terminating and not endpoint._closed)
+
+        # Completing the handshake inside the window drives _adopt, whose spawn
+        # is refused.
+        await link.write_frame(
+            framed(
+                json.dumps(
+                    {
+                        "link": "client-hello",
+                        "system": "ghost",
+                        "address": str(GHOST),
+                        "uid": 7,
+                        "protocol": PROTOCOL_VERSION,
+                        "version": __version__,
+                        "nonce": "0" * 32,
+                        "proof": "",
+                    }
+                ).encode()
+            )
+        )
+
+        # Awaiting the handshake task retrieves the exception it used to end
+        # with, so the difference this captures is the task's own outcome, not a
+        # collection-time warning. Cleanup runs before the assertion, so a
+        # failure reads as the refusal it is rather than as leaked tasks.
+        result = await asyncio.wait_for(
+            asyncio.gather(handshake, return_exceptions=True), 5.0
+        )
+
+        release_close.set()
+        await asyncio.wait_for(terminating, 5.0)
+        with contextlib.suppress(OSError, asyncio.IncompleteReadError, ConnectionError):
+            await link.close()
+
+    # The handshake finished cleanly instead of raising ActorSystemTerminating.
+    assert result == [None], result

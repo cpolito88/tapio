@@ -281,6 +281,21 @@ class RemoteEndpoint:
                 secret=self._settings.secret,
                 timeout=self._settings.handshake_timeout.total_seconds(),
             )
+            self._adopt(identity.address, identity.uid, self.wrap(link))
+        except ActorSystemTerminating:
+            # The endpoint began stopping in the window between the _closed
+            # check above and the spawn that _adopt does, so the spawn is
+            # refused. This must be caught here, not left to propagate: the
+            # `finally` has already taken this task out of `_handshakes`, so
+            # `close` would never await it and the exception would surface at
+            # collection time, unattributable to any actor. The half-started
+            # association `_adopt` recorded is closed by `close`'s own sweep;
+            # here the job is only to close this link and end cleanly.
+            _log.debug(
+                "closing a connection from %s: the endpoint is stopping", link.peer
+            )
+            await link.close()
+            return
         except (OSError, TapioError, TimeoutError, EOFError) as error:
             # Refused before any message frame was read, which is why the
             # handshake comes first. A peer that cannot say who it is, or runs
@@ -292,8 +307,6 @@ class RemoteEndpoint:
         except asyncio.CancelledError:
             await link.close()
             raise
-        else:
-            self._adopt(identity.address, identity.uid, self.wrap(link))
         finally:
             # This task took responsibility for the link: adopted it, or closed
             # it above. What stays in the map is a task that never got to run,
