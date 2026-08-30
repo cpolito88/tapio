@@ -373,6 +373,73 @@ async def test_a_connection_accepted_after_close_is_closed_at_once():
         await system.terminate()
 
 
+async def test_a_connection_accepted_while_closing_is_closed_by_the_drain():
+    # A connection can arrive after close() has set _closed but before it has
+    # drained: a pending accept callback fires as the listener shuts. A bare
+    # writer.close() only schedules the socket close, so if the loop is torn
+    # down before that callback runs the transport is collected unclosed. Such
+    # a connection has to be closed by close()'s own drain instead, which it can
+    # only do if the reject is a tracked close rather than a scheduled one.
+    with assert_no_leaked_tasks():
+        system = ActorSystem("beta", remoting())
+        endpoint = system.remote
+        assert endpoint is not None
+        port = system.address.port
+        assert port is not None
+
+        # Record every reject that is routed into a tracked close, so the test
+        # can tell the fixed path (a close the drain awaits) from the old one
+        # (a bare scheduled close), whatever the timing of the close itself.
+        rejected: list[object] = []
+        real_close_later = endpoint.close_link_later
+
+        def recording_close_later(link: object, peer: Address) -> None:
+            rejected.append(link)
+            real_close_later(link, peer)  # type: ignore[arg-type]
+
+        endpoint.close_link_later = recording_close_later  # type: ignore[method-assign]
+
+        # Hold close() open in the window: _closed is set, the listener still
+        # accepts. Gating _stop_listening is what pins the window, since it runs
+        # first in close() and before the server is shut.
+        paused = asyncio.Event()
+        resume = asyncio.Event()
+        real_stop = endpoint._stop_listening
+
+        async def paused_stop() -> None:
+            paused.set()
+            await resume.wait()
+            await real_stop()
+
+        endpoint._stop_listening = paused_stop  # type: ignore[method-assign]
+
+        terminating = asyncio.create_task(system.terminate())
+        await asyncio.wait_for(paused.wait(), 5.0)
+        assert endpoint._closed
+
+        # A peer connects now, in the window. The listener accepts it.
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+
+        # Did the reject go into a tracked close? Recorded synchronously in
+        # _accept, so this does not race the close itself.
+        routed_to_drain = False
+        with contextlib.suppress(AssertionError):
+            await eventually(lambda: bool(rejected), within=2.0)
+            routed_to_drain = True
+
+        # Always release and finish terminating first, so the assertion below
+        # reads as the reject it is, not as tasks left running by a stuck stop.
+        resume.set()
+        await asyncio.wait_for(terminating, 5.0)
+        eof = await asyncio.wait_for(reader.read(), 5.0)
+        writer.close()
+        with contextlib.suppress(OSError):
+            await writer.wait_closed()
+
+    assert routed_to_drain, "a connection accepted while closing was not drained"
+    assert eof == b""
+
+
 def _elsewhere() -> Address:
     """An address to name in a close, which nothing dials."""
     return Address(system="beta", host="127.0.0.1", port=1)
