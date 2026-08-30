@@ -170,9 +170,11 @@ uv run python -m tapio_examples.hello_world
 **Sending never blocks.** `ref.tell(msg)` is synchronous and fire-and-forget,
 so it works from sync callbacks and signal handlers too. Backpressure belongs
 to the mailbox rather than the send call. Bounded mailboxes take an overflow
-strategy (`fail`, `drop_new`, `drop_oldest`), and all three publish what they
-drop as a dead letter. `await ref.offer(msg)` waits for capacity when you want
-to be throttled.
+strategy (`fail`, `drop_new`, `drop_oldest`). `drop_new` and `drop_oldest`
+publish what they discard as a dead letter; `fail` discards nothing and raises
+`MailboxFullError` in the sender instead, so the sender decides. (A `fail` send
+from another thread has nobody to raise into, so it dead-letters.)
+`await ref.offer(msg)` waits for capacity when you want to be throttled.
 
 **Every message is a validated Pydantic model.** Messages subclass
 `tapio.Message`, which is frozen and re-validated on delivery rather than only

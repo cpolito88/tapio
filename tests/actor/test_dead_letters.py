@@ -250,6 +250,22 @@ async def test_fail_raises_in_the_sender_on_the_loop(quick: ActorSystem):
         ref.tell(Ping(n=3))
 
 
+async def test_fail_on_the_loop_publishes_no_dead_letter(quick: ActorSystem):
+    seen: list[DeadLetter] = []
+    quick.dead_letters.subscribe(seen.append)
+    ref = await wedged_actor(quick, OverflowStrategy.FAIL)
+
+    with pytest.raises(MailboxFullError):
+        ref.tell(Ping(n=3))
+    await asyncio.sleep(0.05)
+
+    # FAIL discards nothing: it raises in the sender, who still holds the
+    # message. Only the off-loop path, with nobody to raise into, dead-letters.
+    # This pins the on-loop path to publishing nothing, so the README's account
+    # of FAIL and the runtime cannot drift apart again.
+    assert seen == []
+
+
 async def test_drop_new_dead_letters_the_arriving_message(quick: ActorSystem):
     seen: list[DeadLetter] = []
     quick.dead_letters.subscribe(seen.append)
