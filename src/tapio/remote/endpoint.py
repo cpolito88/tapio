@@ -116,6 +116,11 @@ class RemoteEndpoint:
         self._names = 0
         self._parent: ActorCell[Any] | None = None
         self._closed = False
+        # `_closed` is set at the start of `close`, `_done` only once it has
+        # finished draining. A connection accepted between the two is closed
+        # by that drain; one accepted after it is closed on the spot, since no
+        # drain is left to wait for.
+        self._done = False
         self._link_filter: Callable[[FrameLink], Link] | None = None
 
     @property
@@ -238,14 +243,31 @@ class RemoteEndpoint:
         raced it. Recording the link here means `close` can close it either
         way.
 
-        A connection accepted after `close` has drained is closed here instead.
-        The listening socket was readable when it shut, so the loop delivers
-        this one anyway, and there is nobody left to drain a task: a handshake
-        spawned now would be cancelled by the dying dispatcher before it could
-        close anything, so the transport is closed on the spot.
+        A connection accepted once `close` has begun is not handshaken. How its
+        socket is closed depends on where `close` has got to. While `close` is
+        still draining, the socket is handed to a close that its drain waits
+        for, so `terminate` does not return with a socket half-closed that the
+        loop might never finish. Once `close` has drained, there is nobody left
+        to wait for a task, so the socket is closed on the spot and the loop
+        runs that close as it would any other.
         """
         if self._closed:
-            writer.close()
+            if self._done:
+                # Accepted after close() finished. Nobody is left to drain a
+                # task, so schedule the socket close and let the loop run it.
+                writer.close()
+                return
+            # Accepted while close() is still draining, which a pending accept
+            # callback can be as `await server.wait_closed()` runs. A bare
+            # writer.close() only schedules the close, so if the loop is torn
+            # down before it runs the transport is collected unclosed. Hand it
+            # to close_link_later, whose close close()'s own drain awaits.
+            self.close_link_later(
+                FrameLink(
+                    reader, writer, max_frame_bytes=self._settings.max_frame_bytes
+                ),
+                self._address,
+            )
             return
         link = FrameLink(reader, writer, max_frame_bytes=self._settings.max_frame_bytes)
         task = self.dispatcher.spawn_task(
@@ -759,6 +781,9 @@ class RemoteEndpoint:
         for association in list(self._associations.values()):
             with contextlib.suppress(OSError, asyncio.CancelledError):
                 await association.detach()
+        # Everything the drain could wait for has been waited for. A connection
+        # accepted from here on is closed on the spot instead.
+        self._done = True
 
     async def _stop_listening(self) -> None:
         """Stop the accept task, before anything closes the socket under it.
