@@ -33,7 +33,7 @@ from tapio.cluster.management import (
     ClusterManagement,
     open_management_listener,
 )
-from tapio.cluster.member import Member, MemberStatus, rank_of
+from tapio.cluster.member import Member, MemberStatus, rank_of, seniority
 from tapio.cluster.messages import (
     ClusterDowned,
     ClusterMessage,
@@ -257,7 +257,7 @@ class Cluster:
         return self._daemon.heartbeats
 
     def members_with_role(self, role: str) -> tuple[Member, ...]:
-        """The members that carry a role, in address order.
+        """The members that carry a role, oldest first.
 
         A role is what a node says it is for, fixed when it joined and part of
         what the cluster agreed on. Cluster-aware features filter on these:
@@ -266,6 +266,10 @@ class Cluster:
         [Routers.group][tapio.actor.router.Routers.group] spreads work over
         them.
 
+        Ordered by `seniority`, the same definition of "oldest" the singleton
+        and the downing strategies use, so taking the first is taking the same
+        member they would.
+
         Args:
             role: The role to filter on.
 
@@ -273,7 +277,12 @@ class Cluster:
             Every member that has not been downed or removed and carries the
             role, oldest first.
         """
-        return tuple(member for member in self.members if role in member.roles)
+        return tuple(
+            sorted(
+                (member for member in self.members if role in member.roles),
+                key=seniority,
+            )
+        )
 
     def _snapshot(self) -> dict[str, Any]:
         """Render what this node believes as the data a JSON reply is built from.

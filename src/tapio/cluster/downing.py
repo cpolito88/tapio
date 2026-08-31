@@ -98,8 +98,9 @@ def _sides(state: Gossip) -> tuple[tuple[Member, ...], tuple[Member, ...]]:
 
     Returns:
         The reachable members and the unreachable members, each in address
-        order. This node is always among the reachable, since a node never
-        reports itself unreachable.
+        order. The unreachable side is every live observer's opinion, not just
+        this node's, so a node a peer reports unreachable lands on the
+        unreachable side even though it never reports itself unreachable.
     """
     gone = state.unreachable
     reachable = tuple(m for m in state.alive if m.address not in gone)
