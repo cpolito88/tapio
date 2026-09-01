@@ -83,12 +83,23 @@ bench-cluster: ## Measure convergence and gossip bandwidth at 5/20/50 nodes
 examples: ## Execute every example end to end
 	$(UV) run pytest tests/examples
 
+.PHONY: playground
+playground: ## Stage the browser playground assets (wheel + examples)
+	# The playground runs the library in the browser under Pyodide, so the
+	# published site has to carry the wheel it installs and the example
+	# sources it seeds the editor with. Clear the wheel first: the version is
+	# the git tag, so a rebuild produces a new filename and the old one would
+	# linger and confuse the manifest.
+	rm -f docs/playground/dist/tapio_py-*.whl
+	$(UV) build --wheel -o docs/playground/dist
+	$(UV) run python scripts/stage_playground.py
+
 .PHONY: docs
-docs: ## Serve the docs site with live reload
+docs: playground ## Serve the docs site with live reload
 	$(UV) run mkdocs serve
 
 .PHONY: docs-build
-docs-build: ## Build the docs site into site/
+docs-build: playground ## Build the docs site into site/
 	$(UV) run mkdocs build --strict
 
 .PHONY: build
