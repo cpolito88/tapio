@@ -251,7 +251,12 @@ nothing is fetched again.
     setStatus("Downloading Python and tapio (first run only, a few megabytes)…");
     loadingPython = loadPyodide({ indexURL: PYODIDE_INDEX }).then(function (py) {
       pyodide = py;
-      return py.loadPackage("micropip");
+      // ssl is unvendored from the standard library in Pyodide, and importing
+      // tapio pulls in the remoting stack, which imports ssl at module load
+      // even though the local examples never open a connection. Load it here
+      // so `import tapio` succeeds. It comes from the Pyodide package repo,
+      // not PyPI.
+      return py.loadPackage(["micropip", "ssl"]);
     }).then(function () {
       pyodide.globals.set("_tapio_wheel_url", distURL(manifest.wheel));
       return pyodide.runPythonAsync([
