@@ -28,12 +28,20 @@ from tapio.testkit.behavior import (
 from tapio.testkit.leaks import assert_no_leaked_tasks, assert_no_leaked_threads
 from tapio.testkit.probe import DEFAULT_TIMEOUT, NO_MESSAGE_WINDOW, TestProbe
 from tapio.testkit.remote import LinkFaults, TwoNodes, link_faults, two_nodes
+from tapio.testkit.settings import (
+    IsolatedClusterSettings,
+    IsolatedRemoteSettings,
+    IsolatedTapioSettings,
+)
 
 __all__ = [
     "DEFAULT_TIMEOUT",
     "NO_MESSAGE_WINDOW",
     "BehaviorTestKit",
     "Effect",
+    "IsolatedClusterSettings",
+    "IsolatedRemoteSettings",
+    "IsolatedTapioSettings",
     "LinkFaults",
     "RecordingRef",
     "Spawned",

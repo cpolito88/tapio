@@ -34,7 +34,7 @@ from typing import final
 from tapio.actor.system import ActorSystem
 from tapio.errors import TapioError
 from tapio.remote.transport import FrameLink, Link, LinkFrame, framed
-from tapio.settings import RemoteSettings, TapioSettings
+from tapio.testkit.settings import IsolatedRemoteSettings, IsolatedTapioSettings
 
 __all__ = ["LinkFaults", "TwoNodes", "link_faults", "two_nodes"]
 
@@ -308,16 +308,15 @@ async def two_nodes(
     Yields:
         The pair, and the controls for breaking the network between them.
     """
-    # No env file on either, so a developer's environment cannot change what
-    # a test is running against. The keyword is pydantic-settings' own and is
-    # not in the generated signature, which is what mypy is objecting to.
-    remote = RemoteSettings(
-        _env_file=None,  # type: ignore[call-arg]
+    # Isolated on both, so a developer's environment cannot change what a test
+    # is running against. Both halves need it: TAPIO_REMOTE_BIND_HOST reaches
+    # the nested model as readily as TAPIO_ASK_TIMEOUT reaches the outer one.
+    remote = IsolatedRemoteSettings(
         bind_port=0,
         unreachable_after=unreachable_after,
         heartbeat_interval=heartbeat_interval,
     )
-    settings = TapioSettings(_env_file=None, remote=remote)  # type: ignore[call-arg]
+    settings = IsolatedTapioSettings(remote=remote)
     first = ActorSystem(alpha, settings)
     try:
         second = ActorSystem(beta, settings)

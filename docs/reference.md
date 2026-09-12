@@ -230,6 +230,8 @@ Generated from the source, so it cannot drift from what is installed.
 
 ::: tapio.testkit.plugin
 
+::: tapio.testkit.settings
+
 ::: tapio.testkit.leaks
 
 ::: tapio.testkit.remote
