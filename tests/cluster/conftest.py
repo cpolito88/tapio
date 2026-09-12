@@ -16,16 +16,15 @@ import pytest
 
 from tapio.actor import ActorSystem
 from tapio.cluster import Cluster, DownStrategy, MemberStatus
-from tapio.settings import (
-    ClusterSettings,
-    ManagementSettings,
-    RemoteSettings,
-    TapioSettings,
+from tapio.settings import ClusterSettings, ManagementSettings, TapioSettings
+from tapio.testkit import (
+    IsolatedClusterSettings,
+    IsolatedRemoteSettings,
+    IsolatedTapioSettings,
 )
 from tapio.testkit.remote import LinkFaults, link_faults
 
-QUICK = ClusterSettings(
-    _env_file=None,  # type: ignore[call-arg]
+QUICK = IsolatedClusterSettings(
     gossip_interval=timedelta(milliseconds=20),
     join_retry_interval=timedelta(milliseconds=20),
     seed_form_after=timedelta(milliseconds=100),
@@ -72,10 +71,7 @@ see one.
 
 def remoting() -> TapioSettings:
     """Settings for a system listening on a loopback port the OS picks."""
-    return TapioSettings(
-        _env_file=None,  # type: ignore[call-arg]
-        remote=RemoteSettings(_env_file=None, bind_port=0),  # type: ignore[call-arg]
-    )
+    return IsolatedTapioSettings(remote=IsolatedRemoteSettings(bind_port=0))
 
 
 @dataclass(frozen=True, slots=True)

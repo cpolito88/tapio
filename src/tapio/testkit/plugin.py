@@ -33,6 +33,7 @@ from tapio.message import Message
 from tapio.settings import TapioSettings
 from tapio.testkit.leaks import assert_no_leaked_tasks, assert_no_leaked_threads
 from tapio.testkit.probe import TestProbe
+from tapio.testkit.settings import IsolatedTapioSettings
 from tapio.validation import MessageType
 
 __all__ = ["actor_system", "make_probe", "tapio_settings"]
@@ -45,14 +46,16 @@ ProbeFactory = Callable[..., TestProbe[Any]]
 def tapio_settings() -> TapioSettings:
     """Settings for the test's system, with the environment left out.
 
-    Override this fixture to change them. Reading `TAPIO_` variables is
-    deliberately switched off: a developer's environment should not be able to
-    change what a test is asserting.
+    Override this fixture to change them. `TAPIO_` variables are deliberately
+    not read: a developer's environment should not be able to change what a
+    test is asserting. Override with another
+    [IsolatedTapioSettings][tapio.testkit.settings.IsolatedTapioSettings] to
+    keep that true, since a plain `TapioSettings` reads the environment.
 
     Returns:
         The settings the `actor_system` fixture uses.
     """
-    return TapioSettings(_env_file=None)  # type: ignore[call-arg]
+    return IsolatedTapioSettings()
 
 
 @pytest.fixture

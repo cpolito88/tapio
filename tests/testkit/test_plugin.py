@@ -4,11 +4,18 @@ Nothing here imports them. They arrive through the `pytest11` entry point, so
 this file is also the test that the entry point is wired up.
 """
 
+from datetime import timedelta
+
 import pytest
 
 from tapio import Behavior, Behaviors, Message
 from tapio.actor import ActorRef, ActorSystem
 from tapio.settings import TapioSettings
+from tapio.testkit import (
+    IsolatedClusterSettings,
+    IsolatedRemoteSettings,
+    IsolatedTapioSettings,
+)
 
 
 class Greeted(Message):
@@ -48,14 +55,44 @@ async def test_the_system_fixture_is_running_and_named(actor_system: ActorSystem
     assert not actor_system.is_terminating
 
 
-def test_the_settings_fixture_ignores_the_environment(
-    tapio_settings: TapioSettings, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.setenv("TAPIO_VALIDATE_ON_TELL", "false")
+def test_the_settings_fixture_ignores_the_environment(request: pytest.FixtureRequest):
+    # The variable has to be set before the settings are built, so the fixture
+    # is resolved inside the patched environment rather than taken as an
+    # argument. Asking for it as an argument builds it first and patches after,
+    # which is what the previous version of this test did: it passed whether or
+    # not the environment was read, and that is why it never caught the fixture
+    # reading it.
+    with pytest.MonkeyPatch.context() as env:
+        env.setenv("TAPIO_VALIDATE_ON_TELL", "false")
+        env.setenv("TAPIO_ASK_TIMEOUT", "PT1S")
+        settings: TapioSettings = request.getfixturevalue("tapio_settings")
 
-    # Read before the patch, which is the point: a developer's environment
-    # cannot change what a test asserts.
-    assert tapio_settings.validate_on_tell
+    assert settings.validate_on_tell is True
+    assert settings.ask_timeout == timedelta(seconds=5)
+
+
+@pytest.mark.parametrize(
+    ("cls", "variable", "value", "field"),
+    [
+        (IsolatedTapioSettings, "TAPIO_ASK_TIMEOUT", "PT1S", "ask_timeout"),
+        (IsolatedRemoteSettings, "TAPIO_REMOTE_BIND_HOST", "0.0.0.0", "bind_host"),
+        (
+            IsolatedClusterSettings,
+            "TAPIO_CLUSTER_GOSSIP_INTERVAL",
+            "PT9S",
+            "gossip_interval",
+        ),
+    ],
+)
+def test_isolated_settings_read_no_environment(
+    cls, variable, value, field, monkeypatch: pytest.MonkeyPatch
+):
+    # One per prefix. A nested model is built by whoever passes it, so
+    # TAPIO_REMOTE_ and TAPIO_CLUSTER_ reach their settings as readily as
+    # TAPIO_ reaches the outer one, and each needs isolating in its own right.
+    monkeypatch.setenv(variable, value)
+
+    assert getattr(cls(), field) == cls.model_fields[field].default
 
 
 async def test_a_named_probe_takes_the_name(actor_system, make_probe):
