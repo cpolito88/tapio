@@ -28,7 +28,27 @@ Chosen to be unmistakable. A peer that sees this in a handshake is talking to
 something somebody is running out of a checkout, which is worth knowing.
 """
 
-try:
-    __version__ = _installed_version("tapio")
-except PackageNotFoundError:  # pragma: no cover - tapio is installed to be tested
-    __version__ = _UNKNOWN
+_DISTRIBUTION = "tapio-py"
+"""The name the metadata is filed under, which is not the import package.
+
+PyPI refuses `tapio`, so the distribution is `tapio-py` while the package you
+import is still `tapio`. `importlib.metadata` takes the first of those. Asking
+it for the second raises on every install, which is what left every release
+reporting the fallback above and every handshake reporting it to its peer.
+"""
+
+
+def _read_version() -> str:
+    """Read the version this distribution was built with.
+
+    Returns:
+        The version from the installed metadata, or `_UNKNOWN` for a source
+        tree that was never built or installed and so has no tag to read.
+    """
+    try:
+        return _installed_version(_DISTRIBUTION)
+    except PackageNotFoundError:
+        return _UNKNOWN
+
+
+__version__ = _read_version()

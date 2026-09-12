@@ -2,12 +2,33 @@
 
 import asyncio
 import sys
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as installed_version
 
 import tapio
+from tapio import version
 
 
-def test_package_imports():
-    assert tapio.__version__
+def test_the_version_comes_from_the_installed_distribution():
+    # The distribution is `tapio-py` and the import package is `tapio`.
+    # importlib.metadata takes the first, and asking it for the second raised
+    # on every install, so every release reported the fallback and every
+    # handshake carried it to its peer. Asserting truthiness did not catch it,
+    # because the fallback is truthy.
+    assert tapio.__version__ != version._UNKNOWN
+    assert tapio.__version__ == installed_version(version._DISTRIBUTION)
+
+
+def test_an_uninstalled_source_tree_reports_the_unknown_version(monkeypatch):
+    # The fallback is reachable: a checkout that was never built or installed
+    # has no metadata to read. It is tested rather than excluded from coverage,
+    # since excluding it is what hid the bug above.
+    def missing(name: str) -> str:
+        raise PackageNotFoundError(name)
+
+    monkeypatch.setattr(version, "_installed_version", missing)
+
+    assert version._read_version() == version._UNKNOWN
 
 
 def test_examples_package_importable():
