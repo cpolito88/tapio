@@ -9,15 +9,17 @@ checked by watching the member it named actually move.
 import asyncio
 import contextlib
 import json
+import socket
 
 import pytest
 
-from tapio.cluster import MemberStatus
+from tapio.actor import ActorSystem
+from tapio.cluster import Cluster, MemberStatus
 from tapio.cluster.management import verify_management_security
-from tapio.errors import InsecureRemoteConfig
+from tapio.errors import ActorNameError, InsecureRemoteConfig
 from tapio.settings import ManagementSettings, TLSSettings
 from tapio.testkit import assert_no_leaked_tasks
-from tests.cluster.conftest import Node, cluster_of, seeds_of
+from tests.cluster.conftest import Node, cluster_of, remoting, seeds_of
 from tests.failures import eventually
 
 MANAGED = ManagementSettings(_env_file=None, bind_port=0)  # type: ignore[call-arg]
@@ -298,3 +300,45 @@ async def test_management_is_off_unless_it_is_configured():
     with assert_no_leaked_tasks():
         async with cluster_of(1) as nodes:
             assert nodes[0].cluster.management_address is None
+
+
+def _a_free_port() -> int:
+    """Find a port nothing is listening on, and let go of it."""
+    with contextlib.closing(socket.create_server(("127.0.0.1", 0))) as probe:
+        port: int = probe.getsockname()[1]
+    return port
+
+
+async def test_a_cluster_that_fails_to_start_releases_its_management_port():
+    # A fixed port, against the convention that a test binds port 0, because the
+    # failure only shows up on a fixed one. A leaked listener on port 0 costs a
+    # descriptor and nothing else; on the default 25530 it makes the next
+    # attempt fail to bind, so an operator reads "address already in use"
+    # instead of the spawn failure that actually happened.
+    port = _a_free_port()
+
+    with assert_no_leaked_tasks():
+        async with ActorSystem("port-released", remoting()) as system:
+            Cluster(system)  # takes the /system/cluster name
+
+            # The port is bound before the daemon is spawned, and this spawn is
+            # the thing that fails, so the socket is open when the constructor
+            # raises and nothing else refers to it.
+            with pytest.raises(ActorNameError):
+                Cluster(
+                    system,
+                    management=ManagementSettings(  # type: ignore[call-arg]
+                        _env_file=None,  # type: ignore[call-arg]
+                        bind_port=port,
+                    ),
+                )
+
+            # Free again, which is the whole claim. Two things can catch a
+            # leak here, and they catch different ones. This binding raises
+            # EADDRINUSE while something still holds the listener open. The
+            # suite's `filterwarnings = ["error"]` catches the other case: a
+            # listener nobody refers to any more is closed by its finalizer,
+            # and the ResourceWarning that comes with it fails the test. Before
+            # this fix the second one fires, naming the port bound above.
+            with contextlib.closing(socket.create_server(("127.0.0.1", port))):
+                pass

@@ -44,6 +44,7 @@ from tapio.cluster.messages import (
 )
 from tapio.errors import ClusterError
 from tapio.remote.address import Address
+from tapio.remote.endpoint import RemoteEndpoint
 from tapio.settings import ClusterSettings, ManagementSettings
 
 __all__ = ["Cluster"]
@@ -115,6 +116,49 @@ class Cluster:
         self._management_listener = (
             open_management_listener(management) if management is not None else None
         )
+        try:
+            self._build(
+                system,
+                endpoint,
+                downing=downing,
+                terminate_on_down=terminate_on_down,
+                management=management,
+            )
+        except BaseException:
+            # The port is bound by now, and nothing else holds a reference to
+            # this half-built cluster to close it later. `bind_port` defaults to
+            # a fixed 25530, so leaving it open means the next attempt fails to
+            # bind and an operator reads "address already in use" instead of the
+            # spawn failure that actually happened.
+            if self._management_listener is not None:
+                self._management_listener.close()
+            raise
+
+    def _build(
+        self,
+        system: ActorSystem,
+        endpoint: RemoteEndpoint,
+        *,
+        downing: DownStrategy | None,
+        terminate_on_down: bool,
+        management: ManagementSettings | None,
+    ) -> None:
+        """Finish construction, with the management port already bound.
+
+        Split out so `__init__` has one place to close that socket if any of
+        this raises. It mirrors
+        [ActorSystem][tapio.actor.system.ActorSystem], which binds its remoting
+        listener and then guards the rest of its construction the same way, and
+        for the same reason.
+
+        Args:
+            system: The system being clustered.
+            endpoint: Its remoting, which the daemon reaches peers through.
+            downing: What to do about an unreachable member.
+            terminate_on_down: Whether to shut the system down when this node
+                downs itself.
+            management: The operator surface's settings, when one was asked for.
+        """
 
         def relent(address: str) -> None:
             """Stop refusing a member remoting gave up on."""
