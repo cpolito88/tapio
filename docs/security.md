@@ -1,10 +1,12 @@
-# Security of the remote transport
+# Security of the ports a node opens
 
 **This transport is designed for a trusted network between services you
 deploy. It is not designed to face the public internet.**
 
 That sentence is the page. The rest is what the library does to hold you to
-it, and what it cannot do for you.
+it, and what it cannot do for you. A node opens at most two ports, and the
+sentence covers both: the remote transport, which is everything up to the last
+section, and the management port, which is the last section.
 
 Opening a port that accepts frames naming actor paths and message types is a
 serious surface, so the defaults are set for somebody who has not thought
@@ -114,6 +116,30 @@ An actor that will start anything registered, on request, is a capability
 handed to whoever can reach the port. Keep the list short, and keep it to
 things that are safe to have started by a peer.
 
+## The management port
+
+A node with [ManagementSettings][tapio.settings.ManagementSettings] opens a
+second port, the one an operator reads membership and downs a member through.
+It is off unless it is configured, it binds loopback by default, and binding it
+beyond loopback with nothing to authenticate an operator is refused the way an
+unsecured remoting bind is. All of that is in
+[the clustering page](clustering.md).
+
+What belongs here is the deployment it expects: **loopback, or behind a sidecar
+that terminates TLS and authenticates the caller.** It is not written to be an
+internet-facing API. It answers one request per connection, holds at most
+thirty-two connections at once and refuses the rest with a `503`, and gives
+each request thirty seconds to arrive and be answered.
+
+Those limits are there because this port shares an event loop with the cluster
+daemon. A flood that starves the loop delays gossip and heartbeat replies, and
+a node that stops answering probes is a node its watchers call unreachable,
+which with a downing strategy configured is a node the cluster removes. So the
+cap makes the blast radius of a flood a constant, and it is a deliberately
+small one: enough for a human, a script and a health probe at the same time,
+and not enough to serve a crowd. Put a proxy in front of it if a crowd is what
+you have.
+
 ## A checklist
 
 For anything beyond one machine:
@@ -127,3 +153,5 @@ For anything beyond one machine:
 - `max_frame_bytes` no larger than your largest legitimate message.
 - Spawner allowlists reviewed the way you would review a public endpoint,
   because that is what they are.
+- The management port, if one is open, on loopback or behind a sidecar, with a
+  token or a client certificate the moment it is anywhere else.
