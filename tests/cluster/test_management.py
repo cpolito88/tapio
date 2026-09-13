@@ -15,7 +15,7 @@ import pytest
 
 from tapio.actor import ActorSystem
 from tapio.cluster import Cluster, MemberStatus
-from tapio.cluster.management import verify_management_security
+from tapio.cluster.management import _MAX_CONNECTIONS, verify_management_security
 from tapio.errors import ActorNameError, InsecureRemoteConfig
 from tapio.settings import ManagementSettings, TLSSettings
 from tapio.testkit import assert_no_leaked_tasks
@@ -232,6 +232,59 @@ async def test_a_stalled_request_is_timed_out_not_parked(monkeypatch):
             await writer.wait_closed()
 
     assert b"408" in raw
+
+
+async def _answers(port: int, code: int, *, within: float = 5.0) -> None:
+    """Wait until a `GET /status` on this port answers with a given code.
+
+    Polled rather than asked once, because a connection the client has opened is
+    only held by the endpoint once it has accepted it, and one the client has
+    closed is only let go once the handler has finished. Both happen on the
+    endpoint's loop, a turn or two after the client's side of them.
+    """
+    try:
+        async with asyncio.timeout(within):
+            while True:
+                answered, _ = await _request(port, "GET", "/status")
+                if answered == code:
+                    return
+    except TimeoutError:
+        msg = f"the port never answered {code} within {within}s"
+        raise AssertionError(msg) from None
+
+
+async def test_the_port_refuses_connections_past_its_cap():
+    # The cap exists because this port shares a loop with the cluster daemon, so
+    # opening connections and sending nothing is the cheap way to starve it.
+    with assert_no_leaked_tasks():
+        async with cluster_of(1, management=MANAGED) as nodes:
+            await _joined(nodes)
+            port = _port(nodes[0])
+
+            held = [
+                await asyncio.open_connection("127.0.0.1", port)
+                for _ in range(_MAX_CONNECTIONS)
+            ]
+            try:
+                await _answers(port, 503)
+
+                refused, payload = await _request(port, "GET", "/status")
+
+                assert refused == 503
+                assert payload == {"error": "too many connections"}
+
+                # Closing one frees a slot, so the cap bounds how many
+                # connections are open at once and does not wedge the port.
+                _, writer = held.pop()
+                writer.close()
+                await writer.wait_closed()
+
+                await _answers(port, 200)
+            finally:
+                for _, writer in held:
+                    writer.close()
+                    with contextlib.suppress(ConnectionResetError, BrokenPipeError):
+                        await writer.wait_closed()
 
 
 async def test_headers_that_never_end_answer_413():

@@ -65,6 +65,19 @@ _MAX_BODY_BYTES: Final = 64 * 1024
 # too, so a peer that stops reading cannot hold the response half-sent.
 _REQUEST_TIMEOUT: Final = 30.0
 
+# How many connections this port will hold at once. Each one is already bounded
+# on its own, by the deadline above and the two size limits, but nothing counted
+# how many existed together: a client that opens connections and sends nothing
+# holds each for the full deadline, so the steady state is the dial rate times
+# thirty seconds. The cap matters because the loop this port shares is the one
+# the cluster daemon answers heartbeats on. A flood that starves it looks to the
+# rest of the cluster like a node that has stopped answering, which with a
+# downing strategy configured is a node that gets removed, so flooding the port
+# would cause the very thing the port is guarded to prevent. An operator command
+# is one request, so thirty-two is room for a health probe, a human and a script
+# at the same time.
+_MAX_CONNECTIONS: Final = 32
+
 
 class _ManagementMessage(Message):
     """A type nobody can send: the management actor is a listener, not a peer."""
@@ -228,8 +241,24 @@ class ClusterManagement:
         nothing can cancel, so the task is recorded before it has run a line.
         A connection accepted after `_close` has run is closed here, since there
         is nobody left to answer it.
+
+        Past `_MAX_CONNECTIONS` the connection is refused rather than queued, so
+        a flood fails fast instead of building a backlog that outlives it. The
+        response is written without awaiting the drain, because the point of
+        refusing is to spend nothing on the connection: the transport flushes
+        what was written as it closes.
         """
         if self._closed:
+            writer.close()
+            return
+        if len(self._connections) >= _MAX_CONNECTIONS:
+            _log.warning(
+                "refusing a management connection: %d are already open",
+                len(self._connections),
+            )
+            writer.write(
+                _response(_HTTP_SERVICE_UNAVAILABLE, _error("too many connections"))
+            )
             writer.close()
             return
         task = asyncio.get_running_loop().create_task(
@@ -539,3 +568,4 @@ _HTTP_NOT_FOUND: Final = (404, "Not Found")
 _HTTP_METHOD_NOT_ALLOWED: Final = (405, "Method Not Allowed")
 _HTTP_REQUEST_TIMEOUT: Final = (408, "Request Timeout")
 _HTTP_REQUEST_TOO_LARGE: Final = (413, "Content Too Large")
+_HTTP_SERVICE_UNAVAILABLE: Final = (503, "Service Unavailable")
