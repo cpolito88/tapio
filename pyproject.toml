@@ -97,8 +97,11 @@ line-length = 88
 target-version = "py311"
 src = ["src", "tests", "examples"]
 # Code blocks in docs/ are snippet includes, not source: the formatter would
-# try to reformat the include directive as Python.
-extend-exclude = ["docs"]
+# try to reformat the include directive as Python. The slash in the pattern is
+# load-bearing. Ruff matches a pattern with no slash against a directory of
+# that name at any depth, so a bare `docs` also took `tests/docs/` out of lint
+# and formatting, and that is an ordinary test package.
+extend-exclude = ["docs/**"]
 
 [tool.ruff.lint]
 select = [
