@@ -11,7 +11,7 @@ import pytest
 from tapio.actor import ActorContext, ActorSystem, Behavior, Behaviors
 from tapio.errors import InsecureRemoteConfig, MessageTypeError, RefResolutionError
 from tapio.remote.address import Address
-from tapio.remote.transport import LinkFrame
+from tapio.remote.transport import FrameLink, LinkFrame
 from tapio.settings import RemoteSettings, TapioSettings
 from tapio.testkit import assert_no_leaked_tasks
 from tests.failures import eventually
@@ -371,6 +371,40 @@ async def test_a_connection_accepted_after_close_is_closed_at_once():
             there.close()
 
         await system.terminate()
+
+
+async def test_a_refused_link_is_closed_even_if_its_close_never_ran():
+    # A link this endpoint will not use, the loser of a simultaneous dial or a
+    # refusal, is handed to a task that closes it. A task cancelled before its
+    # first line closes nothing, and the drain in close() only awaited the
+    # task, so the socket was left for the garbage collector and reported as an
+    # unclosed transport against whichever test was running when it was
+    # collected. The handshakes map holds its links for this reason; the
+    # refused ones now do too.
+    with assert_no_leaked_tasks():
+        system = ActorSystem("gamma", remoting())
+        endpoint = system.remote
+        assert endpoint is not None
+
+        here, there = socket.socketpair()
+        reader, writer = await asyncio.open_connection(sock=here)
+        try:
+            endpoint.close_link_later(
+                FrameLink(reader, writer, max_frame_bytes=1024), system.address
+            )
+            # Cancelled before it has run a line, which is what a shutdown that
+            # never gives the task a turn amounts to.
+            for task in list(endpoint._closing_links):
+                task.cancel()
+
+            await system.terminate()
+
+            assert writer.is_closing()
+        finally:
+            writer.close()
+            with contextlib.suppress(OSError):
+                await writer.wait_closed()
+            there.close()
 
 
 async def test_a_connection_accepted_while_closing_is_closed_by_the_drain():
