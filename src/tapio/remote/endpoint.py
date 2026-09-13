@@ -110,9 +110,12 @@ class RemoteEndpoint:
         self._handshakes: dict[asyncio.Task[None], FrameLink] = {}
         # A link this endpoint decided not to use still has to be closed, and
         # the task doing it is nobody's child. The event loop holds only a
-        # weak reference to a task, so without this set one can be collected
-        # mid-close and leave the socket open.
-        self._closing_links: set[asyncio.Task[None]] = set()
+        # weak reference to a task, so without this one can be collected
+        # mid-close and leave the socket open. The link is held beside its
+        # task, for the reason `_handshakes` holds one: a task cancelled
+        # before its first line closes nothing, and the close is then owed by
+        # whoever still has the link.
+        self._closing_links: dict[asyncio.Task[None], Link] = {}
         self._names = 0
         self._parent: ActorCell[Any] | None = None
         self._closed = False
@@ -421,11 +424,29 @@ class RemoteEndpoint:
 
         It gets its own task because closing waits for the transport, and the
         caller is a handshake that has nothing left to say. The task is held
-        until it finishes, since the loop would not hold it for us.
+        until it finishes, since the loop would not hold it for us, and the
+        link is held with it so that a task which never runs still leaves
+        somebody holding the close it owes.
         """
-        task = self.dispatcher.spawn_task(link.close(), name=f"tapio-link-close:{peer}")
-        self._closing_links.add(task)
-        task.add_done_callback(self._closing_links.discard)
+        task = self.dispatcher.spawn_task(
+            self._close_refused(link), name=f"tapio-link-close:{peer}"
+        )
+        self._closing_links[task] = link
+
+    async def _close_refused(self, link: Link) -> None:
+        """Close a refused link, and stop being the one who owes that close.
+
+        The entry is dropped in a `finally` rather than from a done callback,
+        so it is gone the moment the close has been issued. A task cancelled
+        before this ever ran leaves its entry in place, which is what tells
+        `close` the socket is still open.
+        """
+        task = asyncio.current_task()
+        try:
+            await link.close()
+        finally:
+            if task is not None:
+                self._closing_links.pop(task, None)
 
     def outbound(self, peer: Address) -> Association | None:
         """Return the association for a peer, dialling if there is none.
@@ -773,7 +794,13 @@ class RemoteEndpoint:
             for task in list(self._closing_links):
                 with contextlib.suppress(asyncio.CancelledError, OSError):
                     await task
-                self._closing_links.discard(task)
+                # A task cancelled before its first line never closed
+                # anything, and its link is still recorded here. One that ran
+                # took itself out of the map on the way.
+                refused = self._closing_links.pop(task, None)
+                if refused is not None:
+                    with contextlib.suppress(OSError, asyncio.CancelledError):
+                        await refused.close()
         # An association whose actor stopped normally took itself out of this
         # table on the way, so whatever is left was adopted after the stop
         # sweep had passed and will get no `PostStop` to close its link. Close
