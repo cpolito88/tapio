@@ -237,10 +237,10 @@ async def test_a_stalled_request_is_timed_out_not_parked(monkeypatch):
 async def _answers(port: int, code: int, *, within: float = 5.0) -> None:
     """Wait until a `GET /status` on this port answers with a given code.
 
-    Polled rather than asked once, because a connection the client has opened is
-    only held by the endpoint once it has accepted it, and one the client has
-    closed is only let go once the handler has finished. Both happen on the
-    endpoint's loop, a turn or two after the client's side of them.
+    This polls instead of asking once. The endpoint counts a connection only
+    after it has accepted it, and releases one only after the handler has
+    finished. Both happen on the endpoint's loop, a turn or two after the client
+    opens or closes its side.
     """
     try:
         async with asyncio.timeout(within):
@@ -254,8 +254,8 @@ async def _answers(port: int, code: int, *, within: float = 5.0) -> None:
 
 
 async def test_the_port_refuses_connections_past_its_cap():
-    # The cap exists because this port shares a loop with the cluster daemon, so
-    # opening connections and sending nothing is the cheap way to starve it.
+    # The cap exists because this port shares a loop with the cluster daemon.
+    # Opening connections and sending nothing is the cheap way to starve it.
     with assert_no_leaked_tasks():
         async with cluster_of(1, management=MANAGED) as nodes:
             await _joined(nodes)
@@ -273,8 +273,8 @@ async def test_the_port_refuses_connections_past_its_cap():
                 assert refused == 503
                 assert payload == {"error": "too many connections"}
 
-                # Closing one frees a slot, so the cap bounds how many
-                # connections are open at once and does not wedge the port.
+                # Closing one frees a slot. The cap bounds how many
+                # connections are open at once. It does not wedge the port.
                 _, writer = held.pop()
                 writer.close()
                 await writer.wait_closed()
