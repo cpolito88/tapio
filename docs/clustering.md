@@ -424,12 +424,12 @@ The token is presented as `Authorization: Bearer <token>` and compared in
 constant time. On loopback it is optional, since reaching the port at all
 already means being on the machine.
 
-What the port is not is an API to put a crowd in front of. It expects loopback
-or a sidecar, and it holds at most thirty-two connections at once, refusing the
-rest with a `503`. The cap is there because this port answers on the same event
-loop the cluster daemon replies to heartbeats on: a flood that starves the loop
-looks to the rest of the cluster like a node that has stopped answering, and
-with a downing strategy configured that is a node the cluster removes. See
+This port is not an API to put a crowd in front of. It expects loopback or a
+sidecar. It holds at most thirty-two connections at once and refuses the rest
+with a `503`. The cap is there because this port answers on the same event loop
+the cluster daemon replies to heartbeats on. A flood that starves that loop
+stops the node answering probes, and the rest of the cluster then calls it
+unreachable. A cluster with a downing strategy removes such a node. See
 [the security page](security.md) for what the port expects of a deployment.
 
 The port also speaks TLS, using the same

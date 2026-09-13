@@ -255,13 +255,14 @@ class ManagementSettings(BaseSettings):
     for the same reason remoting does: the default is set for someone who has
     not thought about who can reach it yet.
 
-    It expects to sit on loopback or behind a sidecar, not to be an
-    internet-facing API. It answers one request per connection, holds at most
-    thirty-two connections at once and refuses the rest with a `503`, and gives
-    each one thirty seconds to arrive and be answered. That is enough for an
-    operator, a script and a health probe together, and it is deliberately not
-    enough to serve a crowd: the loop this port answers on is the one the
-    cluster daemon replies to heartbeats on.
+    It expects to sit on loopback or behind a sidecar. It is not written to be
+    an internet-facing API. It answers one request per connection. It holds at
+    most thirty-two connections at once and refuses the rest with a `503`. It
+    gives each request thirty seconds to arrive and be answered. Those limits
+    leave room for an operator, a script and a health probe together, and they
+    deliberately leave no room for a crowd. This port answers on the same event
+    loop the cluster daemon replies to heartbeats on, so a flood here delays the
+    cluster's own traffic.
     """
 
     model_config = SettingsConfigDict(env_prefix="TAPIO_MANAGEMENT_", frozen=True)

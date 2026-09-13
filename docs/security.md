@@ -5,8 +5,8 @@ deploy. It is not designed to face the public internet.**
 
 That sentence is the page. The rest is what the library does to hold you to
 it, and what it cannot do for you. A node opens at most two ports, and the
-sentence covers both: the remote transport, which is everything up to the last
-section, and the management port, which is the last section.
+sentence covers both of them. The remote transport is everything up to the last
+section. The management port is the last section.
 
 Opening a port that accepts frames naming actor paths and message types is a
 serious surface, so the defaults are set for somebody who has not thought
@@ -119,26 +119,25 @@ things that are safe to have started by a peer.
 ## The management port
 
 A node with [ManagementSettings][tapio.settings.ManagementSettings] opens a
-second port, the one an operator reads membership and downs a member through.
-It is off unless it is configured, it binds loopback by default, and binding it
-beyond loopback with nothing to authenticate an operator is refused the way an
-unsecured remoting bind is. All of that is in
-[the clustering page](clustering.md).
+second port. An operator reads membership and downs a member through it. It is
+off unless it is configured, and it binds loopback by default. Binding it beyond
+loopback with nothing to authenticate an operator is refused, the same way an
+unsecured remoting bind is. [The clustering page](clustering.md) covers all of
+that.
 
-What belongs here is the deployment it expects: **loopback, or behind a sidecar
-that terminates TLS and authenticates the caller.** It is not written to be an
-internet-facing API. It answers one request per connection, holds at most
-thirty-two connections at once and refuses the rest with a `503`, and gives
+This page covers the deployment the port expects: **loopback, or behind a
+sidecar that terminates TLS and authenticates the caller.** It is not written to
+be an internet-facing API. It answers one request per connection. It holds at
+most thirty-two connections at once and refuses the rest with a `503`. It gives
 each request thirty seconds to arrive and be answered.
 
 Those limits are there because this port shares an event loop with the cluster
-daemon. A flood that starves the loop delays gossip and heartbeat replies, and
-a node that stops answering probes is a node its watchers call unreachable,
-which with a downing strategy configured is a node the cluster removes. So the
-cap makes the blast radius of a flood a constant, and it is a deliberately
-small one: enough for a human, a script and a health probe at the same time,
-and not enough to serve a crowd. Put a proxy in front of it if a crowd is what
-you have.
+daemon. A flood that starves the loop delays gossip and heartbeat replies. The
+node then stops answering probes, its watchers call it unreachable, and a
+cluster with a downing strategy removes it. The cap keeps the cost of a flood
+fixed, and it keeps it deliberately small. Thirty-two connections is enough for
+a human, a script and a health probe at the same time. It is not enough to serve
+a crowd, so put a proxy in front of the port if that is what you have.
 
 ## A checklist
 

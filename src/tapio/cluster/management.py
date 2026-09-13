@@ -65,17 +65,17 @@ _MAX_BODY_BYTES: Final = 64 * 1024
 # too, so a peer that stops reading cannot hold the response half-sent.
 _REQUEST_TIMEOUT: Final = 30.0
 
-# How many connections this port will hold at once. Each one is already bounded
-# on its own, by the deadline above and the two size limits, but nothing counted
-# how many existed together: a client that opens connections and sends nothing
-# holds each for the full deadline, so the steady state is the dial rate times
-# thirty seconds. The cap matters because the loop this port shares is the one
-# the cluster daemon answers heartbeats on. A flood that starves it looks to the
-# rest of the cluster like a node that has stopped answering, which with a
-# downing strategy configured is a node that gets removed, so flooding the port
-# would cause the very thing the port is guarded to prevent. An operator command
-# is one request, so thirty-two is room for a health probe, a human and a script
-# at the same time.
+# How many connections this port will hold at once. Each connection is already
+# bounded on its own, by the deadline above and the two size limits, but nothing
+# bounded how many are open together. A client can open connections and send
+# nothing on them. Each one is then held for the full deadline, so the number
+# open grows with the rate the client dials at.
+#
+# The cap matters because this port answers on the same event loop the cluster
+# daemon replies to heartbeats on. A flood that starves that loop stops the node
+# answering probes. Its watchers then call the node unreachable, and a cluster
+# with a downing strategy removes it. An operator command is one request, so
+# thirty-two leaves room for a human, a script and a health probe at once.
 _MAX_CONNECTIONS: Final = 32
 
 
@@ -242,11 +242,11 @@ class ClusterManagement:
         A connection accepted after `_close` has run is closed here, since there
         is nobody left to answer it.
 
-        Past `_MAX_CONNECTIONS` the connection is refused rather than queued, so
-        a flood fails fast instead of building a backlog that outlives it. The
-        response is written without awaiting the drain, because the point of
-        refusing is to spend nothing on the connection: the transport flushes
-        what was written as it closes.
+        Past `_MAX_CONNECTIONS` the connection is refused rather than queued.
+        A flood then fails fast instead of building a backlog that outlives it.
+        The response is written without awaiting the drain, because refusing
+        should cost nothing: the transport flushes what was written as it
+        closes.
         """
         if self._closed:
             writer.close()
