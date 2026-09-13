@@ -140,6 +140,8 @@ async def test_the_greeter(actor_system):
     greeter.tell(Greet(whom="world", reply_to=probe.ref))
 
     await probe.expect_message(Greeted(whom="world"))
+
+
 # --8<-- [end:probe]
 
 
@@ -152,13 +154,13 @@ async def test_a_worker_that_retires(actor_system, make_probe):
     worker.tell(Retire())
 
     await probe.expect_terminated(worker)
+
+
 # --8<-- [end:watch]
 
 
 # --8<-- [start:dead_letters]
-async def test_a_message_to_a_stopped_actor_is_accounted_for(
-    actor_system, make_probe
-):
+async def test_a_message_to_a_stopped_actor_is_accounted_for(actor_system, make_probe):
     letters: TestProbe[DeadLetter] = TestProbe(actor_system, DeadLetter)
     actor_system.dead_letters.subscribe(letters.tell)
     watcher = make_probe(Greeted)
@@ -171,6 +173,8 @@ async def test_a_message_to_a_stopped_actor_is_accounted_for(
 
     letter = await letters.expect_message_of(DeadLetter)
     assert letter.reason == DeadLetterReason.RECIPIENT_TERMINATED
+
+
 # --8<-- [end:dead_letters]
 
 
@@ -182,6 +186,8 @@ async def test_counting():
     await kit.run(GetCount(reply_to=kit.self_ref))
 
     assert kit.self_inbox == [Count(value=1)]
+
+
 # --8<-- [end:kit]
 
 
@@ -194,6 +200,8 @@ async def test_what_the_supervisor_started():
 
     assert kit.effects == ("worker", Watched(dependency, watching=True))
     assert kit.child("worker").inbox == [Job(item=1)]
+
+
 # --8<-- [end:effects]
 
 
@@ -204,6 +212,8 @@ async def test_shutdown_leaves_nothing_behind():
         system.spawn(greeter_behavior(), "greeter")
 
         await system.terminate()
+
+
 # --8<-- [end:leaks]
 
 
@@ -222,6 +232,8 @@ async def test_a_partition_is_noticed():
         nodes.partition()
 
         await probe.expect_terminated(here, timedelta(seconds=5))
+
+
 # --8<-- [end:two_nodes]
 
 
