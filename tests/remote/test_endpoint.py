@@ -12,8 +12,11 @@ from tapio.actor import ActorContext, ActorSystem, Behavior, Behaviors
 from tapio.errors import InsecureRemoteConfig, MessageTypeError, RefResolutionError
 from tapio.remote.address import Address
 from tapio.remote.transport import FrameLink, LinkFrame, connect
-from tapio.settings import RemoteSettings, TapioSettings
-from tapio.testkit import assert_no_leaked_tasks
+from tapio.testkit import (
+    IsolatedRemoteSettings,
+    IsolatedTapioSettings,
+    assert_no_leaked_tasks,
+)
 from tests.failures import eventually
 from tests.messages import NotAMessage
 from tests.remote.peers import RecordingLink, Tick, counting, remoting, uri
@@ -116,7 +119,7 @@ async def test_resolving_an_address_with_nowhere_to_dial_says_so(alpha: ActorSys
 
 
 async def test_resolving_a_peer_without_remoting_configured_says_so():
-    async with ActorSystem("solo", TapioSettings(_env_file=None)) as solo:
+    async with ActorSystem("solo", IsolatedTapioSettings()) as solo:
         with pytest.raises(RefResolutionError, match="remoting switched off"):
             await solo.resolve("tapio://other@127.0.0.1:9/user/x#1", expect=Tick)
 
@@ -127,7 +130,7 @@ async def test_expecting_something_that_is_not_a_message_is_refused(
     ticker = beta.spawn(counting([]), "ticker")
 
     with pytest.raises(MessageTypeError, match=r"tapio\.Message"):
-        await alpha.resolve(uri(beta, ticker), expect=NotAMessage)
+        await alpha.resolve(uri(beta, ticker), expect=NotAMessage)  # type: ignore[type-var]
 
 
 async def test_an_actor_resolves_through_its_own_context(
@@ -161,10 +164,8 @@ async def test_the_advertised_port_is_the_one_the_os_handed_out(alpha: ActorSyst
 async def test_a_canonical_address_overrides_what_the_socket_says():
     # Under NAT or port mapping, what peers dial is not what the socket is
     # bound to. A ref always writes down the former.
-    settings = TapioSettings(
-        _env_file=None,
-        remote=RemoteSettings(
-            _env_file=None,
+    settings = IsolatedTapioSettings(
+        remote=IsolatedRemoteSettings(
             bind_port=0,
             canonical_host="orders.svc",
             canonical_port=25520,
@@ -185,7 +186,7 @@ async def test_each_incarnation_has_its_own_uid():
 
 
 async def test_remoting_is_off_unless_it_is_configured():
-    async with ActorSystem("solo", TapioSettings(_env_file=None)) as solo:
+    async with ActorSystem("solo", IsolatedTapioSettings()) as solo:
         assert solo.remote is None
         assert not solo.address.is_addressable
 
@@ -196,9 +197,8 @@ async def test_binding_beyond_loopback_without_a_secret_refuses_to_start():
     with pytest.raises(InsecureRemoteConfig, match="secret"):
         ActorSystem(
             "exposed",
-            TapioSettings(
-                _env_file=None,
-                remote=RemoteSettings(_env_file=None, bind_host="0.0.0.0", bind_port=0),
+            IsolatedTapioSettings(
+                remote=IsolatedRemoteSettings(bind_host="0.0.0.0", bind_port=0),
             ),
         )
 
@@ -510,9 +510,7 @@ def test_a_construction_that_fails_after_the_bind_releases_the_port():
     # takes the raise path that is already there: Dispatcher.from_running_loop
     # runs just after the bind and needs a running loop.
     port = _free_port()
-    settings = TapioSettings(
-        _env_file=None, remote=RemoteSettings(_env_file=None, bind_port=port)
-    )
+    settings = IsolatedTapioSettings(remote=IsolatedRemoteSettings(bind_port=port))
 
     held = None
     try:
@@ -581,7 +579,7 @@ async def test_a_handshake_cancelled_before_its_first_line_still_closes_its_link
             assert system.remote is not None
             link = RecordingLink()
             never_ran: asyncio.Task[None] = asyncio.ensure_future(_never_runs())
-            system.remote._handshakes[never_ran] = link  # type: ignore[index]
+            system.remote._handshakes[never_ran] = link
 
             await system.terminate()
 

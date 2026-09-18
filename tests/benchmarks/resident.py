@@ -29,7 +29,9 @@ from tests.benchmarks.machine import as_text
 
 from tapio import Behavior, Behaviors, Message
 from tapio.actor import ActorContext, ActorRef, ActorSystem
-from tapio.settings import TapioSettings
+from tapio.testkit import (
+    IsolatedTapioSettings,
+)
 
 SIZES = (1_000, 10_000, 100_000)
 """How many resident actors to measure, an order of magnitude apart."""
@@ -93,7 +95,7 @@ async def measure(count: int) -> dict[str, float]:
         The measurements, as plain numbers for the parent process to print.
     """
     baseline = rss_bytes()
-    async with ActorSystem("scale", TapioSettings(_env_file=None)) as system:
+    async with ActorSystem("scale", IsolatedTapioSettings()) as system:
         refs = [system.spawn_anonymous(idle()) for _ in range(count)]
 
         # The last actor spawned, on the theory that if anything is slower to

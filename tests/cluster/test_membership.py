@@ -6,6 +6,7 @@ every node.
 """
 
 import asyncio
+from collections.abc import Callable
 from datetime import timedelta
 
 import pytest
@@ -26,6 +27,12 @@ from tests.cluster.conftest import (
     seeds_of,
 )
 from tests.failures import eventually
+
+
+def _removed(node: Node, address: str) -> Callable[[], bool]:
+    """Whether this node has seen the member at an address removed."""
+    return lambda: node.status_of(address) is MemberStatus.REMOVED
+
 
 NODES = 5
 
@@ -137,9 +144,7 @@ async def test_a_graceful_leave_reaches_removed_on_every_node():
             assert leaving.status is MemberStatus.REMOVED
             for node in staying:
                 await eventually(
-                    lambda node=node: (
-                        node.status_of(leaving.address) is MemberStatus.REMOVED
-                    ),
+                    _removed(node, leaving.address),
                     within=5.0,
                 )
                 # It is out of the live membership, which is what an

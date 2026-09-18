@@ -107,7 +107,11 @@ class RemoteEndpoint:
         # Each accepted connection, keyed by the task handshaking it, held by
         # its link. The link is recorded the moment the connection is made, so
         # `close` can close it even for a task cancelled before it ever ran.
-        self._handshakes: dict[asyncio.Task[None], FrameLink] = {}
+        # Typed as the protocol rather than as `FrameLink`, like
+        # `_closing_links` below: the drain uses only `peer` and `close`, and a
+        # test that puts a fake link mid-handshake is the whole reason `Link`
+        # is a protocol.
+        self._handshakes: dict[asyncio.Task[None], Link] = {}
         # A link this endpoint decided not to use still has to be closed, and
         # the task doing it is nobody's child. The event loop holds only a
         # weak reference to a task, so without this one can be collected

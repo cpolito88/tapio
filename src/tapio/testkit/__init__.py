@@ -31,8 +31,10 @@ from tapio.testkit.probe import DEFAULT_TIMEOUT, NO_MESSAGE_WINDOW, TestProbe
 from tapio.testkit.remote import LinkFaults, TwoNodes, link_faults, two_nodes
 from tapio.testkit.settings import (
     IsolatedClusterSettings,
+    IsolatedManagementSettings,
     IsolatedRemoteSettings,
     IsolatedTapioSettings,
+    IsolatedTLSSettings,
 )
 
 __all__ = [
@@ -42,7 +44,9 @@ __all__ = [
     "DeadLettered",
     "Effect",
     "IsolatedClusterSettings",
+    "IsolatedManagementSettings",
     "IsolatedRemoteSettings",
+    "IsolatedTLSSettings",
     "IsolatedTapioSettings",
     "LinkFaults",
     "RecordingRef",

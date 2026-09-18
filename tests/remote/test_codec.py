@@ -38,8 +38,12 @@ from tapio.remote.codec import (
 )
 from tapio.remote.protocol import PROTOCOL_VERSION
 from tapio.remote.registry import register_message
-from tapio.settings import RemoteSettings, TapioSettings
-from tapio.testkit import assert_no_leaked_tasks
+from tapio.settings import TapioSettings
+from tapio.testkit import (
+    IsolatedRemoteSettings,
+    IsolatedTapioSettings,
+    assert_no_leaked_tasks,
+)
 from tests.failures import eventually
 
 
@@ -74,9 +78,7 @@ class Unregistered(Message):
 
 def settings_for() -> TapioSettings:
     """Settings for a system listening on a loopback port the OS picks."""
-    return TapioSettings(
-        _env_file=None, remote=RemoteSettings(_env_file=None, bind_port=0)
-    )
+    return IsolatedTapioSettings(remote=IsolatedRemoteSettings(bind_port=0))
 
 
 def unlinked(running: ActorSystem) -> ActorSystem:

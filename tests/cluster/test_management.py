@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import json
 import socket
+from typing import Any
 
 import pytest
 
@@ -17,16 +18,18 @@ from tapio.actor import ActorSystem
 from tapio.cluster import Cluster, MemberStatus
 from tapio.cluster.management import _MAX_CONNECTIONS, verify_management_security
 from tapio.errors import ActorNameError, InsecureRemoteConfig
-from tapio.settings import ManagementSettings, TLSSettings
-from tapio.testkit import assert_no_leaked_tasks
+from tapio.testkit import (
+    IsolatedManagementSettings,
+    IsolatedTLSSettings,
+    assert_no_leaked_tasks,
+)
 from tests.cluster.conftest import Node, cluster_of, remoting, seeds_of
 from tests.failures import eventually
 
-MANAGED = ManagementSettings(_env_file=None, bind_port=0)  # type: ignore[call-arg]
+MANAGED = IsolatedManagementSettings(bind_port=0)
 """A management endpoint on a loopback port the OS picks, asking for no token."""
 
-GUARDED = ManagementSettings(  # type: ignore[call-arg]
-    _env_file=None,  # type: ignore[call-arg]
+GUARDED = IsolatedManagementSettings(
     bind_port=0,
     token="s3cret",  # type: ignore[arg-type]
 )
@@ -47,7 +50,7 @@ async def _request(
     *,
     body: dict[str, object] | None = None,
     token: str | None = None,
-) -> tuple[int, dict[str, object]]:
+) -> tuple[int, dict[str, Any]]:
     """Make one HTTP request to a management port and read its JSON answer.
 
     Done with a raw asyncio connection rather than a blocking client so the
@@ -307,14 +310,13 @@ async def test_headers_that_never_end_answer_413():
 
 
 def test_binding_beyond_loopback_without_a_token_is_refused():
-    beyond = ManagementSettings(_env_file=None, bind_host="0.0.0.0")  # type: ignore[call-arg]
+    beyond = IsolatedManagementSettings(bind_host="0.0.0.0")
     with pytest.raises(InsecureRemoteConfig):
         verify_management_security(beyond)
 
 
 def test_binding_beyond_loopback_with_a_token_is_allowed():
-    beyond = ManagementSettings(  # type: ignore[call-arg]
-        _env_file=None,  # type: ignore[call-arg]
+    beyond = IsolatedManagementSettings(
         bind_host="0.0.0.0",
         token="s3cret",  # type: ignore[arg-type]
     )
@@ -326,12 +328,9 @@ def test_mutual_tls_satisfies_the_beyond_loopback_rule():
     # A cafile means the port requires a client certificate, which
     # authenticates the operator the way a token does. The files are not read
     # here, only the policy is checked, so the paths need not exist.
-    mutual = ManagementSettings(  # type: ignore[call-arg]
-        _env_file=None,  # type: ignore[call-arg]
+    mutual = IsolatedManagementSettings(
         bind_host="0.0.0.0",
-        tls=TLSSettings(
-            _env_file=None, certfile="s.pem", keyfile="s.key", cafile="ca.pem"
-        ),  # type: ignore[call-arg]
+        tls=IsolatedTLSSettings(certfile="s.pem", keyfile="s.key", cafile="ca.pem"),
     )
     verify_management_security(mutual)
 
@@ -340,10 +339,9 @@ def test_server_only_tls_does_not_satisfy_it():
     # No cafile: the port proves who it is but not who the caller is, so a
     # stranger who trusts the certificate can still down a member. That is not
     # enough to bind beyond loopback.
-    server_only = ManagementSettings(  # type: ignore[call-arg]
-        _env_file=None,  # type: ignore[call-arg]
+    server_only = IsolatedManagementSettings(
         bind_host="0.0.0.0",
-        tls=TLSSettings(_env_file=None, certfile="s.pem", keyfile="s.key"),  # type: ignore[call-arg]
+        tls=IsolatedTLSSettings(certfile="s.pem", keyfile="s.key"),
     )
     with pytest.raises(InsecureRemoteConfig):
         verify_management_security(server_only)
@@ -380,8 +378,7 @@ async def test_a_cluster_that_fails_to_start_releases_its_management_port():
             with pytest.raises(ActorNameError):
                 Cluster(
                     system,
-                    management=ManagementSettings(  # type: ignore[call-arg]
-                        _env_file=None,  # type: ignore[call-arg]
+                    management=IsolatedManagementSettings(
                         bind_port=port,
                     ),
                 )

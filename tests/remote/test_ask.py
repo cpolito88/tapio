@@ -14,6 +14,7 @@ from tapio.errors import (
 )
 from tapio.testkit import assert_no_leaked_tasks, two_nodes
 from tests.failures import eventually
+from tests.internals import endpoint
 from tests.remote.peers import Ping, Pong, collecting, echoing, ignoring, uri
 
 
@@ -111,7 +112,9 @@ async def test_asking_a_quarantined_peer_fails_without_sending_anything():
             remote.tell(Ping(n=1, reply_to=listener))
             await eventually(lambda: seen == [1])
             nodes.partition()
-            await eventually(lambda: nodes.alpha.remote.quarantined != (), within=5.0)
+            await eventually(
+                lambda: endpoint(nodes.alpha).quarantined != (), within=5.0
+            )
 
             with pytest.raises(AskTargetUnreachable, match="beyond reach"):
                 await remote.ask(
@@ -131,7 +134,7 @@ async def test_a_remote_reply_of_the_wrong_type_fails_the_caller(
     # surfaces here rather than as a value whose static type is a lie.
     with pytest.raises(AskTypeError, match="Ping"):
         await remote.ask(
-            lambda reply_to: Ping(n=1, reply_to=reply_to),
+            lambda reply_to: Ping(n=1, reply_to=reply_to),  # type: ignore[arg-type]
             expect=Ping,
             timeout=timedelta(milliseconds=200),
         )

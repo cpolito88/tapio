@@ -7,6 +7,7 @@ import pytest
 from tapio import ActorRef, ActorSystem, Behavior, Behaviors, WatchError
 from tapio.actor import ActorContext, ActorPath, Signal
 from tests.failures import Job, eventually, recording
+from tests.internals import cell_of
 
 
 def watching(
@@ -96,7 +97,7 @@ async def test_watching_an_actor_that_has_already_stopped_fires_at_once(
 
     target = system.spawn(recording([]), name="target")
     target.tell(Job(item=-1))
-    await eventually(lambda: not target.cell.is_alive)
+    await eventually(lambda: not cell_of(target).is_alive)
 
     # The race cannot be avoided, so watching answers the same way whichever
     # side of it the caller lands on.
@@ -125,7 +126,7 @@ async def test_unwatch_stops_the_signal(system: ActorSystem):
 
     watcher = system.spawn(Behaviors.setup(build), name="watcher")
     target.tell(Job(item=-1))
-    await eventually(lambda: not target.cell.is_alive)
+    await eventually(lambda: not cell_of(target).is_alive)
 
     watcher.tell(Job(item=1))
     await eventually(lambda: "job 1" in seen)
@@ -135,14 +136,14 @@ async def test_unwatch_stops_the_signal(system: ActorSystem):
 async def test_a_stopped_watcher_leaves_nothing_behind(system: ActorSystem):
     target = system.spawn(recording([]), name="target")
     watcher = system.spawn(watching(target, []), name="watcher")
-    await eventually(lambda: len(target.cell.watchers) == 1)
+    await eventually(lambda: len(cell_of(target).watchers) == 1)
 
     watcher.tell(Job(item=-1))
-    await eventually(lambda: not watcher.cell.is_alive)
+    await eventually(lambda: not cell_of(watcher).is_alive)
 
     # This is the map users would otherwise write themselves and forget to
     # clean up. Both directions are released.
-    assert target.cell.watchers == ()
+    assert cell_of(target).watchers == ()
 
 
 async def test_an_actor_cannot_watch_itself(system: ActorSystem):
@@ -201,7 +202,7 @@ async def test_a_signal_overtakes_a_deep_user_backlog(system: ActorSystem):
         watcher.tell(Job(item=item))
 
     target.tell(Job(item=-1))
-    await eventually(lambda: not target.cell.is_alive)
+    await eventually(lambda: not cell_of(target).is_alive)
     gate.set()
     await eventually(lambda: "job 50" in seen)
 
@@ -220,7 +221,7 @@ async def test_the_watcher_hears_once_however_the_race_goes(
     target = system.spawn(recording([]), name="target")
     if stop_target_first:
         target.tell(Job(item=-1))
-        await eventually(lambda: not target.cell.is_alive)
+        await eventually(lambda: not cell_of(target).is_alive)
 
     system.spawn(watching(target, seen), name="watcher")
     if not stop_target_first:

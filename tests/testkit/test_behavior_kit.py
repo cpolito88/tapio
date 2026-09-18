@@ -14,8 +14,13 @@ from tapio.actor import (
     SupervisorStrategy,
 )
 from tapio.errors import BehaviorTypeError, MessageTypeError, TapioError
-from tapio.settings import TapioSettings
-from tapio.testkit import BehaviorTestKit, DeadLettered, Spawned, Watched
+from tapio.testkit import (
+    BehaviorTestKit,
+    DeadLettered,
+    IsolatedTapioSettings,
+    Spawned,
+    Watched,
+)
 
 
 class Count(Message):
@@ -207,9 +212,11 @@ async def test_dead_letters_are_recorded_with_the_reason_and_the_message():
     await kit.run(job)
 
     # The reason alone is what most tests care about, so an effect compares
-    # equal to it. The message is the object the handler was given.
-    assert kit.effects == (DeadLetterReason.UNKNOWN_RECIPIENT,)
+    # equal to it. The message is the object the handler was given. Read
+    # first: comparing the tuple to one of strings settles its item type for
+    # everything after it.
     recorded = kit.effects[0]
+    assert kit.effects == (DeadLetterReason.UNKNOWN_RECIPIENT,)
     assert isinstance(recorded, DeadLettered)
     assert recorded.message is job
     assert recorded.recipient == unreachable
@@ -262,7 +269,7 @@ async def test_signals_are_delivered_by_hand():
         return Behaviors.same()
 
     kit: BehaviorTestKit[Increment] = BehaviorTestKit(
-        Behaviors.receive_message(on_message, msg_type=Increment, on_signal=on_signal)  # type: ignore[arg-type]
+        Behaviors.receive_message(on_message, msg_type=Increment, on_signal=on_signal)
     )
 
     await kit.signal(PostStop())
@@ -324,7 +331,7 @@ async def test_a_blocking_call_runs_inline():
 
 
 async def test_validation_follows_the_settings_it_was_given():
-    off = TapioSettings(_env_file=None, validate_on_tell=False)
+    off = IsolatedTapioSettings(validate_on_tell=False)
     kit: BehaviorTestKit[Increment | GetCount] = BehaviorTestKit(
         counter(), settings=off
     )

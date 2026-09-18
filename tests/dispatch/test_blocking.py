@@ -11,8 +11,11 @@ from tapio import Behavior, Behaviors, Message
 from tapio.actor import ActorContext, ActorRef, ActorSystem
 from tapio.dispatch.blocking import BlockingPool
 from tapio.errors import ActorSystemTerminating
-from tapio.settings import TapioSettings
-from tapio.testkit import assert_no_leaked_tasks, assert_no_leaked_threads
+from tapio.testkit import (
+    IsolatedTapioSettings,
+    assert_no_leaked_tasks,
+    assert_no_leaked_threads,
+)
 from tests.failures import eventually
 
 
@@ -120,7 +123,7 @@ async def test_a_system_that_never_blocks_starts_no_threads(system: ActorSystem)
 
 async def test_the_pool_is_shut_down_with_the_system():
     with assert_no_leaked_threads(), assert_no_leaked_tasks():
-        settings = TapioSettings(_env_file=None, blocking_pool_size=2)
+        settings = IsolatedTapioSettings(blocking_pool_size=2)
         system = ActorSystem("closing", settings)
         answers: list[Answer] = []
         worker = system.spawn(blocking_worker(), "worker")
@@ -137,7 +140,7 @@ async def test_the_pool_is_shut_down_with_the_system():
 
 
 async def test_the_pool_is_bounded_by_the_setting():
-    settings = TapioSettings(_env_file=None, blocking_pool_size=2)
+    settings = IsolatedTapioSettings(blocking_pool_size=2)
     system = ActorSystem("bounded", settings)
     try:
         started = threading.Barrier(3, timeout=0.2)

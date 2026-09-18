@@ -8,6 +8,7 @@ still hears about a death it was watching.
 
 import asyncio
 import logging
+from typing import Any
 
 import pytest
 
@@ -22,9 +23,13 @@ class Drain(Message):
 
 
 class Watch(Message):
-    """Carries the actor to watch, so the test can then stop it."""
+    """Carries the actor to watch, so the test can then stop it.
 
-    target: ActorRef[Message]
+    Any ref, not an `ActorRef[Message]`: watching sends nothing to the target,
+    so what it receives is not this message's business.
+    """
+
+    target: ActorRef[Any]
 
 
 class Hold(Message):
@@ -97,9 +102,9 @@ async def test_an_actor_that_becomes_empty_still_hears_a_watched_death(
     )
     victim = system.spawn(Behaviors.receive_message(be_stopped), name="victim")
 
-    watcher.tell(Watch(target=victim))  # type: ignore[arg-type]
+    watcher.tell(Watch(target=victim))
     await eventually(lambda: seen == ["watching"])
-    victim.tell(Drain())  # type: ignore[arg-type]
+    victim.tell(Drain())
 
     # The watcher switched to empty() before the death. A Terminated dropped
     # here is a watcher that waits forever for an eviction it was promised.

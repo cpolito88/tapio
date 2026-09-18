@@ -25,6 +25,9 @@ import pytest
 from tapio import Behavior, Behaviors, Message, register_message
 from tapio.actor import ActorContext, ActorRef, ActorSystem
 from tapio.settings import RemoteSettings, TapioSettings
+from tapio.testkit import (
+    IsolatedTapioSettings,
+)
 
 BATCH = 10_000
 """How many messages one throughput sample sends."""
@@ -213,8 +216,7 @@ def remote_settings() -> TapioSettings:
     Returns:
         The settings.
     """
-    return TapioSettings(
-        _env_file=None,
+    return IsolatedTapioSettings(
         remote=RemoteSettings(bind_host="127.0.0.1", bind_port=0),
     )
 
@@ -288,7 +290,7 @@ def measure_tell(
 def test_tell_throughput_with_validation(
     benchmark: Any, loop: asyncio.AbstractEventLoop
 ) -> None:
-    measure_tell(benchmark, loop, TapioSettings(_env_file=None), Ping(n=1))
+    measure_tell(benchmark, loop, IsolatedTapioSettings(), Ping(n=1))
 
 
 def test_tell_throughput_without_validation(
@@ -297,7 +299,7 @@ def test_tell_throughput_without_validation(
     measure_tell(
         benchmark,
         loop,
-        TapioSettings(_env_file=None, validate_on_tell=False),
+        IsolatedTapioSettings(validate_on_tell=False),
         Ping(n=1),
     )
 
@@ -305,7 +307,7 @@ def test_tell_throughput_without_validation(
 def test_wide_tell_throughput_with_validation(
     benchmark: Any, loop: asyncio.AbstractEventLoop
 ) -> None:
-    measure_tell(benchmark, loop, TapioSettings(_env_file=None), wide_message())
+    measure_tell(benchmark, loop, IsolatedTapioSettings(), wide_message())
 
 
 def test_wide_tell_throughput_without_validation(
@@ -314,7 +316,7 @@ def test_wide_tell_throughput_without_validation(
     measure_tell(
         benchmark,
         loop,
-        TapioSettings(_env_file=None, validate_on_tell=False),
+        IsolatedTapioSettings(validate_on_tell=False),
         wide_message(),
     )
 
@@ -334,7 +336,7 @@ def test_spawn_cost(benchmark: Any, loop: asyncio.AbstractEventLoop) -> None:
         def one_round() -> tuple[tuple[Any, ...], dict[str, Any]]:
             while live:
                 loop.run_until_complete(live.pop().terminate())
-            system = start(loop, "bench", TapioSettings(_env_file=None))
+            system = start(loop, "bench", IsolatedTapioSettings())
             live.append(system)
             return (system,), {}
 
@@ -362,7 +364,7 @@ def test_spawn_cost(benchmark: Any, loop: asyncio.AbstractEventLoop) -> None:
 
 
 def test_ask_latency(benchmark: Any, loop: asyncio.AbstractEventLoop) -> None:
-    system = start(loop, "bench", TapioSettings(_env_file=None))
+    system = start(loop, "bench", IsolatedTapioSettings())
     try:
         answers = system.spawn(answering(), "answers")
 
