@@ -35,6 +35,7 @@ from tapio.settings import RemoteSettings, TLSSettings
 
 __all__ = [
     "LINK_PREFIX",
+    "BindSettings",
     "FrameLink",
     "Heartbeat",
     "Link",
@@ -47,6 +48,7 @@ __all__ = [
     "connect",
     "framed",
     "is_link_frame",
+    "is_loopback",
     "link_body",
     "listen",
     "server_ssl_context",
@@ -367,12 +369,32 @@ async def connect(
     return FrameLink(reader, writer, max_frame_bytes=max_frame_bytes)
 
 
-def bind(settings: RemoteSettings) -> socket.socket:
+class BindSettings(Protocol):
+    """Where something listens, which is all `bind` needs to know.
+
+    Both [RemoteSettings][tapio.settings.RemoteSettings] and
+    [ManagementSettings][tapio.settings.ManagementSettings] fit it. The two
+    ports are unalike in every other way, so this names the two fields they do
+    share rather than handing one port's settings class to the other's code.
+    """
+
+    @property
+    def bind_host(self) -> str:
+        """The interface to listen on."""
+
+    @property
+    def bind_port(self) -> int:
+        """The port to listen on, or `0` to take whatever the OS hands out."""
+
+
+def bind(settings: BindSettings) -> socket.socket:
     """Bind and listen, synchronously, so the port is known before anything runs.
 
-    Binding here rather than inside the server task lets a system with
-    `bind_port=0` advertise a canonical address as soon as it is constructed.
-    The first ref it hands out already names a port a peer can dial.
+    Binding here rather than inside the server task lets a caller given
+    `bind_port=0` know the port it got before it hands anyone a way to reach
+    it. Remoting needs that so its canonical address is settled before the
+    first ref writes itself down, and the management port needs it so a node
+    can say where an operator reaches it.
 
     Args:
         settings: Where to listen.
@@ -422,7 +444,7 @@ def verify_bind_security(settings: RemoteSettings) -> None:
         InsecureRemoteConfig: If `bind_host` is not a loopback address and no
             `secret` is set.
     """
-    if settings.secret is not None or _is_loopback(settings.bind_host):
+    if settings.secret is not None or is_loopback(settings.bind_host):
         return
     # An empty host is spelled out, because it reads like a setting nobody
     # filled in rather than like the every-interface bind it actually is.
@@ -441,7 +463,7 @@ def verify_bind_security(settings: RemoteSettings) -> None:
     raise InsecureRemoteConfig(msg)
 
 
-def _is_loopback(host: str) -> bool:
+def is_loopback(host: str) -> bool:
     """Whether a bind host names this machine and nothing else.
 
     The empty string is not one of them, however much it looks like an absent

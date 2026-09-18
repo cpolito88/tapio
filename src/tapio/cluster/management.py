@@ -40,7 +40,7 @@ from tapio.cluster.messages import ClusterMessage, Down, Leave
 from tapio.errors import InsecureRemoteConfig
 from tapio.logging import runtime_logger
 from tapio.message import Message
-from tapio.remote.transport import _is_loopback, server_ssl_context
+from tapio.remote.transport import bind, is_loopback, server_ssl_context
 from tapio.settings import ManagementSettings, TLSSettings
 
 __all__ = [
@@ -105,7 +105,7 @@ def verify_management_security(settings: ManagementSettings) -> None:
     authenticates_the_operator = settings.token is not None or (
         settings.tls is not None and settings.tls.cafile is not None
     )
-    if authenticates_the_operator or _is_loopback(settings.bind_host):
+    if authenticates_the_operator or is_loopback(settings.bind_host):
         return
     host = (
         "'' (which means every interface)"
@@ -464,12 +464,7 @@ def open_management_listener(settings: ManagementSettings) -> socket.socket:
         OSError: If the address could not be bound.
     """
     verify_management_security(settings)
-    family = socket.AF_INET6 if ":" in settings.bind_host else socket.AF_INET
-    listener = socket.create_server(
-        (settings.bind_host.strip("[]"), settings.bind_port), family=family
-    )
-    listener.setblocking(False)
-    return listener
+    return bind(settings)
 
 
 def _parse_head(head: bytes) -> tuple[str, str, dict[str, str]]:
