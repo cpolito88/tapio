@@ -176,6 +176,7 @@ class Cluster:
             settings=self._settings,
             relent=relent,
             linked=linked,
+            now=system.dispatcher.now,
             strategy=downing,
         )
         self._ref: ActorRef[ClusterMessage] = system.spawn_system_actor(
@@ -188,6 +189,7 @@ class Cluster:
                 snapshot=self._snapshot,
                 members=self._live_member_addresses,
                 daemon=self._ref,
+                dispatcher=system.dispatcher,
                 token=management.token,
                 tls=management.tls,
                 address=self.address,
@@ -206,10 +208,12 @@ class Cluster:
         own turn, so this cannot terminate inline: doing so would stop the
         daemon while it is mid publish. It spawns the shutdown as its own task
         instead, the same way a failure escalating past a guardian does, so the
-        turn that decided to down this node finishes first. The task is held,
-        since the event loop keeps only a weak reference to one and would let an
-        unheld shutdown be collected before it finished. Once fired this stops
-        listening, because a system downs itself once.
+        turn that decided to down this node finishes first. The task goes
+        through the system's dispatcher and carries a name, so a shutdown that
+        outlives the system is reported by name rather than as `Task-17`. It is
+        held, since the event loop keeps only a weak reference to a task and
+        would let an unheld shutdown be collected before it finished. Once
+        fired this stops listening, because a system downs itself once.
 
         Returns:
             The subscription, so construction can hold it.
@@ -222,7 +226,9 @@ class Cluster:
             system.log.warning(
                 "%s downed itself, shutting the system down", event.address
             )
-            self._shutdown = asyncio.ensure_future(system.terminate())
+            self._shutdown = system.dispatcher.spawn_task(
+                system.terminate(), name=f"tapio-cluster-shutdown:{system.name}"
+            )
 
         return system.events.subscribe(ClusterDowned, shut_down)
 

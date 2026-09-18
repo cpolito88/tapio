@@ -320,6 +320,17 @@ class ActorSystem:
         return self._remote
 
     @property
+    def dispatcher(self) -> Dispatcher:
+        """The loop every actor in this system runs on.
+
+        Exposed so code that builds on a system, clustering above all, creates
+        its tasks and reads its clock through the one object that owns the
+        loop, rather than asking asyncio for the running one and hoping it is
+        the same.
+        """
+        return self._runtime.dispatcher
+
+    @property
     def blocking(self) -> BlockingPool:
         """The threads this system runs blocking calls on.
 

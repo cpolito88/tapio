@@ -37,6 +37,7 @@ from tapio.actor.context import ActorContext
 from tapio.actor.ref import ActorRef
 from tapio.actor.signals import PostStop, Signal
 from tapio.cluster.messages import ClusterMessage, Down, Leave
+from tapio.dispatch.dispatcher import Dispatcher
 from tapio.errors import InsecureRemoteConfig
 from tapio.logging import runtime_logger
 from tapio.message import Message
@@ -133,6 +134,7 @@ class ClusterManagement:
         snapshot: Callable[[], Mapping[str, Any]],
         members: Callable[[], frozenset[str]],
         daemon: ActorRef[ClusterMessage],
+        dispatcher: Dispatcher,
         token: SecretStr | None,
         tls: TLSSettings | None,
         address: str,
@@ -150,6 +152,9 @@ class ClusterManagement:
                 record for, read the same way and used to answer a leave or a
                 down for a member the node does not know with a `404`.
             daemon: This node's cluster daemon, where a leave or a down is sent.
+            dispatcher: The loop this system runs on, which the accept task and
+                every connection task are created through, so they are named
+                and belong to the same loop as every other task in the system.
             token: The bearer token an operator must present, or `None` to ask
                 for nothing.
             tls: Certificates for the port, or `None` for plaintext HTTP. When
@@ -161,6 +166,7 @@ class ClusterManagement:
         self._snapshot = snapshot
         self._members = members
         self._daemon = daemon
+        self._dispatcher = dispatcher
         self._token = token
         self._tls = tls
         self._address = address
@@ -206,8 +212,7 @@ class ClusterManagement:
         be able to stop it before it touches the socket, or the loser works on a
         closed one.
         """
-        loop = asyncio.get_running_loop()
-        self._serving = loop.create_task(
+        self._serving = self._dispatcher.spawn_task(
             self._serve(), name="tapio-cluster-management-listener"
         )
 
@@ -261,7 +266,7 @@ class ClusterManagement:
             )
             writer.close()
             return
-        task = asyncio.get_running_loop().create_task(
+        task = self._dispatcher.spawn_task(
             self._handle(reader, writer), name="tapio-cluster-management-connection"
         )
         self._connections.add(task)
