@@ -2,15 +2,17 @@
 
 These would fail if a strategy stopped being consulted, if the losing side of a
 split stopped downing itself, if the winning side stopped writing the loser off
-and carrying on, or if a passing blip started downing members that a stable
-partition is meant to.
+and carrying on, if a passing blip started downing members that a stable
+partition is meant to, or if the shutdown a downed node starts stopped being a
+named task.
 """
 
 import asyncio
 
 from tapio.cluster import DownAll, KeepMajority, LeaseMajority, LocalLease, MemberStatus
+from tapio.cluster.messages import ClusterDowned
 from tapio.testkit import assert_no_leaked_tasks
-from tests.cluster.conftest import WATCHFUL, cluster_of, seeds_of
+from tests.cluster.conftest import WATCHFUL, cluster_of, seeds_of, start_node
 from tests.failures import eventually
 
 # Detect a split quickly, then down it quickly, so a test does not wait on the
@@ -156,3 +158,25 @@ async def test_terminate_on_down_shuts_the_losing_node_down():
             )
             for node in (first, second):
                 assert node.cluster.self_member.status is MemberStatus.UP
+
+
+async def test_the_shutdown_a_downed_node_starts_carries_a_name():
+    with assert_no_leaked_tasks():
+        node = start_node("solo", downing=KeepMajority(), terminate_on_down=True)
+        try:
+            # Subscribers run inline, so the shutdown task exists by the time
+            # publish returns. Finding it by name is the point: the leak check
+            # reports what it found by name, and an unnamed shutdown would
+            # answer that question with "Task-17".
+            node.system.events.publish(
+                ClusterDowned(address=node.address, detail="downed by a test")
+            )
+            named = [
+                task
+                for task in asyncio.all_tasks()
+                if task.get_name() == "tapio-cluster-shutdown:solo"
+            ]
+            assert len(named) == 1
+            await named[0]
+        finally:
+            await node.system.terminate()

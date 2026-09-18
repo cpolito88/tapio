@@ -170,6 +170,7 @@ class ClusterDaemon:
         settings: ClusterSettings,
         relent: Callable[[str], None],
         linked: Callable[[str], bool],
+        now: Callable[[], float],
         strategy: DownStrategy | None = None,
         choose: Callable[[Sequence[str]], str] = random.choice,
     ) -> None:
@@ -193,6 +194,11 @@ class ClusterDaemon:
                 peer. It is asked before answering a heartbeat from an address
                 membership does not know, so that answering reuses a link that
                 exists rather than opening one to wherever the message said.
+            now: Reads the monotonic clock every failure detector here is
+                documented against. Handed in rather than read off the running
+                loop so the daemon uses the clock its system owns, and so its
+                timing can be driven by a test without a loop, the way
+                [RingMonitor][tapio.cluster.monitor.RingMonitor] already is.
             strategy: What to do about an unreachable member. `None` leaves an
                 unreachable member blocking convergence for ever, which is the
                 safe default for a node that has not been told how its cluster
@@ -203,6 +209,7 @@ class ClusterDaemon:
                 number of nodes.
         """
         self._address = address
+        self._now = now
         self._settings = settings
         self._refs = refs
         self._events = events
@@ -362,7 +369,7 @@ class ClusterDaemon:
             case Heartbeat():
                 await self._answer(ctx, message.sender)
             case HeartbeatReply():
-                self._monitor.heard(message.sender, _now())
+                self._monitor.heard(message.sender, self._now())
             case Join():
                 await self._admit(ctx, message.member)
             case GossipEnvelope():
@@ -459,7 +466,7 @@ class ClusterDaemon:
         coming back and by nothing else, since an answer to a probe says
         nothing about what the transport is refusing to carry.
         """
-        now = _now()
+        now = self._now()
         watched = (
             self._monitor.link_open(message.peer)
             if message.reachable
@@ -482,7 +489,7 @@ class ClusterDaemon:
         Run at the end of every turn, because membership only changes in one,
         so the ring this node holds is never a round out of date.
         """
-        for peer in self._monitor.follow(self._state.alive, _now()):
+        for peer in self._monitor.follow(self._state.alive, self._now()):
             # No longer this node's to judge, so whatever it said is taken
             # back. A claim left behind by a node that has stopped watching
             # would block convergence with nothing able to retract it.
@@ -495,7 +502,7 @@ class ClusterDaemon:
         the asking after it. Traffic is one message per watched member, so it
         is bounded by the ring rather than by the size of the cluster.
         """
-        now = _now()
+        now = self._now()
         self._keep_knocking()
         for peer, status in self._monitor.verdicts(now).items():
             self._observe(peer, status)
@@ -854,7 +861,7 @@ class ClusterDaemon:
             # it is on its way out and has nothing left to keep or sacrifice.
             return
         unreachable = self._unreachable_alive()
-        now = _now()
+        now = self._now()
         if unreachable != self._split:
             self._split = unreachable
             self._split_since = now
@@ -1134,13 +1141,3 @@ class ClusterDaemon:
     def __repr__(self) -> str:
         """Render this node's address and what it believes."""
         return f"ClusterDaemon({self._address}, {self._state!r})"
-
-
-def _now() -> float:
-    """Return the time a failure detector reads.
-
-    Returns:
-        The loop's monotonic clock, which is the one every detector in the
-        library is documented against.
-    """
-    return asyncio.get_running_loop().time()
