@@ -15,6 +15,7 @@ from tapio.remote.transport import (
     connect,
     framed,
     is_link_frame,
+    is_loopback,
     link_body,
     listen,
     server_ssl_context,
@@ -107,6 +108,18 @@ def test_binding_port_zero_gives_a_port_that_can_be_read_back():
         assert listener.getsockname()[1] > 0
     finally:
         listener.close()
+
+
+def test_is_loopback_names_this_machine_and_nothing_else():
+    # Public now, because the cluster's management port gates on it too and was
+    # reaching across packages for a private name. A public promise is worth
+    # asserting directly, rather than only through the two checks that call it.
+    assert is_loopback("127.0.0.1")
+    assert is_loopback("localhost")
+    assert is_loopback("[::1]")
+    assert not is_loopback("0.0.0.0")
+    assert not is_loopback("")
+    assert not is_loopback("db.internal")
 
 
 def test_loopback_needs_no_secret():
