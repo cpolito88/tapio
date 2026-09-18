@@ -82,6 +82,8 @@ Generated from the source, so it cannot drift from what is installed.
 
 ::: tapio.remote.transport
 
+::: tapio.remote.handle
+
 ::: tapio.remote.handshake
 
 ::: tapio.remote.association

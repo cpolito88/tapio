@@ -36,6 +36,7 @@ from tapio.logging import runtime_logger
 from tapio.message import Message
 from tapio.remote.address import Address
 from tapio.remote.association import Association, AssociationMessage
+from tapio.remote.handle import LinkHandle
 from tapio.remote.handshake import accept
 from tapio.remote.peers import PeerProvider, StaticPeers
 from tapio.remote.ref import RemoteRef
@@ -104,22 +105,16 @@ class RemoteEndpoint:
         self._associations: dict[Address, Association] = {}
         self._peers: PeerProvider = StaticPeers()
         self._listening: asyncio.Task[None] | None = None
-        # Each accepted connection, keyed by the task handshaking it, held by
-        # its link. The link is recorded the moment the connection is made, so
-        # `close` can close it even for a task cancelled before it ever ran.
-        # Typed as the protocol rather than as `FrameLink`, like
-        # `_closing_links` below: the drain uses only `peer` and `close`, and a
-        # test that puts a fake link mid-handshake is the whole reason `Link`
-        # is a protocol.
-        self._handshakes: dict[asyncio.Task[None], Link] = {}
-        # A link this endpoint decided not to use still has to be closed, and
-        # the task doing it is nobody's child. The event loop holds only a
-        # weak reference to a task, so without this one can be collected
-        # mid-close and leave the socket open. The link is held beside its
-        # task, for the reason `_handshakes` holds one: a task cancelled
-        # before its first line closes nothing, and the close is then owed by
-        # whoever still has the link.
-        self._closing_links: dict[asyncio.Task[None], Link] = {}
+        # Every socket this endpoint owes a close on and has not handed over:
+        # a connection still being handshaken, and one it decided not to use
+        # and is still closing. One set rather than two tables, because the
+        # question is the same for both and the answer is the same call.
+        #
+        # A handle holds the task working on its socket, so a task cancelled
+        # before its first line leaves a handle that still owes the close,
+        # and the event loop holding only a weak reference to that task
+        # cannot lose the socket with it.
+        self._held: set[LinkHandle] = set()
         self._names = 0
         self._parent: ActorCell[Any] | None = None
         self._closed = False
@@ -277,17 +272,20 @@ class RemoteEndpoint:
             )
             return
         link = FrameLink(reader, writer, max_frame_bytes=self._settings.max_frame_bytes)
-        task = self.dispatcher.spawn_task(
-            self._handshake(link), name="tapio-remote-handshake"
+        handle = LinkHandle(link, loop=self.dispatcher.loop)
+        self._held.add(handle)
+        handle.reads_with(
+            self.dispatcher.spawn_task(
+                self._handshake(handle, link), name="tapio-remote-handshake"
+            )
         )
-        self._handshakes[task] = link
 
-    async def _handshake(self, link: FrameLink) -> None:
+    async def _handshake(self, handle: LinkHandle, link: FrameLink) -> None:
         """Handshake an inbound link, then hand it to an association.
 
         The task ends as soon as the link has been handed over. Reading it
         belongs to the association's own reader, which is a task a cell owns
-        and cancels. This task stays in `_handshakes` until the handover, so a
+        and cancels. The handle stays in `_held` until the handover, so a
         connection caught at shutdown is closed rather than left open, and a
         link this endpoint decides not to keep is closed by a task `close` has
         to be able to wait for.
@@ -296,12 +294,16 @@ class RemoteEndpoint:
         rather than handshaken. The socket was accepted by the loop before the
         listener shut, so this task can be the first thing that runs after
         `close` finished, and there would be nobody left to hand it to.
+
+        A cancellation is not caught. This task is the handle's reader, so
+        whoever cancelled it is inside that handle's own close and is about to
+        release the socket: closing it from here would wait for a close that
+        is waiting for this task.
         """
-        task = asyncio.current_task()
         try:
             if self._closed:
                 _log.debug("closing a connection from %s: shutting down", link.peer)
-                await link.close()
+                await self._let_go(handle)
                 return
             identity = await accept(
                 link,
@@ -310,16 +312,21 @@ class RemoteEndpoint:
                 secret=self._settings.secret,
                 timeout=self._settings.handshake_timeout.total_seconds(),
             )
+            # The association owns the socket from here. Released before
+            # `_adopt` runs, so a drain that reaches this handle in between
+            # closes nothing the association is already using.
+            handle.release()
+            self._held.discard(handle)
             self._adopt(identity.address, identity.uid, self.wrap(link))
         except ActorSystemTerminating:
             # The endpoint began stopping in the window between the _closed
             # check above and the spawn that _adopt does, so the spawn is
             # refused. This must be caught here, not left to propagate: the
-            # `finally` has already taken this task out of `_handshakes`, so
-            # `close` would never await it and the exception would surface at
-            # collection time, unattributable to any actor. The half-started
-            # association `_adopt` recorded is closed by `close`'s own sweep;
-            # here the job is only to close this link and end cleanly.
+            # handle has already let this link go, so `close` would never
+            # await it and the exception would surface at collection time,
+            # unattributable to any actor. The half-started association
+            # `_adopt` recorded is closed by `close`'s own sweep; here the job
+            # is only to close this link and end cleanly.
             _log.debug(
                 "closing a connection from %s: the endpoint is stopping", link.peer
             )
@@ -331,17 +338,8 @@ class RemoteEndpoint:
             # a version this one does not speak, gets a closed connection and
             # a log line instead of a half-understood session.
             _log.warning("refused a connection from %s: %s", link.peer, error)
-            await link.close()
+            await self._let_go(handle)
             return
-        except asyncio.CancelledError:
-            await link.close()
-            raise
-        finally:
-            # This task took responsibility for the link: adopted it, or closed
-            # it above. What stays in the map is a task that never got to run,
-            # whose link `close` closes.
-            if task is not None:
-                self._handshakes.pop(task, None)
 
     def _adopt(self, peer: Address, uid: int, link: Link) -> None:
         """Take a handshaken inbound link, resolving a simultaneous dial.
@@ -427,30 +425,31 @@ class RemoteEndpoint:
         """Close a link this endpoint is not going to use.
 
         It gets its own task because closing waits for the transport, and the
-        caller is a handshake that has nothing left to say. The task is held
-        until it finishes, since the loop would not hold it for us, and the
-        link is held with it so that a task which never runs still leaves
-        somebody holding the close it owes.
+        caller is a handshake that has nothing left to say. The handle is held
+        until that finishes, since the event loop holds only a weak reference
+        to the task and would not hold it for us, and a task cancelled before
+        its first line still leaves a handle that owes the close.
         """
-        task = self.dispatcher.spawn_task(
-            self._close_refused(link), name=f"tapio-link-close:{peer}"
+        handle = LinkHandle(link, loop=self.dispatcher.loop)
+        self._held.add(handle)
+        handle.reads_with(
+            self.dispatcher.spawn_task(
+                self._let_go(handle), name=f"tapio-link-close:{peer}"
+            )
         )
-        self._closing_links[task] = link
 
-    async def _close_refused(self, link: Link) -> None:
-        """Close a refused link, and stop being the one who owes that close.
+    async def _let_go(self, handle: LinkHandle) -> None:
+        """Close a socket this endpoint owes, and stop owing it.
 
-        The entry is dropped in a `finally` rather than from a done callback,
-        so it is gone the moment the close has been issued. A task cancelled
-        before this ever ran leaves its entry in place, which is what tells
-        `close` the socket is still open.
+        The one way this endpoint releases a link. Closing a handle twice
+        costs nothing, so a drain reaching a handle that a task is already
+        closing waits that close out rather than racing it, and a handle whose
+        task never ran is closed by whoever gets there.
         """
-        task = asyncio.current_task()
         try:
-            await link.close()
+            await handle.close()
         finally:
-            if task is not None:
-                self._closing_links.pop(task, None)
+            self._held.discard(handle)
 
     def outbound(self, peer: Address) -> Association | None:
         """Return the association for a peer, dialling if there is none.
@@ -774,37 +773,23 @@ class RemoteEndpoint:
                 await server.wait_closed()
         else:
             self._listener.close()
-        # Both are drained until they stay empty, because draining one fills
-        # the other: a handshake that finishes here hands its link to `_adopt`,
-        # which has nowhere to put it now and starts closing it. A single pass
-        # would return with that close still owed, and the task doing it dies
-        # with the dispatcher, leaving the socket open.
-        while self._handshakes or self._closing_links:
-            for task in list(self._handshakes):
-                task.cancel()
-            for task in list(self._handshakes):
+        # Drained until it stays empty, because draining it refills it: a
+        # handshake that finishes here hands its link to `_adopt`, which has
+        # nowhere to put it now and starts closing it. A single pass would
+        # return with that close still owed, and the task doing it dies with
+        # the dispatcher, leaving the socket open.
+        #
+        # One call per handle, whatever state it is in. A handle whose task
+        # never ran is cancelled and closed here; one whose task is already
+        # closing is waited out rather than cancelled, since cancelling it
+        # would leave the socket it was releasing open. Deciding which is the
+        # handle's job, not this loop's.
+        while self._held:
+            for handle in list(self._held):
                 with contextlib.suppress(
                     asyncio.CancelledError, HandshakeError, OSError
                 ):
-                    await task
-                # A task cancelled before its first line never ran its own
-                # cleanup, so its link is still open and still recorded here.
-                # One that did run took its link out of the map itself.
-                link = self._handshakes.pop(task, None)
-                if link is not None:
-                    await link.close()
-            # Awaited rather than cancelled: these are already closing, and
-            # cancelling one would leave the socket it was releasing open.
-            for task in list(self._closing_links):
-                with contextlib.suppress(asyncio.CancelledError, OSError):
-                    await task
-                # A task cancelled before its first line never closed
-                # anything, and its link is still recorded here. One that ran
-                # took itself out of the map on the way.
-                refused = self._closing_links.pop(task, None)
-                if refused is not None:
-                    with contextlib.suppress(OSError, asyncio.CancelledError):
-                        await refused.close()
+                    await self._let_go(handle)
         # An association whose actor stopped normally took itself out of this
         # table on the way, so whatever is left was adopted after the stop
         # sweep had passed and will get no `PostStop` to close its link. Close
