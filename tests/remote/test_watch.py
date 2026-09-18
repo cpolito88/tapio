@@ -156,3 +156,26 @@ async def test_a_malformed_watch_frame_is_ignored_without_dropping_the_link(
         await eventually(lambda: ticks == [1])
     finally:
         await link.close()
+
+
+async def test_a_link_frame_that_is_not_json_is_ignored_without_dropping_the_link(
+    beta: ActorSystem,
+):
+    # The sibling of the test above, for a body that never parsed rather than
+    # one whose fields were wrong. `is_link_frame` matches on the `{"link":`
+    # prefix without parsing, so a truncated body reaches the same handler, and
+    # the peer that sent it has proved who it was just the same. Closing here
+    # would end every watch across the link in both directions, dead-letter
+    # what was queued and publish PeerUnreachable, over one bad frame.
+    ticks: list[int] = []
+    worker = beta.spawn(counting(ticks), "worker")
+    link = await dial(beta)
+    try:
+        await link.write_frame(framed(b'{"link": not json'))
+        await link.write_frame(framed(b'{"link": "watch", "watchee": '))
+        await link.write_frame(encode(Tick(n=1), to=worker.path))
+
+        # The tick crossing the same link is the proof it is still open.
+        await eventually(lambda: ticks == [1])
+    finally:
+        await link.close()

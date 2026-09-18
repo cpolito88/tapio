@@ -1010,11 +1010,15 @@ class Association:
         A heartbeat has done its work by arriving, and the timestamp recorded
         by the reader is what notes it. A frame kind this version does not
         know is logged rather than acted on, because a peer running something
-        newer is no reason to drop a working link.
+        newer is no reason to drop a working link. A body this end cannot read
+        at all is logged the same way, for the same reason.
         """
-        body = link_body(frame)
-        kind = body.get("link")
+        # Initialised before the guard, since a body that never parsed has no
+        # kind to name in the log.
+        kind: object = None
         try:
+            body = link_body(frame)
+            kind = body.get("link")
             match kind:
                 case "heartbeat":
                     return
@@ -1026,10 +1030,13 @@ class Association:
                     self._on_terminated(WatcheeTerminated.model_validate(body))
                 case _:
                     _log.debug("ignoring a %r link frame from %s", kind, self._peer)
-        except (ValidationError, ValueError) as error:
+        except (ValidationError, ValueError, MessageDecodingError) as error:
             # Post-handshake, so this peer proved who it was. A frame it got
             # wrong is a bug over there, not an attack, and dropping the link
-            # over one would cost every other conversation on it.
+            # over one would cost every other conversation on it. A body that
+            # is not JSON at all is the same bug as a body with the wrong
+            # fields, so it is ignored the same way. Before the handshake the
+            # answer is the opposite one, and `_run` still refuses there.
             _log.warning(
                 "ignoring a malformed %r frame from %s: %s", kind, self._peer, error
             )
