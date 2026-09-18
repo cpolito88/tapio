@@ -179,8 +179,9 @@ def describe_blocking(fn: Callable[..., Any]) -> str:
 
     Kept because it is a published name that the reference page renders, so
     removing it would break an import somebody may have written. It is the
-    one caller-facing spelling of
-    [describe_callable][tapio.logging.describe_callable], which is where the
-    implementation lives now that four places needed it.
+    one caller-facing spelling of `describe_callable` in `tapio.logging`,
+    which is where the implementation lives now that four places needed it.
+    Named in plain text rather than cross-referenced, because that module is
+    runtime plumbing and the reference does not render it.
     """
     return describe_callable(fn)
