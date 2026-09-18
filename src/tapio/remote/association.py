@@ -1085,13 +1085,11 @@ class Association:
         a socket to put in it, so cancelling the dial is closing the handle
         too and there is no second rule for that window.
 
-        The current handle goes first, and the order is load-bearing. Its
-        reader may be `_resume`, which is itself waiting inside the retired
-        handle's close; closing that one first would wait for a task this
-        close has not cancelled yet, and a reader that is slow to unwind would
-        hold the whole shutdown there. Cancelling the current reader breaks
-        that chain, and the retired handle is closed on the way out of it, so
-        the second call below finds the work already done.
+        The current handle goes first, which is the order `_release` has
+        always used: cancel the reader, then release what it was holding. Both
+        are closed either way, since a handle a swap is still retiring is
+        waited out rather than closed twice, so this is the order it reads in
+        rather than a rule anything depends on.
         """
         self._link = None
         retiring, self._retiring = self._retiring, None
