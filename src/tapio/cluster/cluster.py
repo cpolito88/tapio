@@ -566,9 +566,10 @@ class Cluster:
     async def _until(self, status: MemberStatus, within: float) -> Member:
         """Wait for this node's own status to reach a point in the lattice.
 
-        Polling, because what is being waited for is a value that several
-        messages move: an event to wait on would have to be published by every
-        path that can change the state, and a missed one would hang.
+        Woken by the daemon rather than polled. What is waited for is a value
+        that several messages move, but they all move it inside `_receive`,
+        which settles the state before it returns, so one notification there
+        covers every path by construction.
 
         Args:
             status: The status to wait for, or anything past it.
@@ -581,12 +582,19 @@ class Cluster:
             TimeoutError: If the status was not reached in time.
         """
         target = rank_of(status)
+        changed = self._daemon.changed
         async with asyncio.timeout(within):
             while True:
+                # Cleared before the state is read, not after waking. In this
+                # order a turn that settles between the read and the wait sets
+                # the event again and the wait returns at once. Clearing after
+                # waking would drop that turn and leave this waiting out the
+                # full timeout for something that already happened.
+                changed.clear()
                 member = self.self_member
                 if member is not None and member.rank >= target:
                     return member
-                await asyncio.sleep(0.005)
+                await changed.wait()
 
     def __repr__(self) -> str:
         """Render this node's address and how many members it can see."""
