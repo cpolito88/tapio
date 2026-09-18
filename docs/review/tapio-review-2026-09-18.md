@@ -14,7 +14,7 @@ Three things matter most:
 
 Everything above was reproduced with the tests quoted under each finding. No Critical security hole was found; the trust model the security page states is implemented as described.
 
-**The open issue.** Issue #140 (a connected link socket collected with its transport still open, root cause unknown, `bc6bbaa` landed as a candidate fix) was checked against every remoting path read here. Nothing in this review explains it, and nothing here contradicts the theory in its comment that the socket-ownership rewrite removed it. The full suite was run eight times on `bc6bbaa` as part of this review; the result is recorded in section 5. Issue #64 (closed) is the graceful-leave half of design point D-1. Issues #60 and #95 (closed) fixed the two earlier off-loop remote `tell` bugs; T-07 is the third in that line and sits one call earlier in the same path.
+**The open issue.** Issue #140 (a connected link socket collected with its transport still open, root cause unknown, `bc6bbaa` landed as a candidate fix) was checked against every remoting path read here. Nothing in this review explains it. The full suite was run eight times on `bc6bbaa` as part of this review, and the signature appeared once, on run 7, landing on `tests/cluster/test_heartbeat.py::test_a_member_this_node_does_not_watch_is_knocked_on_too`. So the socket-ownership rewrite in #139 did not remove it, contrary to the hope in the issue's comment, and the closing criterion stated there is not met. Details are in section 5. Issue #64 (closed) is the graceful-leave half of design point D-1. Issues #60 and #95 (closed) fixed the two earlier off-loop remote `tell` bugs; T-07 is the third in that line and sits one call earlier in the same path.
 
 ## 2. Findings table
 
@@ -912,6 +912,17 @@ These are not bugs. Each is a documented decision I would argue against, with th
 ## 5. Coverage of this review
 
 **Tooling run, with raw output kept in the review's working notes:** `make lint` (clean), `make type` (`mypy --strict` over `src`, `examples` and `tests`: clean), `uv run coverage run -m pytest` (843 passed, 8 benchmark skips, 95% line and branch coverage), `make examples` (29 passed), `uv run ruff check --select ALL --statistics` (2,264 hits, dominated by `S101` asserts in tests, `COM812`, `CPY001` copyright headers and `ARG001`; nothing in the disabled set points at a bug), `vulture --min-confidence 60` (69 candidates, of which four are dead, see T-19). The first tooling run failed on a network timeout installing `charset-normalizer`; the rerun with a longer timeout was clean. That is the environment, not the repository.
+
+**Issue #140, measured on `bc6bbaa`.** Eight consecutive full-suite runs, `uv run pytest -q`, no coverage, on a container with the repository's own dependencies: seven runs green (843 passed), one run with the issue's exact signature:
+
+```
+ResourceWarning: unclosed transport <_SelectorSocketTransport fd=17>
+ResourceWarning: unclosed <socket.socket fd=17, family=2, type=1, proto=0,
+                          laddr=('127.0.0.1', 41299), raddr=('127.0.0.1', 47586)>
+FAILED tests/cluster/test_heartbeat.py::test_a_member_this_node_does_not_watch_is_knocked_on_too
+```
+
+A connected link, both addresses present, on a cluster test. That test is the churn case: four nodes with `monitored_peers=1`, one node quarantines a member it does not watch, the daemon relents on the next heartbeat round, and the pair re-dials while heartbeats and gossip keep flowing, so it is the test in the suite that opens and closes the most links per second. The paths exercised there are quarantine (`_declare_unreachable`, `close`, `_release`), the refused inbound dial (`_adopt` with a refusal, `close_link_later`), `clear_quarantine`, and a fresh outbound dial racing an inbound one (`_adopt` with a live `existing`, `adopt`, `_resume`). Reading them again after the reproduction, the one place I could not convince myself owes nothing is `adopt`: it moves the losing handle to `_retiring` and closes it from `_resume`, and `_close_sockets` closes `_retiring` too, but a second `adopt` arriving before `_resume` has cleared `_retiring` overwrites `self._retiring = previous` with the newer loser, and the older one is then owed only by the `_resume` task of the first swap, which the second swap's `previous.close()` cancels through `LinkHandle.close`. `LinkHandle.close` is idempotent and re-entrant, so this may well be safe; it is the path I would instrument first. This is a lead, not a finding, and it is not filed as one.
 
 **Read in full:** every module under `src/tapio` (65 files), `README.md`, `AGENTS.md`, `CLAUDE.md`, `Makefile`, `pyproject.toml`, `mkdocs.yml`, every page under `docs/` including the playground page's loader, `.github/workflows/ci.yml`, `tests/conftest.py`, `tests/internals.py`, `tests/cluster/conftest.py`, `tests/remote/conftest.py`, `tests/cluster/test_group_router.py`, `examples/tapio_examples/hello_world.py`, `tests/examples/test_suite.py` (first half).
 
