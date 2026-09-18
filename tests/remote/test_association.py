@@ -18,12 +18,13 @@ from tapio.actor import (
     Terminated,
 )
 from tapio.actor.dead_letters import DeadLetterReason
+from tapio.actor.events import EventStream
 from tapio.actor.path import ActorPath
 from tapio.dispatch.dispatcher import Dispatcher
 from tapio.errors import MessageEncodingError
 from tapio.message import Message
 from tapio.remote.address import Address
-from tapio.remote.association import Association
+from tapio.remote.association import Association, Outbound
 from tapio.remote.codec import LENGTH_PREFIX, encode
 from tapio.remote.transport import framed, is_link_frame, link_body
 from tapio.settings import RemoteSettings
@@ -682,6 +683,7 @@ class _LoneHost:
         self.settings = RemoteSettings(_env_file=None, bind_port=0)  # type: ignore[call-arg]
         self.dispatcher = Dispatcher.from_running_loop()
         self.is_closing = True
+        self.events = EventStream()
 
     def forget(self, association: object) -> None:
         """Do nothing: there is no table to remove the association from."""
@@ -720,6 +722,105 @@ async def test_detach_closes_the_link_a_dial_race_retired():
         await association.detach()
 
         assert retired.closed
+
+
+class _WritingLink:
+    """A link that records the frames written to it, in the order they went.
+
+    Nothing suspends, so a test drives a whole swap without the scheduler
+    getting a turn, and what it asserts about order is the order itself
+    rather than a race that happened to come out right.
+    """
+
+    def __init__(self) -> None:
+        """Start open, with nothing written."""
+        self.written: list[bytes] = []
+        self.closed = False
+
+    @property
+    def peer(self) -> str:
+        """A fixed peer address, since nothing here dials."""
+        return "tapio://peer@127.0.0.1:2551"
+
+    async def read_frame(self) -> bytes:
+        """Never called: this link is written, never read."""
+        raise AssertionError("this link is written, never read")
+
+    async def write_frame(self, data: bytes) -> None:
+        """Record a frame."""
+        self.written.append(data)
+
+    async def write_link(self, message: object) -> None:
+        """Never called: these tests queue user frames only."""
+        raise AssertionError("this link carries no transport frames")
+
+    async def close(self) -> None:
+        """Record that whoever owned this link closed it."""
+        self.closed = True
+
+
+class _SwapProbe(Association):
+    """An association whose `_run` ends at once, so a swap is driven by hand.
+
+    `adopt` spawns the reader that retires the losing link. A real one would
+    go on to read the winner, and there is nothing to read here.
+    """
+
+    async def _run(self) -> None:  # type: ignore[override]
+        return
+
+
+def _queued(n: int) -> Outbound:
+    """One outbound frame, identifiable by the number it carries."""
+    return Outbound(
+        payload=Tick(n=n),
+        frame=framed(str(n).encode()),
+        recipient=ActorPath.root("peer").child("user").child("ticker", uid=1),
+    )
+
+
+async def test_a_swap_holds_the_writer_until_the_new_link_has_caught_up():
+    # The ordering the whole dial race is for. `adopt` clears the writable
+    # link on purpose, so a frame written between the swap and the new link
+    # coming up queues behind the ones already waiting instead of overtaking
+    # them on a socket that happened to be ready sooner. Without it an
+    # association surviving a dial race would deliver out of order, which is
+    # worse than being replaced.
+    with assert_no_leaked_tasks():
+        peer = Address.parse("tapio://peer@127.0.0.1:2551")
+        association = _SwapProbe(host=_LoneHost(), peer=peer, initiator=peer)  # type: ignore[arg-type]
+        loser, winner = _WritingLink(), _WritingLink()
+
+        association._socket = loser
+        await association._open(loser)
+        await association._write(_queued(1))
+        assert loser.written == [_queued(1).frame]
+
+        # The peer's dial wins. The writer stops writing at once, even though
+        # the winning socket is already open.
+        association.adopt(winner, uid=7)
+        # Drained here rather than at the end, so a later assertion failing is
+        # reported as itself instead of as the leaked task it leaves behind.
+        retiring = association._reader
+        assert retiring is not None
+        await retiring
+        assert loser.closed
+
+        assert not association.is_connected
+
+        await association._write(_queued(2))
+        await association._write(_queued(3))
+        assert winner.written == []
+
+        # The winner becomes writable only once it has carried what was
+        # queued, in the order it was queued.
+        await association._open(winner)
+
+        assert association.is_connected
+        assert winner.written == [_queued(2).frame, _queued(3).frame]
+
+        await association._write(_queued(4))
+        assert winner.written == [_queued(n).frame for n in (2, 3, 4)]
 
 
 class _ResumeProbe(Association):
