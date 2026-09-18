@@ -30,7 +30,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "pydantic>=2.7",
+    "pydantic>=2.12",
     # Python 3.14 needs a pydantic whose pinned pydantic-core ships cp314
     # wheels, which starts at 2.12 (2.11 pins pydantic-core 2.33, with no
     # 3.14 wheel to install). Older interpreters keep the 2.7 floor.
