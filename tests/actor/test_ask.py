@@ -26,7 +26,7 @@ from tapio.testkit import (
     IsolatedTapioSettings,
     assert_no_leaked_tasks,
 )
-from tests.failures import eventually
+from tests.failures import eventually, well_inside
 from tests.internals import cell_of
 
 
@@ -270,13 +270,14 @@ async def test_a_target_that_stops_mid_ask_fails_fast(system: ActorSystem):
     """Well inside the timeout, which is the whole point of watching it."""
     gate = asyncio.Event()
     ref = system.spawn(stopper(gate), name="quitter")
+    deadline = timedelta(seconds=30)
     started = asyncio.get_running_loop().time()
 
     asking = asyncio.ensure_future(
         ref.ask(
             lambda reply_to: Query(reply_to=reply_to),
             expect=Answer,
-            timeout=timedelta(seconds=30),
+            timeout=deadline,
         )
     )
     await asyncio.sleep(0)
@@ -285,8 +286,10 @@ async def test_a_target_that_stops_mid_ask_fails_fast(system: ActorSystem):
     with pytest.raises(AskTargetTerminated) as caught:
         await asking
 
+    # Against the deadline the ask was given, not against a literal: what this
+    # measures is that the watch fired, rather than that the clock ran out.
     elapsed = asyncio.get_running_loop().time() - started
-    assert elapsed < 1.0
+    assert elapsed < well_inside(deadline)
     assert "quitter" in str(caught.value)
     assert "Answer" in str(caught.value)
 
