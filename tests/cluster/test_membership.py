@@ -18,7 +18,13 @@ from tapio.cluster.member import Member
 from tapio.cluster.messages import Join, Seeds
 from tapio.errors import ClusterError
 from tapio.testkit import assert_no_leaked_tasks
-from tests.cluster.conftest import WATCHFUL, Node, cluster_of, seeds_of
+from tests.cluster.conftest import (
+    WATCHFUL,
+    Node,
+    cluster_of,
+    replacement_for,
+    seeds_of,
+)
 from tests.failures import eventually
 
 NODES = 5
@@ -200,6 +206,89 @@ async def test_a_clustered_system_still_leaves_an_empty_registry_behind():
                 assert node.system.refs.lookup(_daemon_path(node)) is None
 
 
+async def test_a_restart_at_one_address_downs_the_incarnation_it_replaces():
+    # The crash-and-restart path, which is the one a real deployment takes
+    # most often. A killed node never says it is leaving, so its record sits
+    # at Up with nothing behind it, and an Up member nobody can reach blocks
+    # convergence: the leader stops accepting joins, leaves stop completing,
+    # and the cluster quietly stops making progress. The address answering as
+    # a new incarnation is what says the old one is gone.
+    with assert_no_leaked_tasks():
+        async with cluster_of(2) as nodes:
+            first, second = nodes
+            seeds = seeds_of([first])
+            await asyncio.gather(
+                first.cluster.join_seed_nodes(seeds),
+                second.cluster.join_seed_nodes(seeds),
+            )
+            address = second.address
+            killed = second.cluster.self_member
+            assert killed is not None
+
+            await second.system.terminate()
+            async with replacement_for(second) as replacement:
+                await replacement.cluster.join_seed_nodes(seeds)
+
+                # Same address, different incarnation, which is the whole
+                # reason a uid travels in the handshake.
+                assert replacement.address == address
+                back = replacement.cluster.self_member
+                assert back is not None
+                assert back.uid != killed.uid
+
+                # The old incarnation is walked out: downed by the join,
+                # because no downing strategy is configured here and nothing
+                # else in this cluster may down a member, then removed by the
+                # leader on the next converged round.
+                await eventually(
+                    lambda: _statuses_of(first, killed.uid) == [MemberStatus.REMOVED],
+                    within=5.0,
+                )
+                # Asking about the address answers with the node that is
+                # running, not with the tombstone behind it.
+                current = first.cluster.state.member(address)
+                assert current is not None
+                assert current.uid == back.uid
+
+                # And the view converges again, which it could not do while a
+                # member that no longer exists was still Up.
+                await eventually(lambda: first.cluster.state.converged, within=5.0)
+
+
+async def test_a_node_may_rejoin_the_address_it_left():
+    # A graceful leave leaves a tombstone behind, kept forever so that gossip
+    # cannot resurrect the member. A process that comes back at that address
+    # is a different incarnation, so it joins beside the tombstone instead of
+    # being refused by it, and the tombstone is left alone: a record that is
+    # already gone has nothing left to down.
+    with assert_no_leaked_tasks():
+        async with cluster_of(2) as nodes:
+            first, second = nodes
+            seeds = seeds_of([first])
+            await asyncio.gather(
+                first.cluster.join_seed_nodes(seeds),
+                second.cluster.join_seed_nodes(seeds),
+            )
+            address = second.address
+            left = second.cluster.self_member
+            assert left is not None
+            await second.cluster.leave()
+            await eventually(
+                lambda: first.status_of(address) is MemberStatus.REMOVED, within=5.0
+            )
+            await second.system.terminate()
+
+            async with replacement_for(second) as replacement:
+                await replacement.cluster.join_seed_nodes(seeds)
+
+                assert replacement.status is MemberStatus.UP
+                assert _statuses_of(first, left.uid) == [MemberStatus.REMOVED]
+                current = first.cluster.state.member(address)
+                assert current is not None
+                assert current.uid != left.uid
+                await eventually(lambda: first.cluster.state.converged, within=5.0)
+
+
 async def test_a_join_claiming_a_high_status_is_admitted_as_joining():
     # The daemon publishes a well-known name, so any peer that can handshake
     # can send it a Join. Moving a member's status down the lattice raises,
@@ -269,6 +358,11 @@ async def test_a_peer_addresses_the_daemon_without_knowing_its_incarnation():
 
             assert ref.path.uid == 0
             assert str(ref.path) == f"tapio://{second.system.name}/system/cluster"
+
+
+def _statuses_of(node: Node, uid: int) -> list[MemberStatus]:
+    """What one node believes about every record carrying an incarnation uid."""
+    return [m.status for m in node.cluster.state.members if m.uid == uid]
 
 
 def _daemon_path(node: Node) -> ActorPath:
