@@ -304,6 +304,9 @@ class ClusterDaemon:
         self._split_since = 0.0
         self._downed = asyncio.Event()
         self._downed_announced = False
+        # Set at the end of every turn, for a caller waiting on this node's own
+        # status to move. See the `changed` property.
+        self._changed = asyncio.Event()
         # Actors that asked to hear about membership changes, by their path so
         # that subscribing twice replaces rather than duplicates. Each is
         # watched, so one that stops is forgotten without an Unsubscribe.
@@ -370,6 +373,19 @@ class ClusterDaemon:
     def downed(self) -> asyncio.Event:
         """Set once this node has downed itself, for the application to wait on."""
         return self._downed
+
+    @property
+    def changed(self) -> asyncio.Event:
+        """Set at the end of every turn, for a caller waiting on the state.
+
+        Every message this daemon handles goes through `_receive`, and
+        `_receive` settles the state before it returns, so one notification
+        there covers every path that can move membership. A waiter clears this
+        before reading the state rather than after waking, so a turn landing
+        between its read and its wait sets the event again instead of being
+        missed.
+        """
+        return self._changed
 
     def behavior(self) -> Behavior[ClusterMessage]:
         """Build the daemon actor."""
@@ -459,6 +475,10 @@ class ClusterDaemon:
         self._announce_if_downed()
         if before is not None:
             self._emit(before)
+        # The state has settled, and this is above the early return on purpose:
+        # REMOVED is what `Cluster.leave` waits for, and it leaves by that
+        # return, so a notification only at the bottom would never reach it.
+        self._changed.set()
         if (
             self.self_member is not None
             and self.self_member.status is MemberStatus.REMOVED
