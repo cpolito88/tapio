@@ -253,6 +253,9 @@ async def ask(
         MessageTypeError: If the request does not match the target's declared
             message type. That is an error about the message, so it belongs to
             the sender, as it does for `tell`.
+        MailboxFullError: If the target's mailbox is full under
+            `OverflowStrategy.FAIL`. An ask runs on the system's loop, so
+            unlike `tell` there is no off-loop case that dead-letters instead.
         RuntimeError: If called from a thread that is not running the system's
             loop.
         pydantic.ValidationError: If content validation is on and either the

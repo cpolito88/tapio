@@ -21,6 +21,8 @@ from tapio import (
     TapioSettings,
 )
 from tapio.actor import ActorContext, LocalActorRef
+from tapio.actor.mailbox import MailboxConfig, OverflowStrategy
+from tapio.errors import MailboxFullError
 from tapio.testkit import assert_no_leaked_tasks
 from tests.failures import eventually
 
@@ -483,3 +485,23 @@ def test_the_base_ref_cannot_ask():
         asyncio.run(
             ref.ask(lambda reply_to: Query(reply_to=reply_to), expect=Answer)  # type: ignore[arg-type]
         )
+
+
+async def test_ask_raises_when_the_targets_mailbox_is_full(system: ActorSystem):
+    # The bounded mailbox is FAIL, so the overflow belongs to the sender, and
+    # an ask delivers its request the same way a tell does. An ask always runs
+    # on the system's loop, so unlike a tell there is no off-loop case that
+    # dead-letters instead: the caller gets the error at its own call site.
+    ref = system.spawn(
+        responder(),
+        name="brimming",
+        mailbox=MailboxConfig(capacity=1, on_overflow=OverflowStrategy.FAIL),
+    )
+    sink = system.spawn(responder(), name="sink")
+
+    # No await between here and the ask, so the cell never runs and the one
+    # slot stays taken.
+    ref.tell(Query(value=1, reply_to=sink))
+
+    with pytest.raises(MailboxFullError, match="capacity 1"):
+        await ref.ask(lambda reply_to: Query(reply_to=reply_to), expect=Answer)
