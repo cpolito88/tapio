@@ -8,6 +8,10 @@ on this page is included from `examples/`, and CI runs it.
 uv add tapio-py
 ```
 
+That is the library. The `tapio-cluster` operator command is a separate extra,
+`uv add 'tapio-py[cli]'`, so a service that only embeds the runtime does not
+install it.
+
 ## Hello, world
 
 Spawn an actor, send it a message, and let it reply to an address the message

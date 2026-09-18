@@ -14,7 +14,9 @@ HTTPS when the node is configured for TLS and the command is given `--tls` (or a
 `--cafile` or `--client-cert`, which imply it). The only thing it needs at
 runtime is a `typer` for its own argument parsing and the standard library for
 the requests, and the same calls are a `curl` away for anyone who would rather
-script them. What it reports is one node's view, which is the truth once the
+script them. That `typer` is the `cli` extra rather than a dependency of the
+library, so this command needs `pip install 'tapio-py[cli]'` while embedding
+the runtime does not. What it reports is one node's view, which is the truth once the
 cluster has converged and that node's best guess until then, the same caveat
 every gossip-based answer carries.
 
@@ -30,7 +32,17 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Annotated, Any
 
-import typer
+try:
+    import typer
+except ModuleNotFoundError as error:  # pragma: no cover - depends on the install
+    # The script stays registered without the extra, so this is what an
+    # operator meets rather than "command not found", which says nothing about
+    # why or what to do next.
+    _MISSING = (
+        "tapio-cluster needs the CLI extra, which is not installed. "
+        "Install it with: pip install 'tapio-py[cli]'"
+    )
+    raise SystemExit(_MISSING) from error
 
 __all__ = ["app"]
 

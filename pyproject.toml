@@ -36,9 +36,14 @@ dependencies = [
     # 3.14 wheel to install). Older interpreters keep the 2.7 floor.
     "pydantic>=2.12; python_version >= '3.14'",
     "pydantic-settings>=2.2",
-    "typer>=0.12",
     "typing-extensions>=4.10",
 ]
+
+[project.optional-dependencies]
+# The operator command only. The library itself imports none of this, and a
+# service that embeds tapio should not carry rich and click, 4.3 MB across
+# four packages, to get a command it never runs.
+cli = ["typer>=0.12"]
 
 # The operator command for a running cluster: read membership, ask a member to
 # leave, or down one, over a node's management port.

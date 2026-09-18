@@ -383,9 +383,13 @@ leave or to down one.
 ```
 
 The `tapio-cluster` command is the client, and the same requests are a `curl`
-away for anyone who would rather script them:
+away for anyone who would rather script them. It ships in the `cli` extra
+rather than in the library, so a service that embeds tapio does not carry the
+command's own dependencies to run the runtime:
 
 ```bash
+uv add 'tapio-py[cli]'
+
 tapio-cluster --port 25530 status
 tapio-cluster --port 25530 leave tapio://orders@10.0.0.2:2551
 tapio-cluster --port 25530 down  tapio://orders@10.0.0.3:2551

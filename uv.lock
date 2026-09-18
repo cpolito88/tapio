@@ -1569,8 +1569,12 @@ source = { editable = "." }
 dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
-    { name = "typer" },
     { name = "typing-extensions" },
+]
+
+[package.optional-dependencies]
+cli = [
+    { name = "typer" },
 ]
 
 [package.dev-dependencies]
@@ -1595,9 +1599,10 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.12" },
     { name = "pydantic", marker = "python_full_version >= '3.14'", specifier = ">=2.12" },
     { name = "pydantic-settings", specifier = ">=2.2" },
-    { name = "typer", specifier = ">=0.12" },
+    { name = "typer", marker = "extra == 'cli'", specifier = ">=0.12" },
     { name = "typing-extensions", specifier = ">=4.10" },
 ]
+provides-extras = ["cli"]
 
 [package.metadata.requires-dev]
 dev = [
