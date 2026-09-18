@@ -90,7 +90,7 @@ def test_only_messages_can_be_registered():
     with pytest.raises(MessageRegistrationError, match=r"only tapio\.Message"):
 
         @register_message("tests.not-a-message")
-        class Plain:
+        class Plain:  # type: ignore[type-var]
             pass
 
 

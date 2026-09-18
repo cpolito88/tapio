@@ -8,9 +8,13 @@ another stopped is in `test_death_watch.py`, which needs a live tree.
 from typing import Any
 
 from tapio.actor.path import ActorPath
+from tapio.actor.ref import ActorRef
 from tapio.actor.watch import DeathWatch, Watcher, WatchTarget
 
 ROOT = ActorPath.root("test")
+
+STOPPING: ActorRef[Any] = ActorRef(ROOT.child("stopping"))
+"""The ref `release` hands to the watchers, which they record verbatim."""
 
 
 class FakeWatcher:
@@ -89,11 +93,11 @@ def test_stopping_tells_every_watcher_once_and_keeps_none():
     book.add_watcher(first)
     book.add_watcher(second)
 
-    book.release(FakeWatcher("stopping"), "ref-to-me")
-    book.release(FakeWatcher("stopping"), "ref-to-me")
+    book.release(FakeWatcher("stopping"), STOPPING)
+    book.release(FakeWatcher("stopping"), STOPPING)
 
-    assert first.terminated == ["ref-to-me"]
-    assert second.terminated == ["ref-to-me"]
+    assert first.terminated == [str(STOPPING)]
+    assert second.terminated == [str(STOPPING)]
     assert book.watchers == ()
 
 
@@ -105,7 +109,7 @@ def test_stopping_deregisters_from_everything_it_was_watching():
         target.add_watcher(stopping)
         book.watching(target)
 
-    book.release(stopping, "ref-to-me")
+    book.release(stopping, STOPPING)
 
     # A registration outliving the actor it names is the leak death watch
     # exists to prevent, and it leaks in this direction too.

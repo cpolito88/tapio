@@ -299,7 +299,8 @@ async def test_a_handshake_completing_while_the_endpoint_stops_is_closed_cleanly
         system = ActorSystem("alpha", remoting())
         endpoint = system.remote
         assert endpoint is not None
-        assert endpoint._parent is not None
+        parent = endpoint._parent
+        assert parent is not None
 
         # close() parks here, so _closed stays False for the whole window.
         release_close = asyncio.Event()
@@ -325,7 +326,7 @@ async def test_a_handshake_completing_while_the_endpoint_stops_is_closed_cleanly
         # Terminating sets the endpoint cell terminating, then parks in the held
         # close(): _terminating is now True while _closed is still False.
         terminating = asyncio.create_task(system.terminate())
-        await eventually(lambda: endpoint._parent._terminating and not endpoint._closed)
+        await eventually(lambda: parent._terminating and not endpoint._closed)
 
         # Completing the handshake inside the window drives _adopt, whose spawn
         # is refused.
@@ -360,7 +361,7 @@ async def test_a_handshake_completing_while_the_endpoint_stops_is_closed_cleanly
             await link.close()
 
     # The handshake finished cleanly instead of raising ActorSystemTerminating.
-    assert result == [None], result
+    assert list(result) == [None], result
 
 
 def _hello(**overrides: object) -> dict[str, object]:

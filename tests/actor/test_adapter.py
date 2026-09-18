@@ -1,6 +1,7 @@
 """Tests for message adapters."""
 
 import asyncio
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -173,7 +174,9 @@ async def test_a_translated_message_keeps_its_place_in_the_queue(system: ActorSy
     order: list[str] = []
 
     def build(ctx: ActorContext[Shop]) -> Behavior[Shop]:
-        replies = ctx.message_adapter(lambda p: Quoted(cents=p.cents), Price)
+        replies: ActorRef[Price] = ctx.message_adapter(
+            lambda p: Quoted(cents=p.cents), Price
+        )
         # Sent before the two below, so it is handled before them.
         replies.tell(Price(cents=1))
 
@@ -497,12 +500,14 @@ async def test_an_actor_that_stops_still_releases_the_adapters_it_kept(
     await eventually(lambda: system.refs.lookup(handed_out[0].path) is None)
 
 
-class StandInRef:
-    """Something registrable, so the registry can be tested without a cell."""
+def stand_in(path: ActorPath) -> ActorRef[Any]:
+    """A registrable ref with no cell behind it.
 
-    def __init__(self, path: ActorPath) -> None:
-        """Give it the one thing a registry keys it by."""
-        self.path = path
+    A bare `ActorRef` is exactly that: it carries the path a registry keys it
+    by, and refuses to deliver. These tests are about the bookkeeping, so
+    nothing here ever sends to one.
+    """
+    return ActorRef(path)
 
 
 def registry_pair() -> tuple[RefRegistry, AdapterRegistry]:
@@ -524,7 +529,7 @@ def test_a_registered_adapter_is_reachable_and_remembered():
     refs, adapters = registry_pair()
     path = ActorPath.root("test").child("worker").child("$adapter-1", uid=7)
 
-    adapters.register(StandInRef(path))
+    adapters.register(stand_in(path))
 
     assert refs.lookup(path) is not None
     assert adapters.paths == (path,)
@@ -533,7 +538,7 @@ def test_a_registered_adapter_is_reachable_and_remembered():
 def test_releasing_an_adapter_takes_it_out_of_the_refs():
     refs, adapters = registry_pair()
     path = ActorPath.root("test").child("worker").child("$adapter-1", uid=7)
-    adapters.register(StandInRef(path))
+    adapters.register(stand_in(path))
 
     adapters.release(path)
 
@@ -547,8 +552,8 @@ def test_releasing_an_adapter_twice_or_a_stranger_does_nothing():
     refs, adapters = registry_pair()
     mine = ActorPath.root("test").child("worker").child("$adapter-1", uid=7)
     theirs = ActorPath.root("test").child("other").child("$adapter-1", uid=9)
-    adapters.register(StandInRef(mine))
-    adapters.register(StandInRef(theirs))
+    adapters.register(stand_in(mine))
+    adapters.register(stand_in(theirs))
     # Registered through a different actor's registry, as far as this one
     # is concerned.
     other = AdapterRegistry(refs)
@@ -569,7 +574,7 @@ def test_stopping_releases_every_adapter_at_once():
         for uid in (1, 2, 3)
     ]
     for path in paths:
-        adapters.register(StandInRef(path))
+        adapters.register(stand_in(path))
 
     adapters.release_all()
 

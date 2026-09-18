@@ -6,14 +6,32 @@ stopped bringing the cluster back without somebody being written off.
 """
 
 import asyncio
+from collections.abc import Callable
 
 from tapio.cluster import MemberStatus
 from tapio.cluster.daemon import daemon_uri
 from tapio.cluster.messages import Heartbeat, WireMessage
 from tapio.remote.address import Address
 from tapio.testkit import assert_no_leaked_tasks
-from tests.cluster.conftest import WATCHFUL, WATCHFUL_PHI, cluster_of, seeds_of
+from tests.cluster.conftest import (
+    WATCHFUL,
+    WATCHFUL_PHI,
+    Node,
+    cluster_of,
+    seeds_of,
+)
 from tests.failures import eventually
+from tests.internals import endpoint
+
+
+def _cannot_hear(node: Node, address: str) -> Callable[[], bool]:
+    """Whether this node has written an address off as out of reach.
+
+    A function of the node rather than a lambda with a default argument: the
+    default was only there to bind the loop variable, and it left the
+    predicate with no type a checker could read.
+    """
+    return lambda: address in node.cluster.state.reachability.unreachable
 
 
 async def joined(nodes):
@@ -53,9 +71,7 @@ async def test_a_partitioned_node_is_unreachable_on_both_sides():
             # deciding, because deciding is downing.
             for node in (first, second):
                 await eventually(
-                    lambda node=node: (
-                        odd.address in node.cluster.state.reachability.unreachable
-                    ),
+                    _cannot_hear(node, odd.address),
                     within=5.0,
                 )
             await eventually(
@@ -86,9 +102,7 @@ async def test_a_partition_is_noticed_with_a_phi_accrual_detector():
 
             for node in (first, second):
                 await eventually(
-                    lambda node=node: (
-                        odd.address in node.cluster.state.reachability.unreachable
-                    ),
+                    _cannot_hear(node, odd.address),
                     within=5.0,
                 )
             await eventually(
@@ -132,14 +146,14 @@ async def test_a_member_the_transport_gave_up_on_is_knocked_on_again():
             await joined(nodes)
             peer = Address.parse(second.address)
 
-            first.system.remote.quarantine(peer, "this system gave up alone")
+            endpoint(first.system).quarantine(peer, "this system gave up alone")
 
             # Remoting gives up for good and waits to be told otherwise, which
             # is the right answer for a system with no membership to consult.
             # A cluster has one: nobody has decided this member is gone, so
             # the node that watches it keeps knocking until somebody does.
             await eventually(
-                lambda: not first.system.remote.is_quarantined(peer), within=5.0
+                lambda: not endpoint(first.system).is_quarantined(peer), within=5.0
             )
             await eventually(lambda: first.cluster.state.converged, within=10.0)
 
@@ -154,14 +168,14 @@ async def test_a_member_this_node_does_not_watch_is_knocked_on_too():
 
             stranger = next(n for n in rest if n.address not in first.cluster.monitored)
             peer = Address.parse(stranger.address)
-            first.system.remote.quarantine(peer, "this system gave up alone")
+            endpoint(first.system).quarantine(peer, "this system gave up alone")
 
             # Gossip goes to any member, not only the ones this node watches,
             # so forgiving just the ring would leave these two refusing each
             # other for good. In a cluster larger than monitored_peers that is
             # most pairs, and a healed partition would never converge again.
             await eventually(
-                lambda: not first.system.remote.is_quarantined(peer), within=5.0
+                lambda: not endpoint(first.system).is_quarantined(peer), within=5.0
             )
             await eventually(
                 lambda: all(n.cluster.state.converged for n in nodes), within=10.0

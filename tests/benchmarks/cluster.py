@@ -56,7 +56,12 @@ from tapio.cluster.daemon import DAEMON_NAME
 from tapio.cluster.messages import GossipEnvelope, Heartbeat
 from tapio.remote.address import Address
 from tapio.remote.codec import encode, parse_target
-from tapio.settings import ClusterSettings, RemoteSettings, TapioSettings
+from tapio.settings import ClusterSettings, TapioSettings
+from tapio.testkit import (
+    IsolatedClusterSettings,
+    IsolatedRemoteSettings,
+    IsolatedTapioSettings,
+)
 
 SIZES = (5, 20, 50)
 """How many nodes to bring up, roughly a factor of three apart."""
@@ -78,9 +83,8 @@ that gives up early would publish a number for a cluster that had not settled.
 
 def remoting() -> TapioSettings:
     """Settings for one node: remoting on, on a loopback port the OS picks."""
-    return TapioSettings(
-        _env_file=None,  # type: ignore[call-arg]
-        remote=RemoteSettings(_env_file=None, bind_port=0),  # type: ignore[call-arg]
+    return IsolatedTapioSettings(
+        remote=IsolatedRemoteSettings(bind_port=0),
     )
 
 
@@ -107,8 +111,7 @@ def gossiping() -> ClusterSettings:
     Returns:
         The settings every node in a run shares.
     """
-    return ClusterSettings(
-        _env_file=None,  # type: ignore[call-arg]
+    return IsolatedClusterSettings(
         seed_form_after=timedelta(milliseconds=200),
         join_retry_interval=timedelta(milliseconds=100),
         unreachable_after=timedelta(seconds=300),

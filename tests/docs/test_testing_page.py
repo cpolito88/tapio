@@ -221,7 +221,7 @@ async def test_shutdown_leaves_nothing_behind():
 async def test_a_partition_is_noticed():
     async with two_nodes() as nodes:
         worker = nodes.beta.spawn(retiring(), "worker")
-        probe = TestProbe(nodes.alpha, Greeted)
+        probe: TestProbe[Greeted] = TestProbe(nodes.alpha, Greeted)
         here = await nodes.alpha.resolve(
             f"tapio://{nodes.beta.name}@{nodes.beta.address.host}:"
             f"{nodes.beta.address.port}{_path_of(worker)}",

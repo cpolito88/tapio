@@ -1,5 +1,7 @@
 """Tests for behaviors and message-type resolution, with no system running."""
 
+from typing import Any, TypeVar
+
 import pytest
 
 from tapio.actor import (
@@ -7,11 +9,25 @@ from tapio.actor import (
     ActorContext,
     Behavior,
     Behaviors,
+    ReceivingBehavior,
     SetupBehavior,
 )
 from tapio.actor.behavior import resolve_handler_msg_type
 from tapio.errors import BehaviorTypeError, MessageTypeError
 from tests.messages import GetCount, Greet, Greeted, Increment, NotAMessage
+
+T = TypeVar("T", bound="Greet")
+
+
+def receiving(behavior: Behavior[T]) -> ReceivingBehavior[T]:
+    """A behavior narrowed to the one that can be handed a message.
+
+    `Behaviors.receive` is declared as returning a `Behavior`, because what a
+    caller does with one is spawn it. These tests drive it one message at a
+    time instead, which is the narrower interface.
+    """
+    assert isinstance(behavior, ReceivingBehavior), behavior
+    return behavior
 
 
 def test_same_is_a_singleton():
@@ -36,7 +52,7 @@ def test_sentinels_carry_no_message_type(factory):
 
 
 def test_sentinels_are_distinct():
-    sentinels = [
+    sentinels: list[Behavior[Any]] = [
         Behaviors.same(),
         Behaviors.stopped(),
         Behaviors.empty(),
@@ -96,7 +112,7 @@ async def test_receive_dispatches_to_the_handler(ctx, ref):
         seen.append((c, msg))
         return Behaviors.stopped()
 
-    behavior = Behaviors.receive(on_message)
+    behavior = receiving(Behaviors.receive(on_message))
     message = Greet(whom="world", count=1, reply_to=ref)
     result = await behavior.receive(ctx, message)
 
@@ -112,7 +128,7 @@ async def test_receive_message_drops_the_context(ctx, ref):
         return Behaviors.same()
 
     message = Greet(whom="world", count=1, reply_to=ref)
-    await Behaviors.receive_message(on_message).receive(ctx, message)
+    await receiving(Behaviors.receive_message(on_message)).receive(ctx, message)
     assert seen == [message]
 
 
@@ -132,9 +148,9 @@ def test_the_error_says_how_to_fix_it():
 
 def test_an_unresolvable_forward_reference_raises():
     async def on_message(
-        ctx: "ActorContext[NeverDefined]",  # noqa: F821
-        msg: "NeverDefined",  # noqa: F821
-    ) -> "Behavior[NeverDefined]":  # noqa: F821
+        ctx: "ActorContext[NeverDefined]",  # type: ignore[name-defined] # noqa: F821
+        msg: "NeverDefined",  # type: ignore[name-defined] # noqa: F821
+    ) -> "Behavior[NeverDefined]":  # type: ignore[name-defined] # noqa: F821
         return Behaviors.same()
 
     with pytest.raises(BehaviorTypeError, match="cannot read the annotations"):
@@ -151,11 +167,11 @@ def test_a_handler_with_too_few_parameters_raises():
 
 
 def test_a_plain_basemodel_annotation_is_refused():
-    async def on_message(ctx: ActorContext, msg: NotAMessage) -> Behavior:
+    async def on_message(ctx: ActorContext[Any], msg: NotAMessage) -> Behavior[Any]:
         return Behaviors.same()
 
     with pytest.raises(MessageTypeError, match="subclasses BaseModel"):
-        Behaviors.receive(on_message)  # type: ignore[arg-type]
+        Behaviors.receive(on_message)
 
 
 def test_resolution_names_the_offending_function():
@@ -187,8 +203,14 @@ def test_setup_itself_carries_no_type(ctx):
 
 def test_setup_can_run_more_than_once(ctx):
     # A restart re-evaluates the original behavior, so this has to be re-usable.
-    calls = []
-    behavior = Behaviors.setup(lambda c: calls.append(c) or Behaviors.same())
+    calls: list[ActorContext[Greet]] = []
+
+    def factory(c: ActorContext[Greet]) -> Behavior[Greet]:
+        calls.append(c)
+        return Behaviors.same()
+
+    behavior = Behaviors.setup(factory)
+    assert isinstance(behavior, SetupBehavior)
     behavior.setup(ctx)
     behavior.setup(ctx)
     assert len(calls) == 2
@@ -258,7 +280,7 @@ def test_a_plain_basemodel_parameter_is_refused():
     with pytest.raises(MessageTypeError, match="subclasses BaseModel"):
 
         class Bad(AbstractBehavior[NotAMessage]):  # type: ignore[type-var]
-            async def on_message(self, message: NotAMessage) -> Behavior:
+            async def on_message(self, message: NotAMessage) -> Behavior[Any]:
                 return Behaviors.same()
 
 
