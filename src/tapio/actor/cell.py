@@ -161,9 +161,10 @@ class ActorRuntime:
     events: EventStream = field(default_factory=EventStream)
     """What this system publishes about itself, for whoever subscribed.
 
-    Runtime facts rather than traffic: today, that a peer became unreachable.
-    A default is provided so a cell built directly in a test needs no stream
-    of its own.
+    Runtime facts rather than traffic.
+    [ActorSystem.events][tapio.actor.system.ActorSystem.events] lists them. A
+    default is provided so a cell built directly in a test needs no stream of
+    its own.
     """
 
     terminated: bool = False
@@ -342,6 +343,10 @@ class LocalActorRef(ActorRef[T]):
             AskTypeError: If the reply was not an `expect`.
             MessageTypeError: If the request does not match the target's
                 declared message type.
+            MailboxFullError: If the target's mailbox is full under
+                `OverflowStrategy.FAIL`. An ask runs on the system's loop, so
+                unlike `tell` there is no off-loop case that dead-letters
+                instead.
             RuntimeError: If called off the system's loop.
             pydantic.ValidationError: If content validation is on and either
                 the request or the reply does not satisfy its own model.

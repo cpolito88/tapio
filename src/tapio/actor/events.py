@@ -2,8 +2,10 @@
 
 Dead letters are one such stream and they have their own office, because a
 message that went nowhere carries a payload and needs throttled logging. This
-is the general one. It carries facts about the system rather than traffic:
-today, that a peer became unreachable.
+is the general one. It carries facts about the system rather than traffic.
+[ActorSystem.events][tapio.actor.system.ActorSystem.events] lists what a system
+publishes on it, so the list lives in one place instead of being restated
+wherever the stream is mentioned.
 
 Subscribers pick the event type they care about, so a handler written for one
 event is never called with another. The set of event types grows with the

@@ -121,6 +121,12 @@ class ActorSystem:
             RuntimeError: If called outside a running event loop. A system is
                 built out of tasks and has nowhere to put them.
             ValueError: If the name would not make a legal actor path.
+            InsecureRemoteConfig: If remoting is configured to listen beyond
+                loopback with no secret. The port is bound here, before
+                anything else, so a deployment like that fails to start rather
+                than failing to be secure.
+            OSError: If the remoting port cannot be bound, usually because
+                something else holds it. Bound here for the same reason.
         """
         self._settings = settings if settings is not None else TapioSettings()
         self._root = ActorPath.root(name)
@@ -268,11 +274,17 @@ class ActorSystem:
     def events(self) -> EventStream:
         """What this system publishes about itself, for whoever subscribes.
 
-        Runtime facts rather than traffic. Today those are
-        [PeerUnreachable][tapio.remote.failure.PeerUnreachable] and
-        [PeerReachable][tapio.remote.failure.PeerReachable], which is how
-        a service learns that a node it was talking to is beyond reach and
-        decides whether to log it, alarm, or stop.
+        Runtime facts rather than traffic. Three things are published here,
+        and this is the list the rest of the library points at rather than
+        restating:
+
+        - [PeerUnreachable][tapio.remote.failure.PeerUnreachable], how a
+          service learns that a node it was talking to is beyond reach and
+          decides whether to log it, alarm, or stop.
+        - [PeerReachable][tapio.remote.failure.PeerReachable], when that node
+          answers again.
+        - [ClusterDowned][tapio.cluster.messages.ClusterDowned], when this node
+          has been downed and should shut itself down.
         """
         return self._events
 
