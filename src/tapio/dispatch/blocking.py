@@ -31,7 +31,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, ParamSpec, TypeVar
 
-from tapio.logging import runtime_logger
+from tapio.logging import describe_callable, runtime_logger
 
 __all__ = ["BlockingPool"]
 
@@ -175,5 +175,12 @@ class BlockingPool:
 
 
 def describe_blocking(fn: Callable[..., Any]) -> str:
-    """Name a callable for a log line or an error message."""
-    return getattr(fn, "__qualname__", None) or repr(fn)
+    """Name a callable for a log line or an error message.
+
+    Kept because it is a published name that the reference page renders, so
+    removing it would break an import somebody may have written. It is the
+    one caller-facing spelling of
+    [describe_callable][tapio.logging.describe_callable], which is where the
+    implementation lives now that four places needed it.
+    """
+    return describe_callable(fn)
