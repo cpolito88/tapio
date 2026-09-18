@@ -11,6 +11,7 @@ import pytest
 from tapio.actor import ActorContext, ActorSystem, Behavior, Behaviors
 from tapio.errors import InsecureRemoteConfig, MessageTypeError, RefResolutionError
 from tapio.remote.address import Address
+from tapio.remote.handle import LinkHandle
 from tapio.remote.transport import FrameLink, LinkFrame, connect
 from tapio.settings import RemoteSettings, TapioSettings
 from tapio.testkit import assert_no_leaked_tasks
@@ -338,8 +339,12 @@ async def test_a_handshake_cancelled_before_it_starts_has_its_link_closed():
         async def never() -> None:
             raise AssertionError("a handshake cancelled before it runs never runs")
 
+        handle = LinkHandle(
+            _SlowClosingLink(0.0, closed), loop=endpoint.dispatcher.loop
+        )
+        endpoint._held.add(handle)
         task = endpoint.dispatcher.spawn_task(never(), name="tapio-remote-handshake")
-        endpoint._handshakes[task] = _SlowClosingLink(0.0, closed)
+        handle.reads_with(task)
         task.cancel()
 
         await endpoint.close()
@@ -394,8 +399,10 @@ async def test_a_refused_link_is_closed_even_if_its_close_never_ran():
             )
             # Cancelled before it has run a line, which is what a shutdown that
             # never gives the task a turn amounts to.
-            for task in list(endpoint._closing_links):
-                task.cancel()
+            for held in list(endpoint._held):
+                closing = held.reader
+                if closing is not None:
+                    closing.cancel()
 
             await system.terminate()
 
@@ -580,8 +587,10 @@ async def test_a_handshake_cancelled_before_its_first_line_still_closes_its_link
         try:
             assert system.remote is not None
             link = RecordingLink()
+            handle = LinkHandle(link, loop=system.remote.dispatcher.loop)
             never_ran: asyncio.Task[None] = asyncio.ensure_future(_never_runs())
-            system.remote._handshakes[never_ran] = link  # type: ignore[index]
+            handle.reads_with(never_ran)
+            system.remote._held.add(handle)  # type: ignore[index]
 
             await system.terminate()
 

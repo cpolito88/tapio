@@ -26,7 +26,6 @@ better answer available to a single node.
 """
 
 import asyncio
-import contextlib
 from collections import deque
 from typing import Any, Protocol, TypeAlias
 
@@ -42,7 +41,6 @@ from tapio.actor.signals import PostStop, Signal
 from tapio.actor.timers import TimerScheduler
 from tapio.actor.watch import Watcher, WatchTarget
 from tapio.dispatch.dispatcher import Dispatcher
-from tapio.dispatch.tasks import cancel_and_wait
 from tapio.errors import (
     FrameTooLargeError,
     HandshakeError,
@@ -62,6 +60,7 @@ from tapio.remote.failure import (
     PeerReachable,
     PeerUnreachable,
 )
+from tapio.remote.handle import LinkHandle
 from tapio.remote.handshake import introduce
 from tapio.remote.transport import (
     FrameLink,
@@ -227,21 +226,19 @@ class Association:
     """
 
     __slots__ = (
-        "_accepted",
         "_closing",
         "_decider",
         "_detector",
+        "_handle",
         "_host",
         "_initiator",
         "_link",
         "_peer",
         "_pending",
         "_quarantined",
-        "_reader",
         "_ready",
         "_ref",
         "_retiring",
-        "_socket",
         "_uid",
         "_watched_here",
         "_watching_there",
@@ -271,7 +268,6 @@ class Association:
         self._initiator = initiator
         self._link: Link | None = None
         self._pending: deque[Outbound | LinkOut] = deque()
-        self._reader: asyncio.Task[None] | None = None
         self._ref: ActorRef[AssociationMessage] | None = None
         self._closing = False
         self._quarantined = False
@@ -290,18 +286,14 @@ class Association:
         self._watching_there: dict[ActorPath, dict[ActorPath, Watcher]] = {}
         self._watched_here: dict[tuple[ActorPath, str], _PeerWatcher] = {}
         self._ready: asyncio.Future[None] = host.dispatcher.loop.create_future()
-        # Held until the reader task starts and takes it over.
-        self._accepted: Link | None = link
-        # Every link this association has opened, writable or not. `_link` is
-        # what the actor may write to, and is set only once nothing is queued
-        # ahead of it. This one exists as soon as there is a socket, so a
-        # cancellation between the two still has something to close.
-        self._socket: Link | None = link
-        # The link a simultaneous dial retired, held from the moment it loses
-        # the race until it is closed. `_resume` closes it, but that runs in a
-        # task that a shutdown can cancel before its first line, so the field is
-        # what lets `_release` and `detach` close it when `_resume` never runs.
-        self._retiring: Link | None = None
+        # Who owes a close on which socket, which is the whole of the question
+        # ownership used to be spread over four fields to answer. `_handle` is
+        # the socket this association is on now, `_retiring` the one a
+        # simultaneous dial retired and has not finished closing. Both are
+        # closed by whichever path gets there first, since closing a handle
+        # twice costs nothing.
+        self._handle: LinkHandle | None = LinkHandle(link, loop=host.dispatcher.loop)
+        self._retiring: LinkHandle | None = None
 
     @property
     def peer(self) -> Address:
@@ -357,9 +349,11 @@ class Association:
         def build(
             ctx: ActorContext[AssociationMessage],
         ) -> Behavior[AssociationMessage]:
-            self._reader = self._host.dispatcher.spawn_task(
+            reader = self._host.dispatcher.spawn_task(
                 self._run(), name=f"tapio-link:{self._peer}"
             )
+            if self._handle is not None:
+                self._handle.reads_with(reader)
             return Behaviors.with_timers(self._with_heartbeat)
 
         return Behaviors.setup(build)
@@ -526,38 +520,36 @@ class Association:
         # queued. That is the same rule as a link coming up for the first
         # time, and it is what keeps the order across the swap.
         self._link = None
-        self._accepted = link
-        # The losing socket is put in `_retiring` before the task that closes
-        # it is spawned, so a shutdown that cancels that task before it runs a
-        # line still finds the link to close in `_release`.
-        previous, self._socket = self._socket, link
+        # The losing handle is moved to `_retiring` before the task that
+        # closes it is spawned, so a shutdown that cancels that task before it
+        # runs a line still finds a handle that owes a close. It carries the
+        # old reader with it, so retiring the socket retires the read of it.
+        taking = LinkHandle(link, loop=self._host.dispatcher.loop)
+        previous, self._handle = self._handle, taking
         self._retiring = previous
-        reader, self._reader = self._reader, None
-        self._reader = self._host.dispatcher.spawn_task(
-            self._resume(reader), name=f"tapio-link:{self._peer}"
+        taking.reads_with(
+            self._host.dispatcher.spawn_task(
+                self._resume(previous), name=f"tapio-link:{self._peer}"
+            )
         )
 
-    async def _resume(self, reader: "asyncio.Task[None] | None") -> None:
+    async def _resume(self, previous: "LinkHandle | None") -> None:
         """Retire the link that lost the dial, then read the one that won."""
         try:
-            if reader is not None:
-                # `_resume` is itself the reader task. If a shutdown cancels it
-                # while it waits here, that cancellation is its own, so it must
-                # stop rather than fall through to `_run` and resume reads on a
-                # link it was told to abandon. Suppressing only the awaited
-                # reader's cancellation did not draw that line.
-                await cancel_and_wait(reader)
+            if previous is not None:
+                # `_resume` is itself the new reader task. Closing the retired
+                # handle cancels the old reader and waits for it, and if a
+                # shutdown cancels this task while it waits, that cancellation
+                # is its own: it must stop rather than fall through to `_run`
+                # and resume reads on a link it was told to abandon. The
+                # handle's close re-raises it, with the socket already
+                # released.
+                await previous.close()
         finally:
-            # Close the retired link even if this task is cancelled while the
-            # old reader is ending. It is taken out of `_retiring` here so that
-            # `_release` does not close it a second time, and closed with a
-            # synchronous `writer.close()` first, so the socket is released even
-            # under cancellation. If this task is cancelled before its first
-            # line runs, this never executes and `_release` closes `_retiring`
-            # instead.
-            retiring, self._retiring = self._retiring, None
-            if retiring is not None:
-                await retiring.close()
+            # Taken out here so `_release` does not wait on a close that is
+            # already done. If this task was cancelled before its first line
+            # ran, this never executes and `_release` closes it instead.
+            self._retiring = None
         await self._run()
 
     def close(self, detail: str) -> None:
@@ -604,29 +596,10 @@ class Association:
             return
         self._closing = True
         self._fail_ready("the association stopped")
-        reader = self._reader
-        self._reader = None
-        if reader is not None and reader is not asyncio.current_task():
-            reader.cancel()
-            with contextlib.suppress(BaseException):
-                # However the reader ended is not this cleanup's business:
-                # `_run` has already logged it. Suppressing only CancelledError
-                # let any other reader-task exception skip everything below,
-                # leaving the socket open, the frames undelivered and the
-                # association stuck in the endpoint's table.
-                await reader
-        link = self._socket or self._accepted
-        retiring, self._retiring = self._retiring, None
-        self._link = None
-        self._socket = None
-        self._accepted = None
-        if link is not None:
-            await link.close()
-        # A dial race retired a link into `_retiring`, and the task that would
-        # have closed it never ran because this detach cancelled it first.
-        if retiring is not None and retiring is not link:
-            await retiring.close()
-        self._host.forget(self)
+        try:
+            await self._close_sockets()
+        finally:
+            self._host.forget(self)
 
     async def wait_connected(self, timeout: float) -> None:  # noqa: ASYNC109 - the dial deadline
         """Wait until the link is up, for a caller that asked for it by hand.
@@ -852,12 +825,17 @@ class Association:
 
     async def _run(self) -> None:
         """Open the link, then read it until it ends. The association's one task."""
+        handle = self._handle
+        if handle is None:  # pragma: no cover - released before the reader ran
+            return
         try:
-            link = self._accepted
-            self._accepted = None
+            link = handle.link
             if link is None:
                 link = await self._dial()
-                self._socket = link
+                # No await between the dial returning and the handle taking
+                # the socket, so there is no window in which the close is
+                # owed by nobody.
+                handle.holds(link)
             await self._open(link)
             await self._read(link)
         except asyncio.CancelledError:
@@ -1074,41 +1052,54 @@ class Association:
         """
         self._closing = True
         self._fail_ready("the association stopped")
-        reader = self._reader
-        self._reader = None
-        if reader is not None and reader is not asyncio.current_task():
-            reader.cancel()
-            with contextlib.suppress(BaseException):
-                # However the reader ended is not this cleanup's business:
-                # `_run` has already logged it. Suppressing only CancelledError
-                # let any other reader-task exception skip everything below,
-                # leaving the socket open, the frames undelivered and the
-                # association stuck in the endpoint's table.
-                await reader
-        link = self._socket or self._accepted
-        retiring, self._retiring = self._retiring, None
+        try:
+            await self._close_sockets()
+        finally:
+            # In a `finally` because the accounting is owed whatever the close
+            # did. A cancellation arriving while the reader is ending used to
+            # skip all of this, leaving the frames undelivered, the watchers
+            # waiting and the association still in the endpoint's table.
+            while self._pending:
+                outbound = self._pending.popleft()
+                if isinstance(outbound, Outbound):
+                    self._dead_letter(
+                        outbound.payload,
+                        outbound.recipient,
+                        DeadLetterReason.LINK_FAILED,
+                        detail=(
+                            f"the association with {self._peer} stopped before it left"
+                        ),
+                    )
+            self._end_watches()
+            self._host.forget(self)
+
+    async def _close_sockets(self) -> None:
+        """Release every socket this association still owes a close on.
+
+        One rule, applied to each handle: the read ends, then the socket does.
+        A handle carries the reader that was reading it, so a link a dial race
+        retired takes its own reader with it, and a handle somebody else is
+        already closing is waited for rather than closed twice.
+
+        A handle exists from the moment the association does, before there is
+        a socket to put in it, so cancelling the dial is closing the handle
+        too and there is no second rule for that window.
+
+        The current handle goes first, and the order is load-bearing. Its
+        reader may be `_resume`, which is itself waiting inside the retired
+        handle's close; closing that one first would wait for a task this
+        close has not cancelled yet, and a reader that is slow to unwind would
+        hold the whole shutdown there. Cancelling the current reader breaks
+        that chain, and the retired handle is closed on the way out of it, so
+        the second call below finds the work already done.
+        """
         self._link = None
-        self._socket = None
-        self._accepted = None
-        if link is not None:
-            await link.close()
-        # A dial race retired a link into `_retiring`, and `_resume` was
-        # cancelled before it could close it, since cancelling the reader above
-        # is what cancelled `_resume`. Close it here so its socket is not left
-        # for the garbage collector.
-        if retiring is not None and retiring is not link:
+        retiring, self._retiring = self._retiring, None
+        handle, self._handle = self._handle, None
+        if handle is not None:
+            await handle.close()
+        if retiring is not None:
             await retiring.close()
-        while self._pending:
-            outbound = self._pending.popleft()
-            if isinstance(outbound, Outbound):
-                self._dead_letter(
-                    outbound.payload,
-                    outbound.recipient,
-                    DeadLetterReason.LINK_FAILED,
-                    detail=f"the association with {self._peer} stopped before it left",
-                )
-        self._end_watches()
-        self._host.forget(self)
 
     def _end_watches(self) -> None:
         """Release both sides of every watch that crossed this link.

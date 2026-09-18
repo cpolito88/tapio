@@ -5,6 +5,7 @@ import contextlib
 import logging
 import threading
 from datetime import timedelta
+from typing import Any
 
 import pytest
 
@@ -26,6 +27,7 @@ from tapio.message import Message
 from tapio.remote.address import Address
 from tapio.remote.association import Association, Outbound
 from tapio.remote.codec import LENGTH_PREFIX, encode
+from tapio.remote.handle import LinkHandle
 from tapio.remote.transport import framed, is_link_frame, link_body
 from tapio.settings import RemoteSettings
 from tapio.testkit import assert_no_leaked_tasks
@@ -695,6 +697,14 @@ def _lone_association() -> Association:
     return Association(host=_LoneHost(), peer=peer, initiator=peer)  # type: ignore[arg-type]
 
 
+def _held(link: Any, reader: "asyncio.Task[None] | None" = None) -> LinkHandle:
+    """A handle on a link, with the reader that was reading it."""
+    handle = LinkHandle(link, loop=asyncio.get_running_loop())
+    if reader is not None:
+        handle.reads_with(reader)
+    return handle
+
+
 async def test_release_closes_the_link_a_dial_race_retired():
     # A simultaneous dial retires the losing link into `_retiring`, closed by
     # the `_resume` task. A shutdown can cancel that task before it runs a line,
@@ -703,7 +713,7 @@ async def test_release_closes_the_link_a_dial_race_retired():
     with assert_no_leaked_tasks():
         association = _lone_association()
         retired = RecordingLink()
-        association._retiring = retired
+        association._retiring = _held(retired)
 
         await association._release()
 
@@ -717,7 +727,7 @@ async def test_detach_closes_the_link_a_dial_race_retired():
     with assert_no_leaked_tasks():
         association = _lone_association()
         retired = RecordingLink()
-        association._retiring = retired
+        association._retiring = _held(retired)
 
         await association.detach()
 
@@ -791,7 +801,7 @@ async def test_a_swap_holds_the_writer_until_the_new_link_has_caught_up():
         association = _SwapProbe(host=_LoneHost(), peer=peer, initiator=peer)  # type: ignore[arg-type]
         loser, winner = _WritingLink(), _WritingLink()
 
-        association._socket = loser
+        association._handle = _held(loser)
         await association._open(loser)
         await association._write(_queued(1))
         assert loser.written == [_queued(1).frame]
@@ -801,9 +811,10 @@ async def test_a_swap_holds_the_writer_until_the_new_link_has_caught_up():
         association.adopt(winner, uid=7)
         # Drained here rather than at the end, so a later assertion failing is
         # reported as itself instead of as the leaked task it leaves behind.
-        retiring = association._reader
-        assert retiring is not None
-        await retiring
+        assert association._handle is not None
+        resuming = association._handle.reader
+        assert resuming is not None
+        await resuming
         assert loser.closed
 
         assert not association.is_connected
@@ -821,6 +832,54 @@ async def test_a_swap_holds_the_writer_until_the_new_link_has_caught_up():
 
         await association._write(_queued(4))
         assert winner.written == [_queued(n).frame for n in (2, 3, 4)]
+
+
+async def test_release_stops_its_own_reader_before_waiting_on_the_retired_link():
+    # The order `_release` closes its two handles in is load-bearing, and
+    # getting it wrong is a shutdown that parks rather than anything that goes
+    # red. The current reader is `_resume`, and `_resume` is itself waiting
+    # inside the retired handle's close. Closing the retired handle first
+    # waits for the close `_resume` is doing, and `_resume` has not been
+    # cancelled yet, so the wait lasts as long as the old reader takes to
+    # unwind. Cancelling the current reader first breaks that chain.
+    with assert_no_leaked_tasks():
+        peer = Address.parse("tapio://peer@127.0.0.1:2551")
+        association = _ResumeProbe(host=_LoneHost(), peer=peer, initiator=peer)  # type: ignore[arg-type]
+        unwind = asyncio.Event()
+
+        async def stubborn() -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                # Slow to unwind, which is what makes the order visible.
+                await unwind.wait()
+                raise
+
+        old: asyncio.Task[None] = asyncio.ensure_future(stubborn())
+        await asyncio.sleep(0)
+        retiring = _held(RecordingLink(), old)
+        association._retiring = retiring
+        resuming: asyncio.Task[None] = asyncio.ensure_future(
+            association._resume(retiring)
+        )
+        association._handle = _held(RecordingLink(), resuming)
+        # One turn, so `_resume` is parked inside the retired handle's close.
+        await asyncio.sleep(0)
+
+        parked = False
+        try:
+            await asyncio.wait_for(association._release(), 1.0)
+        except TimeoutError:
+            parked = True
+
+        # Let the stubborn reader go either way, so a failure here reads as
+        # itself rather than as the tasks it would otherwise leave behind.
+        unwind.set()
+        for task in (old, resuming):
+            with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                await asyncio.wait_for(task, 1.0)
+
+        assert not parked, "the release waited for a reader it had not cancelled"
 
 
 class _ResumeProbe(Association):
@@ -853,9 +912,12 @@ async def test_resume_does_not_resume_reads_after_its_own_cancellation():
         association = _ResumeProbe(host=_LoneHost(), peer=peer, initiator=peer)  # type: ignore[arg-type]
 
         reader: asyncio.Task[None] = asyncio.ensure_future(_pending())
-        resume: asyncio.Task[None] = asyncio.ensure_future(association._resume(reader))
-        # One turn: `_resume` cancels the retired reader and parks at
-        # `await reader`, which is the window the bug needs.
+        retiring = _held(RecordingLink(), reader)
+        resume: asyncio.Task[None] = asyncio.ensure_future(
+            association._resume(retiring)
+        )
+        # One turn: closing the retired handle cancels its reader and parks at
+        # the wait for it, which is the window the bug needs.
         await asyncio.sleep(0)
 
         resume.cancel()
@@ -893,12 +955,12 @@ async def test_release_finishes_even_when_the_reader_raised():
     with assert_no_leaked_tasks():
         association = _lone_association()
         retired = RecordingLink()
-        association._retiring = retired
-        association._reader = await _finished_raising(RuntimeError("reader failed"))
+        reader = await _finished_raising(RuntimeError("reader failed"))
+        association._retiring = _held(retired, reader)
 
         await association._release()
 
-        # Everything below `await reader` still ran.
+        # Everything after the reader still ran.
         assert retired.closed
 
 
@@ -906,8 +968,8 @@ async def test_detach_finishes_even_when_the_reader_raised():
     with assert_no_leaked_tasks():
         association = _lone_association()
         retired = RecordingLink()
-        association._retiring = retired
-        association._reader = await _finished_raising(RuntimeError("reader failed"))
+        reader = await _finished_raising(RuntimeError("reader failed"))
+        association._retiring = _held(retired, reader)
 
         await association.detach()
 

@@ -319,8 +319,10 @@ async def test_a_handshake_completing_while_the_endpoint_stops_is_closed_cleanly
             "127.0.0.1", port, max_frame_bytes=1024 * 1024, ssl_context=None
         )
         await link.read_link(2.0)
-        await eventually(lambda: bool(endpoint._handshakes))
-        handshake = next(iter(endpoint._handshakes))
+        await eventually(lambda: bool(endpoint._held))
+        held = next(iter(endpoint._held))
+        handshake = held.reader
+        assert handshake is not None
 
         # Terminating sets the endpoint cell terminating, then parks in the held
         # close(): _terminating is now True while _closed is still False.
