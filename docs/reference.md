@@ -226,6 +226,8 @@ Generated from the source, so it cannot drift from what is installed.
 
 ::: tapio.testkit.behavior.Watched
 
+::: tapio.testkit.behavior.DeadLettered
+
 ::: tapio.testkit.behavior.RecordingRef
 
 ::: tapio.testkit.plugin

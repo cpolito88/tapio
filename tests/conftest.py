@@ -74,6 +74,16 @@ class FakeContext(ActorContext[Message]):
     async def resolve(self, uri: str, *, expect: type[Any]) -> ActorRef[Any]:
         raise NotImplementedError
 
+    def dead_letter(
+        self,
+        message: Message,
+        recipient: ActorPath,
+        reason: str,
+        *,
+        detail: str | None = None,
+    ) -> None:
+        raise NotImplementedError
+
     def watch(self, ref: ActorRef[Any]) -> None:
         raise NotImplementedError
 

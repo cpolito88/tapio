@@ -27,17 +27,15 @@ change.
 import functools
 import operator
 from collections.abc import Sequence
-from datetime import timedelta
 from typing import Any, cast, final
 
 from tapio.actor.behavior import Behavior, Behaviors
-from tapio.actor.cell import LocalActorRef
 from tapio.actor.context import ActorContext
-from tapio.actor.dead_letters import DeadLetterOffice, DeadLetterReason
+from tapio.actor.dead_letters import DeadLetterReason
 from tapio.actor.ref import ActorRef
 from tapio.actor.router import RoundRobin, RoutingStrategy
 from tapio.actor.timers import TimerScheduler
-from tapio.cluster.daemon import local_daemon
+from tapio.cluster.daemon import start_subscribing, subscribe_when_ready
 from tapio.cluster.events import (
     ClusterEvent,
     MemberRemoved,
@@ -46,7 +44,6 @@ from tapio.cluster.events import (
     UnreachableMember,
 )
 from tapio.cluster.member import Member
-from tapio.cluster.messages import Subscribe
 from tapio.errors import MailboxFullError
 from tapio.logging import runtime_logger
 from tapio.message import Message
@@ -57,7 +54,6 @@ __all__ = ["group_router"]
 _log = runtime_logger("cluster.router")
 
 _SUBSCRIBE_TIMER = "group-subscribe"
-_RETRY_INTERVAL = timedelta(milliseconds=50)
 
 _ROUTER_EVENTS: tuple[type[ClusterEvent], ...] = (
     MemberUp,
@@ -128,12 +124,7 @@ class _GroupRouter:
 
         def with_timers(timers: TimerScheduler[Any]) -> Behavior[Any]:
             def build(ctx: ActorContext[Any]) -> Behavior[Any]:
-                timers.start_fixed_delay(
-                    _SUBSCRIBE_TIMER,
-                    _Reconcile(),
-                    _RETRY_INTERVAL,
-                    initial_delay=timedelta(0),
-                )
+                start_subscribing(timers, _SUBSCRIBE_TIMER, _Reconcile())
 
                 async def on_message(
                     ctx: ActorContext[Any], message: Any
@@ -155,7 +146,10 @@ class _GroupRouter:
         """Update the pool on a membership event, or forward anything else."""
         match message:
             case _Reconcile():
-                await self._ensure_subscribed(ctx, timers)
+                if self._daemon is None:
+                    self._daemon = await subscribe_when_ready(
+                        ctx, timers, _SUBSCRIBE_TIMER, _ROUTER_EVENTS
+                    )
             case MemberUp():
                 await self._offer(ctx, message.member)
             case ReachableMember():
@@ -167,20 +161,6 @@ class _GroupRouter:
             case _:
                 self._forward(ctx, message)
         return Behaviors.same()
-
-    async def _ensure_subscribed(
-        self, ctx: ActorContext[Any], timers: TimerScheduler[Any]
-    ) -> None:
-        """Subscribe to the daemon once it exists, then stop retrying."""
-        if self._daemon is not None:
-            timers.cancel(_SUBSCRIBE_TIMER)
-            return
-        daemon = await local_daemon(ctx)
-        if daemon is None:
-            return
-        self._daemon = daemon
-        daemon.tell(Subscribe(subscriber=ctx.self_ref, events=_ROUTER_EVENTS))
-        timers.cancel(_SUBSCRIBE_TIMER)
 
     async def _offer(self, ctx: ActorContext[Any], member: Member) -> None:
         """Add a member's routee to the pool, if it carries the role.
@@ -212,7 +192,7 @@ class _GroupRouter:
         """
         routees: Sequence[ActorRef[Any]] = list(self._routees.values())
         if not routees:
-            self._office(ctx).publish(
+            ctx.dead_letter(
                 message,
                 ctx.self_ref.path,
                 DeadLetterReason.UNKNOWN_RECIPIENT,
@@ -224,13 +204,7 @@ class _GroupRouter:
             routee.tell(message)
         except MailboxFullError:
             _log.warning("%s is full; the message could not be routed", routee.path)
-            self._office(ctx).publish(
-                message, routee.path, DeadLetterReason.MAILBOX_FULL
-            )
-
-    def _office(self, ctx: ActorContext[Any]) -> DeadLetterOffice:
-        """Find the system's dead letter office, for work that cannot be routed."""
-        return cast(LocalActorRef[Any], ctx.self_ref).cell.runtime.dead_letters
+            ctx.dead_letter(message, routee.path, DeadLetterReason.MAILBOX_FULL)
 
     def __repr__(self) -> str:
         """Render the path, the role, and how many routees are in the pool."""

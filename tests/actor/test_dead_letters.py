@@ -9,6 +9,7 @@ from datetime import timedelta
 import pytest
 
 from tapio.actor import (
+    ActorContext,
     ActorRef,
     ActorSystem,
     Behavior,
@@ -213,6 +214,33 @@ async def test_messages_still_queued_when_an_actor_stops_are_accounted_for(
     # The first was handled and the actor then stopped. The rest were queued
     # behind it and must not vanish with the mailbox.
     assert [event.message.n for event in seen] == [1, 2, 3]  # type: ignore[attr-defined]
+
+
+async def test_a_behavior_can_account_for_a_message_it_could_not_pass_on(
+    system: ActorSystem,
+):
+    seen: list[DeadLetter] = []
+    system.dead_letters.subscribe(seen.append)
+    elsewhere = a_path()
+
+    async def cannot_forward(ctx: ActorContext[Ping], ping: Ping) -> Behavior[Ping]:
+        ctx.dead_letter(
+            ping,
+            elsewhere,
+            DeadLetterReason.UNKNOWN_RECIPIENT,
+            detail="nowhere to forward it",
+        )
+        return Behaviors.same()
+
+    ref = system.spawn(Behaviors.receive(cannot_forward), name="conduit")
+    ref.tell(Ping(n=1))
+    await asyncio.sleep(0.05)
+
+    # The recipient is the one the conduit tried, not the conduit itself, and
+    # the message reaching the office is the object the sender passed.
+    assert [event.recipient for event in seen] == [str(elsewhere)]
+    assert [event.reason for event in seen] == [DeadLetterReason.UNKNOWN_RECIPIENT]
+    assert [event.detail for event in seen] == ["nowhere to forward it"]
 
 
 # Bounded mailboxes, end to end

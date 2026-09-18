@@ -32,17 +32,20 @@ wherever it currently runs is a separate concern, which a group router over the
 same role answers.
 """
 
-from datetime import timedelta
 from typing import Any, final
 
 from tapio.actor.behavior import Behavior, Behaviors
 from tapio.actor.context import ActorContext
 from tapio.actor.ref import ActorRef
 from tapio.actor.timers import TimerScheduler
-from tapio.cluster.daemon import local_daemon
-from tapio.cluster.events import MemberLeaving, MemberRemoved, MemberUp
+from tapio.cluster.daemon import start_subscribing, subscribe_when_ready
+from tapio.cluster.events import (
+    ClusterEvent,
+    MemberLeaving,
+    MemberRemoved,
+    MemberUp,
+)
 from tapio.cluster.member import Member, seniority
-from tapio.cluster.messages import Subscribe
 from tapio.logging import runtime_logger
 from tapio.message import Message
 
@@ -52,13 +55,12 @@ _log = runtime_logger("cluster.singleton")
 
 _SUBSCRIBE_TIMER = "singleton-subscribe"
 _KEEPER_NAME = "instance"
-_RETRY_INTERVAL = timedelta(milliseconds=50)
-"""How often a manager or router retries subscribing until the daemon exists.
 
-A manager can be spawned in the same breath as the cluster, before the daemon
-has registered its well-known name, so the first look may find nothing. This is
-short because the daemon starts moments later, and it stops the moment the
-subscription lands."""
+_MANAGER_EVENTS: tuple[type[ClusterEvent], ...] = (
+    MemberUp,
+    MemberLeaving,
+    MemberRemoved,
+)
 
 
 @final
@@ -162,12 +164,7 @@ class _Manager:
                 self._address = str(ctx.self_ref.address)
                 # Ask at once, then keep asking until the daemon has started,
                 # which is usually the first tick.
-                timers.start_fixed_delay(
-                    _SUBSCRIBE_TIMER,
-                    _Reconcile(),
-                    _RETRY_INTERVAL,
-                    initial_delay=timedelta(0),
-                )
+                start_subscribing(timers, _SUBSCRIBE_TIMER, _Reconcile())
 
                 async def on_message(
                     ctx: ActorContext[_ManagerMessage], message: _ManagerMessage
@@ -189,7 +186,10 @@ class _Manager:
         """Handle one message, then place the instance if this node should."""
         match message:
             case _Reconcile():
-                await self._ensure_subscribed(ctx, timers)
+                if self._daemon is None:
+                    self._daemon = await subscribe_when_ready(
+                        ctx, timers, _SUBSCRIBE_TIMER, _MANAGER_EVENTS
+                    )
                 return Behaviors.same()
             case MemberUp():
                 if self._role is None or self._role in message.member.roles:
@@ -204,27 +204,6 @@ class _Manager:
                 self._hosts.pop(message.member.key, None)
         self._reconcile(ctx)
         return Behaviors.same()
-
-    async def _ensure_subscribed(
-        self,
-        ctx: ActorContext[_ManagerMessage],
-        timers: TimerScheduler[_ManagerMessage],
-    ) -> None:
-        """Subscribe to the daemon once it exists, then stop retrying."""
-        if self._daemon is not None:
-            timers.cancel(_SUBSCRIBE_TIMER)
-            return
-        daemon = await local_daemon(ctx)
-        if daemon is None:
-            return
-        self._daemon = daemon
-        daemon.tell(
-            Subscribe(
-                subscriber=ctx.self_ref,
-                events=(MemberUp, MemberLeaving, MemberRemoved),
-            )
-        )
-        timers.cancel(_SUBSCRIBE_TIMER)
 
     def _reconcile(self, ctx: ActorContext[_ManagerMessage]) -> None:
         """Start or hand off the instance to match who the oldest member is."""
