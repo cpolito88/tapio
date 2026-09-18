@@ -79,6 +79,7 @@ from tapio.errors import (
     RefResolutionError,
     TapioError,
 )
+from tapio.logging import describe_callable
 from tapio.message import Message
 from tapio.remote.registry import register_message
 
@@ -327,8 +328,8 @@ def remote_behavior(
         taken = _BY_KEY.get(wire_key)
         if taken is not None and taken.build is not factory:
             msg = (
-                f"cannot register {_name_of(factory)} under {wire_key!r}: "
-                f"{_name_of(taken.build)} already has that key. Two factories "
+                f"cannot register {describe_callable(factory)} under {wire_key!r}: "
+                f"{describe_callable(taken.build)} already has that key. Two factories "
                 "sharing a key would start whichever imported last, so pass an "
                 "explicit key to one of them"
             )
@@ -525,7 +526,7 @@ def _resolve_args_type(
     failure. A factory whose arguments cannot be built is one no peer could
     call, so it is rejected where it is written.
     """
-    name = _name_of(factory)
+    name = describe_callable(factory)
     if explicit is not None:
         return _check_args_type(explicit, origin=name)
 
@@ -575,8 +576,3 @@ def _check_args_type(candidate: object, *, origin: str) -> type[Message]:
         "answer, and anything else has no way back from a frame."
     )
     raise BehaviorRegistrationError(msg)
-
-
-def _name_of(obj: object) -> str:
-    """Best available name for a callable, for an error message."""
-    return getattr(obj, "__qualname__", None) or repr(obj)

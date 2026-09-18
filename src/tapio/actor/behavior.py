@@ -25,6 +25,7 @@ from tapio.actor.context import ActorContext
 from tapio.actor.signals import Signal
 from tapio.actor.supervision import SupervisorStrategy
 from tapio.errors import BehaviorTypeError
+from tapio.logging import describe_callable
 from tapio.message import Message
 from tapio.validation import MessageType, normalize_msg_type
 
@@ -173,7 +174,7 @@ class _ReceiveBehavior(ReceivingBehavior[T]):
 
     def __repr__(self) -> str:
         """Name the wrapped handler, which is what identifies this behavior."""
-        return f"Behaviors.receive({_name_of(self._on_message)})"
+        return f"Behaviors.receive({describe_callable(self._on_message)})"
 
 
 class _ReceiveMessageBehavior(ReceivingBehavior[T]):
@@ -207,7 +208,7 @@ class _ReceiveMessageBehavior(ReceivingBehavior[T]):
 
     def __repr__(self) -> str:
         """Name the wrapped handler, which is what identifies this behavior."""
-        return f"Behaviors.receive_message({_name_of(self._on_message)})"
+        return f"Behaviors.receive_message({describe_callable(self._on_message)})"
 
 
 class SuperviseBehavior(Behavior[T]):
@@ -300,7 +301,7 @@ class SetupBehavior(Behavior[T]):
 
     def __repr__(self) -> str:
         """Name the wrapped factory."""
-        return f"Behaviors.setup({_name_of(self._factory)})"
+        return f"Behaviors.setup({describe_callable(self._factory)})"
 
 
 class WithTimersBehavior(Behavior[T]):
@@ -321,7 +322,7 @@ class WithTimersBehavior(Behavior[T]):
 
     def __repr__(self) -> str:
         """Name the wrapped factory."""
-        return f"Behaviors.with_timers({_name_of(self._factory)})"
+        return f"Behaviors.with_timers({describe_callable(self._factory)})"
 
 
 class WithStashBehavior(Behavior[T]):
@@ -345,7 +346,9 @@ class WithStashBehavior(Behavior[T]):
 
     def __repr__(self) -> str:
         """Name the capacity and the wrapped factory."""
-        return f"Behaviors.with_stash({self.capacity}, {_name_of(self._factory)})"
+        return (
+            f"Behaviors.with_stash({self.capacity}, {describe_callable(self._factory)})"
+        )
 
 
 class AbstractBehavior(ReceivingBehavior[T], ABC):
@@ -474,7 +477,7 @@ def resolve_handler_msg_type(
     Raises:
         BehaviorTypeError: If no type could be resolved.
     """
-    name = _name_of(handler)
+    name = describe_callable(handler)
     if explicit is not None:
         return normalize_msg_type(explicit, origin=name)
 
@@ -521,11 +524,6 @@ def resolve_handler_msg_type(
         raise BehaviorTypeError(msg)
 
     return normalize_msg_type(annotation, origin=name)
-
-
-def _name_of(obj: object) -> str:
-    """Best available name for a callable, for error messages and reprs."""
-    return getattr(obj, "__qualname__", None) or repr(obj)
 
 
 def _name_of_type(on: type[Exception] | tuple[type[Exception], ...]) -> str:

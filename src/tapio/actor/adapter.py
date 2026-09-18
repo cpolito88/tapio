@@ -30,6 +30,7 @@ from pydantic import PlainSerializer, PlainValidator
 from tapio.actor.dead_letters import Carrier, DeadLetterReason
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
+from tapio.logging import describe_callable
 from tapio.message import Message
 from tapio.remote.address import Address
 from tapio.remote.registry import RefRegistry
@@ -61,15 +62,10 @@ def _carry_adapt(value: object) -> Adapt:
     raise ValueError(msg)
 
 
-def _describe_adapt(adapt: Adapt) -> str:
-    """Render a translation function by name, for the rare dump."""
-    return getattr(adapt, "__qualname__", None) or repr(adapt)
-
-
 AdaptFunction: TypeAlias = Annotated[
     Adapt,
     PlainValidator(_carry_adapt),
-    PlainSerializer(_describe_adapt, return_type=str, when_used="always"),
+    PlainSerializer(describe_callable, return_type=str, when_used="always"),
 ]
 """The translation an adapted message carries, kept as the function it is.
 
@@ -102,7 +98,7 @@ class AdaptedMessage(Carrier):
 
     def __repr__(self) -> str:
         """Render the payload and the function it is waiting for."""
-        return f"AdaptedMessage({self.payload!r}, {_describe_adapt(self.adapt)})"
+        return f"AdaptedMessage({self.payload!r}, {describe_callable(self.adapt)})"
 
 
 class AdapterRef(ActorRef[U]):
@@ -264,7 +260,7 @@ class AdapterRef(ActorRef[U]):
 
     def __repr__(self) -> str:
         """Render the adapter, its owner, and what it translates with."""
-        return f"AdapterRef({str(self.path)!r}, adapt={_describe_adapt(self._adapt)})"
+        return f"AdapterRef({str(self.path)!r}, adapt={describe_callable(self._adapt)})"
 
 
 @final

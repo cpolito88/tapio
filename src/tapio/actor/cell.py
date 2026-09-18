@@ -46,7 +46,7 @@ from tapio.actor.stash import StashBuffer, UnstashBehavior
 from tapio.actor.supervision import Decision, SupervisorStrategy
 from tapio.actor.timers import TimerScheduler
 from tapio.actor.watch import DeathWatch, Watcher, WatchTarget
-from tapio.dispatch.blocking import BlockingPool, describe_blocking
+from tapio.dispatch.blocking import BlockingPool
 from tapio.dispatch.dispatcher import Dispatcher
 from tapio.dispatch.tasks import cancel_and_wait
 from tapio.errors import (
@@ -57,7 +57,12 @@ from tapio.errors import (
     RefResolutionError,
     WatchError,
 )
-from tapio.logging import ActorLogAdapter, actor_logger, runtime_logger
+from tapio.logging import (
+    ActorLogAdapter,
+    actor_logger,
+    describe_callable,
+    runtime_logger,
+)
 from tapio.message import Message
 from tapio.remote.address import Address
 from tapio.remote.registry import RefRegistry
@@ -677,7 +682,7 @@ class ActorCell(Generic[T]):
         except RuntimeError as error:
             if not self._runtime.blocking.is_accepting:
                 msg = (
-                    f"cannot run {describe_blocking(fn)} for {self._path}: the "
+                    f"cannot run {describe_callable(fn)} for {self._path}: the "
                     "system is shutting down, so its blocking pool takes no "
                     "more work"
                 )

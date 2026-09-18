@@ -14,7 +14,12 @@ from typing import Any
 
 from tapio.actor.path import ActorPath
 
-__all__ = ["ActorLogAdapter", "actor_logger", "runtime_logger"]
+__all__ = [
+    "ActorLogAdapter",
+    "actor_logger",
+    "describe_callable",
+    "runtime_logger",
+]
 
 _ROOT: str = "tapio"
 
@@ -55,3 +60,24 @@ def actor_logger(path: ActorPath) -> ActorLogAdapter:
 def runtime_logger(name: str) -> logging.Logger:
     """Return a runtime logger for messages that belong to no single actor."""
     return logging.getLogger(f"{_ROOT}.{name}")
+
+
+def describe_callable(obj: object) -> str:
+    """Best available name for a callable, for an error message or a repr.
+
+    A function gives its `__qualname__`. Anything without one, a lambda
+    included, falls back to `repr`. One implementation because these strings
+    describe overlapping failures: an actor can name a handler, an adapting
+    function and a blocking call in three different messages, and they should
+    read the same way. Improving how a lambda renders is then one change here
+    rather than four.
+
+    Args:
+        obj: The callable to name. Anything is accepted, since a value that
+            was supposed to be callable and is not still has to be named in
+            the error that says so.
+
+    Returns:
+        Its qualified name, or its `repr` when it has none.
+    """
+    return getattr(obj, "__qualname__", None) or repr(obj)
