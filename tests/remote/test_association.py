@@ -21,6 +21,7 @@ from tapio.actor.dead_letters import DeadLetterReason
 from tapio.actor.path import ActorPath
 from tapio.dispatch.dispatcher import Dispatcher
 from tapio.errors import MessageEncodingError
+from tapio.message import Message
 from tapio.remote.address import Address
 from tapio.remote.association import Association, _cancel_and_wait
 from tapio.remote.codec import LENGTH_PREFIX, encode
@@ -32,6 +33,7 @@ from tests.remote.peers import (
     GHOST,
     Ping,
     Pong,
+    RecordingLink,
     Tick,
     Unregistered,
     collecting,
@@ -668,39 +670,6 @@ async def test_a_watch_that_cannot_be_sent_is_answered_at_once():
                 await system.terminate()
 
 
-class _RecordingLink:
-    """A link that records only whether it was closed.
-
-    Enough of the link surface for an association to hold it and close it,
-    with none of a real socket, so a test can watch it being released.
-    """
-
-    def __init__(self) -> None:
-        """Start open."""
-        self.closed = False
-
-    @property
-    def peer(self) -> str:
-        """A fixed peer address, since nothing here dials."""
-        return "tapio://retired@127.0.0.1:1"
-
-    async def read_frame(self) -> bytes:
-        """Never called: this link is only ever retired."""
-        raise AssertionError("a retired link is not read")
-
-    async def write_frame(self, data: bytes) -> None:
-        """Never called: this link is only ever retired."""
-        raise AssertionError("a retired link is not written")
-
-    async def write_link(self, message: object) -> None:
-        """Never called: this link is only ever retired."""
-        raise AssertionError("a retired link is not written")
-
-    async def close(self) -> None:
-        """Record that the association closed this link."""
-        self.closed = True
-
-
 class _LoneHost:
     """The little of an endpoint an isolated association needs to shut down.
 
@@ -731,7 +700,7 @@ async def test_release_closes_the_link_a_dial_race_retired():
     # the garbage collector. Without that, this link is never closed.
     with assert_no_leaked_tasks():
         association = _lone_association()
-        retired = _RecordingLink()
+        retired = RecordingLink()
         association._retiring = retired
 
         await association._release()
@@ -745,7 +714,7 @@ async def test_detach_closes_the_link_a_dial_race_retired():
     # it too must close a link a dial race left behind.
     with assert_no_leaked_tasks():
         association = _lone_association()
-        retired = _RecordingLink()
+        retired = RecordingLink()
         association._retiring = retired
 
         await association.detach()
@@ -865,7 +834,7 @@ async def test_release_finishes_even_when_the_reader_raised():
     # `_run`'s to log, not the release's to abort on.
     with assert_no_leaked_tasks():
         association = _lone_association()
-        retired = _RecordingLink()
+        retired = RecordingLink()
         association._retiring = retired
         association._reader = await _finished_raising(RuntimeError("reader failed"))
 
@@ -878,7 +847,7 @@ async def test_release_finishes_even_when_the_reader_raised():
 async def test_detach_finishes_even_when_the_reader_raised():
     with assert_no_leaked_tasks():
         association = _lone_association()
-        retired = _RecordingLink()
+        retired = RecordingLink()
         association._retiring = retired
         association._reader = await _finished_raising(RuntimeError("reader failed"))
 
@@ -924,3 +893,149 @@ async def test_a_send_from_a_thread_after_the_loop_closed_does_not_raise(
         # The peer is named, which is the whole point of hopping `send` rather
         # than `tell` from off the loop.
         assert str(association.peer) in caplog.text
+
+
+class _RecordingHost(_LoneHost):
+    """A lone host that also keeps the dead letters its association writes.
+
+    `_LoneHost` is enough to shut an association down. This one is enough to
+    watch one account for a frame it will never send.
+    """
+
+    def __init__(self) -> None:
+        """Start with an empty book."""
+        super().__init__()
+        self.letters: list[tuple[str, Address | None]] = []
+        self.dead_letters = self
+
+    def publish(
+        self,
+        message: Message,
+        recipient: ActorPath,
+        reason: str,
+        *,
+        peer: Address | None = None,
+        detail: str | None = None,
+    ) -> None:
+        """Record one, standing in for the system's office."""
+        self.letters.append((reason, peer))
+
+    def peer_ref(self, peer: Address, path: ActorPath) -> ActorPath:
+        """Name the actor over there, which is all a watcher needs here."""
+        return path
+
+
+def _closed_association(*, quarantined: bool) -> tuple[Association, _RecordingHost]:
+    """A bound association that has been asked to stop, and its host."""
+    host = _RecordingHost()
+    peer = Address.parse("tapio://peer@127.0.0.1:2551")
+    association = Association(host=host, peer=peer, initiator=peer)  # type: ignore[arg-type]
+    association.bind(object())  # type: ignore[arg-type]
+    association._closing = True
+    association._quarantined = quarantined
+    return association, host
+
+
+async def test_a_send_through_a_closing_association_says_which_kind_of_nothing():
+    # The two reasons mean different things to whoever subscribed, and
+    # `dead_letters.py` documents the difference as one a subscriber acts on:
+    # NO_ASSOCIATION is "no link right now" and the next send dials again,
+    # QUARANTINED is a decision that only `remote.reconnect` clears. Nothing
+    # checked which one an association actually writes.
+    #
+    # Reached directly rather than through a ref, because `PeerOutbox` asks
+    # the endpoint for a live association and gets a fresh one. This branch is
+    # for a close that lands after that lookup, and for `offer`, which hands
+    # here when the association it was given has since closed.
+    recipient = ActorPath.root("peer").child("user").child("ticker", uid=1)
+    message = Tick(n=1)
+
+    association, host = _closed_association(quarantined=False)
+    association.send(message, encode(message, to=recipient), recipient)
+
+    assert host.letters == [(DeadLetterReason.NO_ASSOCIATION, association.peer)]
+
+    # The same closed association, now quarantined: the reason changes,
+    # because the answer to "should I dial again" changes with it.
+    quarantined, host = _closed_association(quarantined=True)
+    quarantined.send(message, encode(message, to=recipient), recipient)
+
+    assert host.letters == [(DeadLetterReason.QUARANTINED, quarantined.peer)]
+
+
+class _RecordingWatcher:
+    """A watcher that records what it was told, and nothing else.
+
+    Enough of the watcher surface for an association to answer it, with none
+    of a cell, so a test can see the answer arrive.
+    """
+
+    def __init__(self) -> None:
+        """Start having been told nothing."""
+        self.unreachable: list[str] = []
+
+    @property
+    def path(self) -> ActorPath:
+        """A fixed path, since nothing here is registered anywhere."""
+        return ActorPath.root("watcher").child("user").child("looker", uid=1)
+
+    def notify_terminated(self, ref: object) -> None:
+        """Never called: this association never sends a `terminated` frame."""
+        raise AssertionError("a closing association reports unreachable")
+
+    def notify_unreachable(self, ref: object, detail: str) -> None:
+        """Record that the watch was answered rather than left waiting."""
+        self.unreachable.append(detail)
+
+
+async def test_watching_through_a_closing_association_is_answered_at_once():
+    # The failure death watch exists to prevent: a watcher left waiting for a
+    # signal that nothing is left to send. The association is going away, so
+    # the frame that would ask the peer to report will never be written, and
+    # the watcher has to be told now instead.
+    host = _RecordingHost()
+    peer = Address.parse("tapio://peer@127.0.0.1:2551")
+    association = Association(host=host, peer=peer, initiator=peer)  # type: ignore[arg-type]
+    association.bind(object())  # type: ignore[arg-type]
+    association._closing = True
+
+    watcher = _RecordingWatcher()
+    watchee = ActorPath.root("peer").child("user").child("worker", uid=1)
+
+    association.watch(watchee, watcher)  # type: ignore[arg-type]
+
+    assert len(watcher.unreachable) == 1
+    assert str(peer) in watcher.unreachable[0]
+    # Not registered either, since nothing will ever answer it.
+    assert association.watching == ()
+
+
+async def test_a_link_adopted_by_a_closing_association_is_still_closed():
+    # A simultaneous dial resolves by handing the winning link to `adopt`. An
+    # association already on its way out will not adopt anything, but the
+    # socket still has to be released, and the association is about to stop
+    # and cannot do it. It goes to the endpoint, which outlives every
+    # association and drains these in its own close. Nothing held this to
+    # account, and an unreleased link here is a socket the garbage collector
+    # closes whenever it next runs.
+    with assert_no_leaked_tasks():
+        system = ActorSystem("adopting", remoting())
+        try:
+            assert system.remote is not None
+            peer = Address.parse("tapio://peer@127.0.0.1:2551")
+            association = Association(
+                host=system.remote,
+                peer=peer,
+                initiator=peer,
+            )
+            association.bind(object())  # type: ignore[arg-type]
+            association._closing = True
+            link = RecordingLink()
+
+            association.adopt(link, uid=7)  # type: ignore[arg-type]
+
+            # The endpoint took it, and its close drains what it took.
+            await system.terminate()
+            assert link.closed
+        finally:
+            await system.terminate()

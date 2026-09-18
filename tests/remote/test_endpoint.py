@@ -11,12 +11,12 @@ import pytest
 from tapio.actor import ActorContext, ActorSystem, Behavior, Behaviors
 from tapio.errors import InsecureRemoteConfig, MessageTypeError, RefResolutionError
 from tapio.remote.address import Address
-from tapio.remote.transport import FrameLink, LinkFrame
+from tapio.remote.transport import FrameLink, LinkFrame, connect
 from tapio.settings import RemoteSettings, TapioSettings
 from tapio.testkit import assert_no_leaked_tasks
 from tests.failures import eventually
 from tests.messages import NotAMessage
-from tests.remote.peers import Tick, counting, remoting, uri
+from tests.remote.peers import RecordingLink, Tick, counting, remoting, uri
 
 
 async def test_resolving_this_system_gives_the_live_local_ref(alpha: ActorSystem):
@@ -533,3 +533,63 @@ def _free_port() -> int:
         finder.bind(("127.0.0.1", 0))
         chosen: int = finder.getsockname()[1]
     return chosen
+
+
+async def test_a_connection_still_mid_handshake_at_shutdown_is_closed():
+    # The endpoint's drain owns this socket: it was accepted, so the listener
+    # is done with it, and no association exists yet, so the stopping tree
+    # does not reach it. The drain cancels the handshake task and closes the
+    # link of one that never ran a line. Without that the close is still owed
+    # when the task doing it dies with the dispatcher, and the socket is left
+    # for the garbage collector.
+    with assert_no_leaked_tasks():
+        system = ActorSystem("draining", remoting())
+        port = system.address.port
+        assert port is not None
+        link = await connect(
+            "127.0.0.1", port, max_frame_bytes=1024 * 1024, ssl_context=None
+        )
+        try:
+            # The server's hello arrives, and it now waits for a client-hello
+            # this test never sends. That is the window the drain is for.
+            await link.read_link(2.0)
+
+            await system.terminate()
+
+            # The peer closed it, so the next read sees the end of the stream
+            # rather than waiting for a frame nobody will write.
+            with pytest.raises((asyncio.IncompleteReadError, ConnectionError)):
+                await link.read_frame()
+        finally:
+            await link.close()
+            await system.terminate()
+
+
+async def test_a_handshake_cancelled_before_its_first_line_still_closes_its_link():
+    # The drain holds the link beside its task for exactly this case. A task
+    # the drain cancels before it has run a line never runs its own cleanup,
+    # so the link is still open and still recorded, and the drain has to close
+    # it. A task that did run took its link out of the map itself, which is
+    # the other side of the same `if`.
+    #
+    # Planted rather than raced, because the window is one loop iteration
+    # wide: this is the same shape as the retired-link tests in
+    # `test_association.py`, which set the link they are about to assert on.
+    with assert_no_leaked_tasks():
+        system = ActorSystem("unstarted", remoting())
+        try:
+            assert system.remote is not None
+            link = RecordingLink()
+            never_ran: asyncio.Task[None] = asyncio.ensure_future(_never_runs())
+            system.remote._handshakes[never_ran] = link  # type: ignore[index]
+
+            await system.terminate()
+
+            assert link.closed
+        finally:
+            await system.terminate()
+
+
+async def _never_runs() -> None:
+    """A handshake that is cancelled before its first line, for the drain."""
+    await asyncio.Event().wait()

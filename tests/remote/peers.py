@@ -350,3 +350,37 @@ async def silent_peer() -> AsyncIterator[Address]:
                 await task
         server.close()
         await server.wait_closed()
+
+
+class RecordingLink:
+    """A link that records only whether it was closed.
+
+    Enough of the link surface for an association or the endpoint's drain to
+    hold it and close it, with none of a real socket, so a test can watch it
+    being released.
+    """
+
+    def __init__(self) -> None:
+        """Start open."""
+        self.closed = False
+
+    @property
+    def peer(self) -> str:
+        """A fixed peer address, since nothing here dials."""
+        return "tapio://retired@127.0.0.1:1"
+
+    async def read_frame(self) -> bytes:
+        """Never called: this link is only ever retired."""
+        raise AssertionError("a retired link is not read")
+
+    async def write_frame(self, data: bytes) -> None:
+        """Never called: this link is only ever retired."""
+        raise AssertionError("a retired link is not written")
+
+    async def write_link(self, message: object) -> None:
+        """Never called: this link is only ever retired."""
+        raise AssertionError("a retired link is not written")
+
+    async def close(self) -> None:
+        """Record that whoever owned this link closed it."""
+        self.closed = True
