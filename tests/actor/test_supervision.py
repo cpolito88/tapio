@@ -20,10 +20,23 @@ from tapio.actor import (
     SupervisorStrategy,
 )
 from tapio.errors import BehaviorTypeError
-from tapio.testkit import assert_no_leaked_tasks
-from tests.failures import BoomError, Job, OtherError, eventually, recording
+from tapio.testkit import NO_MESSAGE_WINDOW, assert_no_leaked_tasks
+from tests.failures import (
+    BoomError,
+    Job,
+    OtherError,
+    eventually,
+    recording,
+    well_inside,
+)
 
 RESTART = SupervisorStrategy.restart()
+
+MIN_BACKOFF = timedelta(milliseconds=50)
+"""The first wait the layered backoff test expects, named so it can assert it."""
+
+MAX_BACKOFF = timedelta(seconds=10)
+"""That test's ceiling, which is where a shared restart count would head."""
 
 
 async def test_an_unsupervised_failure_stops_the_actor(system: ActorSystem):
@@ -237,12 +250,14 @@ async def test_messages_arriving_during_backoff_are_buffered_not_dropped(
 
 
 async def test_a_stop_during_backoff_is_not_waited_out():
-    settings = TapioSettings(_env_file=None, shutdown_timeout=timedelta(seconds=2))
+    shutdown_timeout = timedelta(seconds=2)
+    settings = TapioSettings(_env_file=None, shutdown_timeout=shutdown_timeout)
     seen: list[str] = []
+    backoff_window = timedelta(seconds=30)
     strategy = SupervisorStrategy.restart(
         backoff=Backoff(
-            min_backoff=timedelta(seconds=30),
-            max_backoff=timedelta(seconds=30),
+            min_backoff=backoff_window,
+            max_backoff=backoff_window,
             random_factor=0.0,
         )
     )
@@ -259,8 +274,10 @@ async def test_a_stop_during_backoff_is_not_waited_out():
         elapsed = loop.time() - started
 
     # A backing-off actor still reads its system lane, so shutdown does not
-    # wait out a thirty-second window it has no interest in.
-    assert elapsed < 1
+    # wait out a window it has no interest in. The bound is the system's own
+    # shutdown deadline rather than a literal: past it the sweep would have
+    # cancelled the cell, and the PostStop below would not be there.
+    assert elapsed < shutdown_timeout.total_seconds()
     assert seen[-1] == "PostStop"
 
 
@@ -569,7 +586,11 @@ async def test_one_strategys_restarts_do_not_spend_anothers_allowance(
     await eventually(lambda: seen.count("setup") == 5)
 
     actor.tell(Job(item=1))
-    await asyncio.sleep(0.05)
+    # Proving a negative takes real time, and this is a wait spent even when
+    # the test passes. The TestKit's window is the stated one, rather than a
+    # literal chosen here: the case it catches is a stop that happens at once,
+    # which is the case that happens.
+    await asyncio.sleep(NO_MESSAGE_WINDOW.total_seconds())
     assert "PostStop" not in seen
 
 
@@ -606,8 +627,8 @@ async def test_a_backoff_counts_only_the_restarts_its_own_layer_made(
     seen: list[str] = []
     strict = SupervisorStrategy.restart(
         backoff=Backoff(
-            min_backoff=timedelta(milliseconds=50),
-            max_backoff=timedelta(seconds=10),
+            min_backoff=MIN_BACKOFF,
+            max_backoff=MAX_BACKOFF,
             random_factor=0.0,
         )
     )
@@ -623,7 +644,21 @@ async def test_a_backoff_counts_only_the_restarts_its_own_layer_made(
     # this first wait eight times as long.
     started = asyncio.get_running_loop().time()
     actor.tell(Job(fail=True))
-    await eventually(lambda: seen.count("setup") == 5)
+    await eventually(lambda: seen.count("setup") == 5, within=5.0)
     waited = asyncio.get_running_loop().time() - started
 
-    assert 0.05 <= waited < 0.2
+    # All this measures is that a wait happened rather than the restart going
+    # straight through, which takes microseconds. Half the minimum is the
+    # bound rather than the minimum itself: measured under a loaded machine
+    # the wait comes back between 50.5ms and 53ms for a 50ms backoff, so
+    # asserting the minimum exactly leaves half a millisecond of room and
+    # fails the day a loop returns from a sleep a fraction early.
+    #
+    # Which wait it was is not measured here at all. `RestartLog` and
+    # `Backoff.delay` decide that, and
+    # `test_restarts.py::test_one_layers_restarts_never_lengthen_anothers_wait`
+    # asserts the exact schedule against them, where no scheduler is
+    # involved. The 150ms window this replaces measured by stopwatch what
+    # that test now states.
+    assert waited > MIN_BACKOFF.total_seconds() / 2
+    assert waited < well_inside(MAX_BACKOFF)

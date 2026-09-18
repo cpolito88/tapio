@@ -143,7 +143,8 @@ async def test_spawning_from_a_handler_during_shutdown_raises(system: ActorSyste
 async def test_a_wedged_actor_is_cancelled_at_the_deadline(
     caplog: pytest.LogCaptureFixture,
 ):
-    settings = TapioSettings(shutdown_timeout=timedelta(seconds=0.2))
+    shutdown_timeout = timedelta(seconds=0.2)
+    settings = TapioSettings(shutdown_timeout=shutdown_timeout)
     depth = 5
 
     def wedged(remaining: int) -> Behavior[Increment]:
@@ -174,8 +175,10 @@ async def test_a_wedged_actor_is_cancelled_at_the_deadline(
             await system.terminate()
         elapsed = loop.time() - started
 
-    # One deadline for the tree, not one per cell. Depth must not multiply it.
-    assert elapsed < depth * 0.2
+    # One deadline for the tree, not one per cell. Depth must not multiply it,
+    # so the bound is the deadline times the depth: a per-cell deadline would
+    # reach it and a shared one cannot.
+    assert elapsed < depth * shutdown_timeout.total_seconds()
     assert "did not stop within the shutdown deadline" in caplog.text
     assert str(root.path) in caplog.text
 

@@ -3,10 +3,15 @@
 `test_supervision.py` and `test_death_watch.py` both need the same three
 things: a message that can be told to fail, a behavior that records what it
 saw, and a way to wait for something without sleeping for a fixed time.
+
+`well_inside` is here for the same reason `eventually` is: a test that means
+to say something about a deadline should say it about the deadline, rather
+than against a number somebody picked.
 """
 
 import asyncio
 from collections.abc import Callable
+from datetime import timedelta
 
 from tapio import Behavior, Behaviors, Message
 from tapio.actor import ActorContext, Signal, SupervisorStrategy
@@ -100,3 +105,22 @@ async def eventually(
     except TimeoutError:
         msg = f"condition never held within {within}s"
         raise AssertionError(msg) from None
+
+
+def well_inside(bound: timedelta) -> float:
+    """An upper bound for "this ended on the event, not on the clock".
+
+    A test that configures a thirty-second deadline and then asserts against
+    a literal second is measuring by stopwatch what it means to state about
+    the deadline. This is a tenth of whichever timeout or ceiling the test
+    configured: far enough from it that waiting one out cannot pass, and
+    loose enough that four Python versions sharing a runner's CPU do not
+    fail it.
+
+    Args:
+        bound: The timeout or ceiling the test configured.
+
+    Returns:
+        The number of seconds the measured wait has to stay under.
+    """
+    return bound.total_seconds() / 10
