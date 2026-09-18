@@ -384,3 +384,27 @@ class RecordingLink:
     async def close(self) -> None:
         """Record that whoever owned this link closed it."""
         self.closed = True
+
+
+async def dial_raw(target: ActorSystem, body: object) -> FrameLink:
+    """Dial a system and write whatever the caller gives, in place of a hello.
+
+    For the frames `dial` cannot express, because it builds a well-formed
+    client-hello out of typed arguments: a frame that is not a client-hello at
+    all, one that fails its own model, and an address that does not parse.
+
+    Args:
+        target: The system to dial.
+        body: What to write as the first frame, encoded as JSON.
+
+    Returns:
+        The open link, for the caller to watch being closed.
+    """
+    port = target.address.port
+    assert port is not None
+    link = await connect(
+        "127.0.0.1", port, max_frame_bytes=1024 * 1024, ssl_context=None
+    )
+    await link.read_link(2.0)
+    await link.write_frame(framed(json.dumps(body).encode()))
+    return link
