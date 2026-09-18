@@ -8,6 +8,16 @@ from tapio.actor import ActorPath
 from tapio.logging import actor_logger, runtime_logger
 
 
+def field(record: logging.LogRecord, name: str) -> object:
+    """A field the adapter put on a record.
+
+    `LogRecord` declares none of these, since anything in `extra` is set on
+    the instance. `None` for a field that never arrived, which no assertion
+    below expects.
+    """
+    return getattr(record, name, None)
+
+
 @pytest.fixture
 def logger_path() -> ActorPath:
     return ActorPath.root("sys").child("user").child("worker", uid=3)
@@ -23,7 +33,7 @@ def test_the_path_is_both_a_prefix_and_a_field(
 
     record = caplog.records[-1]
     assert record.getMessage() == f"{logger_path}: started with 4 workers"
-    assert record.actor_path == str(logger_path)
+    assert field(record, "actor_path") == str(logger_path)
 
 
 def test_a_caller_keeps_its_own_structured_fields(
@@ -37,8 +47,8 @@ def test_a_caller_keeps_its_own_structured_fields(
         log.info("handled", extra={"request_id": "abc"})
 
     record = caplog.records[-1]
-    assert record.request_id == "abc"
-    assert record.actor_path == str(logger_path)
+    assert field(record, "request_id") == "abc"
+    assert field(record, "actor_path") == str(logger_path)
 
 
 def test_runtime_records_live_under_the_same_root():

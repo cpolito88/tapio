@@ -6,6 +6,7 @@ import hmac
 import json
 from collections.abc import AsyncIterator, Callable
 from hashlib import sha256
+from typing import Any
 
 from tapio import Message
 from tapio.actor import (
@@ -21,7 +22,11 @@ from tapio.remote.address import Address, format_ref
 from tapio.remote.protocol import PROTOCOL_VERSION
 from tapio.remote.registry import register_message
 from tapio.remote.transport import FrameLink, Link, LinkFrame, connect, framed
-from tapio.settings import RemoteSettings, TapioSettings
+from tapio.settings import TapioSettings
+from tapio.testkit import (
+    IsolatedRemoteSettings,
+    IsolatedTapioSettings,
+)
 from tapio.version import __version__
 
 
@@ -57,27 +62,33 @@ GHOST = Address(system="ghost", host="127.0.0.1", port=1)
 """An address nothing listens on: port 1 is privileged and unbound."""
 
 
-def remoting(**overrides: object) -> TapioSettings:
+def remoting(**overrides: Any) -> TapioSettings:
     """Settings for a system listening on a loopback port the OS picks."""
-    return TapioSettings(
-        _env_file=None,
-        remote=RemoteSettings(_env_file=None, bind_port=0, **overrides),  # type: ignore[arg-type]
+    return IsolatedTapioSettings(
+        remote=IsolatedRemoteSettings(bind_port=0, **overrides)
     )
 
 
-def uri(system: ActorSystem, ref: ActorRef[Message]) -> str:
+def uri(system: ActorSystem, ref: ActorRef[Any]) -> str:
     """The full string form of a ref, as a peer would receive it."""
     return format_ref(system.address, ref.path)
 
 
-def echoing() -> Behavior[Ping]:
+def echoing(received: list[Ping] | None = None) -> Behavior[Ping]:
     """An actor that answers every ping on the ref the ping carried.
 
     A negative ping stops it without an answer, so a test can watch an ask
     lose its target through the target's own behavior.
+
+    Args:
+        received: Records each ping as the object the actor was handed, for a
+            test asserting on what a link rebuilt. Nothing is recorded when
+            this is omitted.
     """
 
     async def on_message(message: Ping) -> Behavior[Ping]:
+        if received is not None:
+            received.append(message)
         if message.n < 0:
             return Behaviors.stopped()
         message.reply_to.tell(Pong(n=message.n))
@@ -148,7 +159,7 @@ def relaying(target: ActorRef[Ping], seen: list[int]) -> Behavior[Tick]:
     return Behaviors.setup(build)
 
 
-def watching(target: ActorRef[Message], seen: list[str]) -> Behavior[Tick]:
+def watching(target: ActorRef[Any], seen: list[str]) -> Behavior[Tick]:
     """An actor that watches one ref and records what it is told about it.
 
     It takes ticks so a test can prove it is still running afterwards, which

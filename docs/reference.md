@@ -224,6 +224,8 @@ Generated from the source, so it cannot drift from what is installed.
 
 ::: tapio.testkit.behavior.BehaviorTestKit
 
+::: tapio.testkit.behavior.Effect
+
 ::: tapio.testkit.behavior.Spawned
 
 ::: tapio.testkit.behavior.Watched

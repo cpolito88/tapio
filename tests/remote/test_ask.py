@@ -13,7 +13,8 @@ from tapio.errors import (
     AskTypeError,
 )
 from tapio.testkit import assert_no_leaked_tasks, two_nodes
-from tests.failures import eventually
+from tests.failures import eventually, well_inside
+from tests.internals import endpoint
 from tests.remote.peers import Ping, Pong, collecting, echoing, ignoring, uri
 
 
@@ -83,21 +84,25 @@ async def test_a_remote_ask_fails_fast_when_the_peer_disappears():
                 nodes.partition()
 
             watcher = asyncio.ensure_future(partition_once_it_has_arrived())
+            deadline = timedelta(seconds=30)
             started = asyncio.get_running_loop().time()
             try:
                 with pytest.raises(AskTargetUnreachable, match="unreachable"):
                     await remote.ask(
                         lambda reply_to: Ping(n=1, reply_to=reply_to),
                         expect=Pong,
-                        timeout=timedelta(seconds=30),
+                        timeout=deadline,
                     )
             finally:
                 await watcher
             elapsed = asyncio.get_running_loop().time() - started
 
     # Well inside the deadline it was given, which is the whole point of
-    # failing on the peer rather than on the clock.
-    assert elapsed < 5.0
+    # failing on the peer rather than on the clock. Against the deadline
+    # rather than a literal, and with room for the detector: `two_nodes`
+    # gives up on a silent peer after 300ms, so this leaves it ten times
+    # that.
+    assert elapsed < well_inside(deadline)
 
 
 async def test_asking_a_quarantined_peer_fails_without_sending_anything():
@@ -111,7 +116,9 @@ async def test_asking_a_quarantined_peer_fails_without_sending_anything():
             remote.tell(Ping(n=1, reply_to=listener))
             await eventually(lambda: seen == [1])
             nodes.partition()
-            await eventually(lambda: nodes.alpha.remote.quarantined != (), within=5.0)
+            await eventually(
+                lambda: endpoint(nodes.alpha).quarantined != (), within=5.0
+            )
 
             with pytest.raises(AskTargetUnreachable, match="beyond reach"):
                 await remote.ask(
@@ -131,7 +138,7 @@ async def test_a_remote_reply_of_the_wrong_type_fails_the_caller(
     # surfaces here rather than as a value whose static type is a lie.
     with pytest.raises(AskTypeError, match="Ping"):
         await remote.ask(
-            lambda reply_to: Ping(n=1, reply_to=reply_to),
+            lambda reply_to: Ping(n=1, reply_to=reply_to),  # type: ignore[arg-type]
             expect=Ping,
             timeout=timedelta(milliseconds=200),
         )

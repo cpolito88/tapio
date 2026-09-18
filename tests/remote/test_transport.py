@@ -1,6 +1,7 @@
 """Tests for the link: framing, frame kinds, binding and TLS."""
 
 import asyncio
+from typing import Any
 
 import pytest
 
@@ -21,24 +22,29 @@ from tapio.remote.transport import (
     server_ssl_context,
     verify_bind_security,
 )
-from tapio.settings import RemoteSettings, TLSSettings
+from tapio.settings import RemoteSettings
+from tapio.testkit import (
+    IsolatedRemoteSettings,
+    IsolatedTLSSettings,
+)
 from tests.remote.peers import Tick
 
 
-def remote(**overrides: object) -> RemoteSettings:
+def remote(**overrides: Any) -> RemoteSettings:
     """Remote settings that ignore the developer's environment."""
-    return RemoteSettings(_env_file=None, **overrides)  # type: ignore[arg-type]
+    return IsolatedRemoteSettings(**overrides)
 
 
 async def linked() -> tuple[FrameLink, FrameLink, asyncio.Server]:
     """A pair of connected links, and the server holding one end open."""
     accepted: asyncio.Queue[FrameLink] = asyncio.Queue()
 
-    async def handle(
-        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
-        await accepted.put(FrameLink(reader, writer, max_frame_bytes=1024))
-        # The handler task ends here; the link stays open for the test.
+    def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        # Synchronous, like the endpoint's own accept. A connection handler
+        # runs as the connection is made, which is the one moment nothing can
+        # cancel it, so that is where the link is taken over. The queue is
+        # unbounded, so recording it cannot block.
+        accepted.put_nowait(FrameLink(reader, writer, max_frame_bytes=1024))
 
     listener = bind(remote(bind_port=0))
     server = await listen(handle, listener, ssl_context=None)
@@ -161,7 +167,7 @@ def test_binding_anywhere_with_a_secret_is_allowed():
 
 
 def test_a_certificate_that_is_not_there_fails_where_it_is_configured(tmp_path):
-    tls = TLSSettings(_env_file=None, certfile=str(tmp_path / "absent.pem"))
+    tls = IsolatedTLSSettings(certfile=str(tmp_path / "absent.pem"))
     with pytest.raises(OSError, match="No such file"):
         server_ssl_context(tls)
     with pytest.raises(OSError, match="No such file"):

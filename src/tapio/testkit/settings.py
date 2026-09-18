@@ -22,11 +22,19 @@ documented way to configure one.
 
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
 
-from tapio.settings import ClusterSettings, RemoteSettings, TapioSettings
+from tapio.settings import (
+    ClusterSettings,
+    ManagementSettings,
+    RemoteSettings,
+    TapioSettings,
+    TLSSettings,
+)
 
 __all__ = [
     "IsolatedClusterSettings",
+    "IsolatedManagementSettings",
     "IsolatedRemoteSettings",
+    "IsolatedTLSSettings",
     "IsolatedTapioSettings",
 ]
 
@@ -86,4 +94,25 @@ class IsolatedClusterSettings(_InitOnly, ClusterSettings):
     A cluster is handed its settings rather than reading them at construction,
     so these are usually built once as a module constant and copied per test.
     `model_copy` keeps the isolation, since it keeps the class.
+    """
+
+
+class IsolatedManagementSettings(_InitOnly, ManagementSettings):
+    """[ManagementSettings][tapio.settings.ManagementSettings] with the environment out.
+
+    Built separately from the system's settings, like the cluster's, so it
+    needs its own isolation. It matters more here than elsewhere: these
+    settings decide what a management port binds to and what proves an
+    operator is one, so a test that asserts "this configuration is refused"
+    has to be sure the configuration under test is the one it wrote.
+    """
+
+
+class IsolatedTLSSettings(_InitOnly, TLSSettings):
+    """[TLSSettings][tapio.settings.TLSSettings] with the environment out.
+
+    A nested model a caller constructs, so `TAPIO_REMOTE_TLS_CAFILE` reaches
+    it even when the settings around it were passed in. A test that builds
+    one is usually checking which certificates are demanded, and an exported
+    variable would change the answer.
     """

@@ -15,7 +15,7 @@ from datetime import timedelta
 import pytest
 
 from tapio.actor import ActorSystem
-from tapio.cluster import Cluster, DownStrategy, MemberStatus
+from tapio.cluster import Cluster, DownStrategy, Member, MemberStatus
 from tapio.remote.address import Address
 from tapio.settings import ClusterSettings, ManagementSettings, TapioSettings
 from tapio.testkit import (
@@ -102,6 +102,18 @@ class Node:
         """This node's own status, as it currently sees it."""
         member = self.cluster.self_member
         return member.status if member is not None else None
+
+    @property
+    def member(self) -> Member:
+        """This node's own member record, which a joined node always has.
+
+        `Cluster.self_member` is `None` until the node has joined, and a test
+        about that window reads the property directly. Every other test has
+        already awaited the join, so the precondition is stated here once.
+        """
+        member = self.cluster.self_member
+        assert member is not None, f"{self.address} has not joined yet"
+        return member
 
     def status_of(self, address: str) -> MemberStatus | None:
         """What this node believes about another member, if it knows one."""

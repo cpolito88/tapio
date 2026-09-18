@@ -23,6 +23,19 @@ def up(address: str, *, uid: int = 1, up_number: int = 1) -> Member:
     return Member(address=address, uid=uid, status=MemberStatus.UP, up_number=up_number)
 
 
+def member_at(state: Gossip, address: str) -> Member:
+    """The member a state holds for an address, which the caller says is there.
+
+    `Gossip.member` answers `None` for an address nobody has ever gossiped
+    about, and that is a case of its own, tested on its own. Every test below
+    put the member in the state it is asking about, so the precondition is
+    stated here once instead of at each assertion.
+    """
+    member = state.member(address)
+    assert member is not None, f"no member at {address}"
+    return member
+
+
 @given(gossips(), gossips())
 def test_merging_is_commutative(left: Gossip, right: Gossip):
     assert left.merge(right) == right.merge(left)
@@ -72,8 +85,8 @@ def test_a_status_only_ever_moves_up_the_lattice():
 
     # A node that learns of a Down can never un-learn it, whichever side the
     # older view arrives from.
-    assert merged.member(ALPHA).status is MemberStatus.DOWN
-    assert right.merge(left).member(ALPHA).status is MemberStatus.DOWN
+    assert member_at(merged, ALPHA).status is MemberStatus.DOWN
+    assert member_at(right.merge(left), ALPHA).status is MemberStatus.DOWN
 
 
 def test_two_incarnations_of_one_address_are_two_members():
@@ -96,8 +109,8 @@ def test_the_member_at_an_address_is_the_one_furthest_through_its_life():
 
     # Both are live, so the question is which one a caller is deciding about,
     # and that is the one that has got further.
-    assert state.member(ALPHA).uid == 2
-    assert state.member(ALPHA).status is MemberStatus.UP
+    assert member_at(state, ALPHA).uid == 2
+    assert member_at(state, ALPHA).status is MemberStatus.UP
 
 
 def test_the_member_at_an_address_is_the_live_one_after_a_restart():
@@ -108,8 +121,8 @@ def test_the_member_at_an_address_is_the_live_one_after_a_restart():
 
     # Ranking on status alone would answer with the downed incarnation, which
     # is the record nobody is deciding about any more.
-    assert state.member(ALPHA).uid == 2
-    assert state.member(ALPHA).status is MemberStatus.JOINING
+    assert member_at(state, ALPHA).uid == 2
+    assert member_at(state, ALPHA).status is MemberStatus.JOINING
 
 
 def test_a_tombstone_never_hides_the_member_that_replaced_it():
@@ -122,8 +135,8 @@ def test_a_tombstone_never_hides_the_member_that_replaced_it():
 
     state = Gossip(members=(tombstone, running))
 
-    assert state.member(ALPHA).uid == 2
-    assert state.member(ALPHA).status in (MemberStatus.JOINING, MemberStatus.UP)
+    assert member_at(state, ALPHA).uid == 2
+    assert member_at(state, ALPHA).status in (MemberStatus.JOINING, MemberStatus.UP)
 
 
 def test_the_member_at_an_address_falls_back_to_a_tombstone():
@@ -133,7 +146,7 @@ def test_the_member_at_an_address_falls_back_to_a_tombstone():
 
     state = Gossip(members=(tombstone,))
 
-    assert state.member(ALPHA).status is MemberStatus.REMOVED
+    assert member_at(state, ALPHA).status is MemberStatus.REMOVED
 
 
 def test_primaries_agrees_with_member_at_every_address():
@@ -334,7 +347,7 @@ def test_a_later_joiner_is_numbered_after_the_members_already_up():
 
     moved = leader_actions(state)
 
-    assert moved.member(BETA).up_number == 5
+    assert member_at(moved, BETA).up_number == 5
 
 
 def test_a_member_walks_out_one_step_per_converged_round():
@@ -344,10 +357,10 @@ def test_a_member_walks_out_one_step_per_converged_round():
     leaving = Gossip(members=(up(ALPHA).with_status(MemberStatus.LEAVING), up(BETA)))
 
     exiting = leader_actions(leaving)
-    assert exiting.member(ALPHA).status is MemberStatus.EXITING
+    assert member_at(exiting, ALPHA).status is MemberStatus.EXITING
 
     removed = leader_actions(exiting)
-    assert removed.member(ALPHA).status is MemberStatus.REMOVED
+    assert member_at(removed, ALPHA).status is MemberStatus.REMOVED
 
 
 def test_a_removed_member_stays_as_a_tombstone():
@@ -358,14 +371,14 @@ def test_a_removed_member_stays_as_a_tombstone():
     # Dropping the record would let a peer holding an older view put the
     # member back, since a merge unions the members it is given.
     assert removed.member(ALPHA) is not None
-    assert removed.member(ALPHA).status is MemberStatus.REMOVED
+    assert member_at(removed, ALPHA).status is MemberStatus.REMOVED
     assert [m.address for m in removed.alive] == [BETA]
 
 
 def test_a_downed_member_is_removed():
     state = Gossip(members=(up(ALPHA).with_status(MemberStatus.DOWN), up(BETA)))
 
-    assert leader_actions(state).member(ALPHA).status is MemberStatus.REMOVED
+    assert member_at(leader_actions(state), ALPHA).status is MemberStatus.REMOVED
 
 
 def test_a_removed_observers_claim_is_kept_but_stops_counting():
@@ -383,7 +396,7 @@ def test_a_removed_observers_claim_is_kept_but_stops_counting():
     )
 
     removed = leader_actions(before)
-    assert removed.member(BETA).status is MemberStatus.REMOVED
+    assert member_at(removed, BETA).status is MemberStatus.REMOVED
 
     # The record is kept rather than dropped, but it no longer pins GAMMA,
     # since BETA is no longer among the observers that count.

@@ -12,6 +12,7 @@ from tapio.remote.failure import (
 )
 from tapio.testkit import assert_no_leaked_tasks, two_nodes
 from tests.failures import eventually
+from tests.internals import endpoint
 from tests.remote.peers import GHOST, Tick, counting, dial, uri, watching
 
 
@@ -136,8 +137,8 @@ async def test_a_partition_makes_both_sides_give_up_on_the_other():
             await eventually(lambda: seen == [f"terminated {worker.path}"], within=5.0)
             await eventually(lambda: bool(here) and bool(there), within=5.0)
             assert here[0].quarantined
-            assert nodes.alpha.remote.quarantined == (nodes.beta.address,)
-            assert nodes.alpha.remote.associations == ()
+            assert endpoint(nodes.alpha).quarantined == (nodes.beta.address,)
+            assert endpoint(nodes.alpha).associations == ()
             # The actor the watcher was told about is running the whole time.
             # That is the false positive, stated as the documented behaviour
             # rather than as a bug, because one node cannot do better.
@@ -156,7 +157,9 @@ async def test_sending_to_a_quarantined_peer_dead_letters_and_dials_nothing():
             await eventually(lambda: ticks == [1])
 
             nodes.partition()
-            await eventually(lambda: nodes.alpha.remote.quarantined != (), within=5.0)
+            await eventually(
+                lambda: endpoint(nodes.alpha).quarantined != (), within=5.0
+            )
             nodes.heal()
             letters.clear()
 
@@ -168,7 +171,7 @@ async def test_sending_to_a_quarantined_peer_dead_letters_and_dials_nothing():
             # Healing the network re-associates nothing. Watchers were already
             # told that actors over there are gone, so a link coming quietly
             # back would leave the two nodes believing different things.
-            await eventually(lambda: nodes.alpha.remote.associations == ())
+            await eventually(lambda: endpoint(nodes.alpha).associations == ())
             assert ticks == [1]
 
 
@@ -184,8 +187,8 @@ async def test_reconnect_is_what_repairs_a_quarantine():
             nodes.partition()
             await eventually(
                 lambda: (
-                    nodes.alpha.remote.quarantined != ()
-                    and nodes.beta.remote.quarantined != ()
+                    endpoint(nodes.alpha).quarantined != ()
+                    and endpoint(nodes.beta).quarantined != ()
                 ),
                 within=5.0,
             )
@@ -193,10 +196,10 @@ async def test_reconnect_is_what_repairs_a_quarantine():
 
             # Both sides gave up, so both have to relent. Beta says it is
             # willing to be dialled again and alpha does the dialling.
-            assert nodes.beta.remote.clear_quarantine(nodes.alpha.address)
-            await nodes.alpha.remote.reconnect(nodes.beta.address)
+            assert endpoint(nodes.beta).clear_quarantine(nodes.alpha.address)
+            await endpoint(nodes.alpha).reconnect(nodes.beta.address)
 
-            assert nodes.alpha.remote.quarantined == ()
+            assert endpoint(nodes.alpha).quarantined == ()
             # Refs held across a quarantine address a session that is over, so
             # the ref is resolved again rather than reused.
             again = await nodes.alpha.resolve(uri(nodes.beta, worker), expect=Tick)
@@ -211,7 +214,7 @@ async def test_reconnect_to_a_peer_that_is_not_there_says_so():
             await nodes.beta.terminate()
 
             with pytest.raises(HandshakeError, match="did not come up"):
-                await nodes.alpha.remote.reconnect(address)
+                await endpoint(nodes.alpha).reconnect(address)
 
 
 async def test_reconnect_refuses_once_the_system_is_shutting_down():
@@ -221,7 +224,7 @@ async def test_reconnect_refuses_once_the_system_is_shutting_down():
             await nodes.alpha.terminate()
 
             with pytest.raises(ActorSystemTerminating, match="shutting down"):
-                await nodes.alpha.remote.reconnect(address)
+                await endpoint(nodes.alpha).reconnect(address)
 
 
 async def test_a_peer_that_comes_back_as_a_new_incarnation_replaces_the_old(alpha):
@@ -270,8 +273,12 @@ async def test_a_peer_dialling_in_while_quarantined_is_refused():
             await eventually(lambda: ticks == [1])
 
             nodes.partition()
-            await eventually(lambda: nodes.alpha.remote.quarantined != (), within=5.0)
-            await eventually(lambda: nodes.beta.remote.associations == (), within=5.0)
+            await eventually(
+                lambda: endpoint(nodes.alpha).quarantined != (), within=5.0
+            )
+            await eventually(
+                lambda: endpoint(nodes.beta).associations == (), within=5.0
+            )
             nodes.heal()
 
             # Beta gave up too, so it dials afresh. Alpha refuses the link
@@ -279,5 +286,5 @@ async def test_a_peer_dialling_in_while_quarantined_is_refused():
             back = await nodes.beta.resolve(uri(nodes.alpha, listener), expect=Tick)
             back.tell(Tick(n=9))
 
-            await eventually(lambda: nodes.alpha.remote.associations == ())
+            await eventually(lambda: endpoint(nodes.alpha).associations == ())
             assert answers == []

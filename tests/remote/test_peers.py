@@ -12,6 +12,7 @@ from tapio.remote.address import Address
 from tapio.remote.peers import StaticPeers
 from tapio.testkit import assert_no_leaked_tasks, two_nodes
 from tests.failures import eventually
+from tests.internals import endpoint
 from tests.remote.peers import GHOST, Tick, counting, uri
 
 
@@ -80,28 +81,30 @@ async def test_the_endpoint_refuses_a_peer_because_the_provider_says_so():
             # Nothing here failed and nothing was quarantined. The peer is
             # refused because the authority for that question says it is,
             # which is how a downed member will read in a cluster.
-            nodes.alpha.remote.use_peers(
+            endpoint(nodes.alpha).use_peers(
                 RefusingPeers(nodes.beta.address, "the cluster downed it")
             )
             remote.tell(Tick(n=1))
 
             await eventually(lambda: bool(letters))
             assert letters[0].reason == DeadLetterReason.QUARANTINED
-            assert "the cluster downed it" in letters[0].detail
-            assert nodes.alpha.remote.associations == ()
+            detail = letters[0].detail
+            assert detail is not None
+            assert "the cluster downed it" in detail
+            assert endpoint(nodes.alpha).associations == ()
             assert ticks == []
 
 
 async def test_installing_a_provider_carries_the_refusals_over():
     with assert_no_leaked_tasks():
         async with two_nodes() as nodes:
-            nodes.alpha.remote.quarantine(nodes.beta.address, "went silent")
+            endpoint(nodes.alpha).quarantine(nodes.beta.address, "went silent")
 
-            nodes.alpha.remote.use_peers(StaticPeers())
+            endpoint(nodes.alpha).use_peers(StaticPeers())
 
             # A refusal that was acted on outlives whoever made it. Watchers
             # were already told the actors over there are gone, so a change of
             # authority must not quietly make the peer dialable again.
-            assert nodes.alpha.remote.is_quarantined(nodes.beta.address)
-            assert nodes.alpha.remote.refusal(nodes.beta.address) == "went silent"
-            assert nodes.alpha.remote.quarantined == (nodes.beta.address,)
+            assert endpoint(nodes.alpha).is_quarantined(nodes.beta.address)
+            assert endpoint(nodes.alpha).refusal(nodes.beta.address) == "went silent"
+            assert endpoint(nodes.alpha).quarantined == (nodes.beta.address,)
