@@ -10,9 +10,11 @@ Three things matter most:
 
 1. **Death watch keys watchers by actor path, and paths do not include the node.** Two nodes that share a system name, which is the deployment shape the clustering docs recommend, collide in a remote target's watcher map, and one of them silently never hears `Terminated` (T-01). The same identity gap makes two `ActorRef`s to different nodes compare equal.
 2. **Deferred construction is run from four places with three different failure policies.** A `setup` that raises when returned from a handler kills the actor's task outside supervision (T-02), a `setup` that spawns and then raises orphans its children past system termination (T-03), and a remote factory whose `setup` raises stops the spawner and every worker it started (T-05). One shared "evaluate and account for failure" path would close all three (T-13).
-3. **One line of ordinary user code takes a node out of its cluster.** Subscribing to cluster events through a message adapter, the documented way to accept a foreign protocol, raises `WatchError` inside the daemon's receive loop, and the daemon stops (T-04).
+3. **One line of ordinary user code takes a node out of its cluster.** Subscribing to cluster events through a message adapter, the documented way to accept a foreign protocol, raises `WatchError` inside the daemon's receive loop, and the daemon stops. So does a subscriber whose declared type does not cover an event it is sent: the repository's own `test_a_subscriber_that_asked_for_nothing_hears_everything` passes while the daemon dies underneath it (T-04, T-23).
 
 Everything above was reproduced with the tests quoted under each finding. No Critical security hole was found; the trust model the security page states is implemented as described.
+
+**The open issue.** Issue #140 (a connected link socket collected with its transport still open, root cause unknown, `bc6bbaa` landed as a candidate fix) was checked against every remoting path read here. Nothing in this review explains it, and nothing here contradicts the theory in its comment that the socket-ownership rewrite removed it. The full suite was run eight times on `bc6bbaa` as part of this review; the result is recorded in section 5. Issue #64 (closed) is the graceful-leave half of design point D-1. Issues #60 and #95 (closed) fixed the two earlier off-loop remote `tell` bugs; T-07 is the third in that line and sits one call earlier in the same path.
 
 ## 2. Findings table
 
@@ -21,7 +23,7 @@ Everything above was reproduced with the tests quoted under each finding. No Cri
 | T-01 | Critical | Bug | Confirmed | `src/tapio/actor/watch.py` | Watchers are keyed by path only, so peers sharing a system name lose `Terminated` | |
 | T-02 | High | Bug | Confirmed | `src/tapio/actor/cell.py` | A `setup` returned from a handler that raises escapes supervision and kills the actor | |
 | T-03 | High | Bug | Confirmed | `src/tapio/actor/cell.py` | A `setup` that spawns children and then raises orphans them past termination | |
-| T-04 | High | Bug | Confirmed | `src/tapio/cluster/daemon.py` | Subscribing through an adapter ref stops the cluster daemon | |
+| T-04 | High | Bug | Confirmed | `src/tapio/cluster/daemon.py` | A subscriber the daemon cannot watch, or cannot deliver to, stops the cluster daemon | |
 | T-05 | High | Bug | Confirmed | `src/tapio/remote/spawner.py` | A remote factory whose `setup` raises stops the spawner and its children | |
 | T-06 | Medium | Bug | Confirmed | `src/tapio/actor/cell.py` | Self-sends and timers scheduled during the first construction skip validation | |
 | T-07 | Medium | Bug | Confirmed | `src/tapio/remote/endpoint.py` | An off-loop remote `tell` with no association spawns an actor from the wrong thread | |
@@ -40,6 +42,7 @@ Everything above was reproduced with the tests quoted under each finding. No Cri
 | T-20 | Low | Quality | Confirmed | `tests/actor/test_dead_letters.py` | Tests that sleep a guessed duration before asserting | |
 | T-21 | Low | Docs | Confirmed | `src/tapio/actor/system.py` | `resolve` skips the `expect` check for a local address though its docstring says it raises | |
 | T-22 | Low | Quality | Confirmed | `src/tapio/remote/association.py` | Every remote send re-validates the `Outbound` wrapper when `validate_on_tell` is on | |
+| T-23 | Low | Quality | Confirmed | `tests/cluster/test_events.py` | A cluster events test passes while the daemon it exercises has died | |
 
 ## 3. Findings, in full
 
@@ -270,14 +273,16 @@ async def test_a_setup_that_spawns_then_raises_leaves_no_orphan():
         assert not cell_of(kid).is_alive
 ```
 
-### [T-04] Subscribing through an adapter ref stops the cluster daemon
+### [T-04] A subscriber the daemon cannot watch, or cannot deliver to, stops the cluster daemon
 
 **Severity:** High
 **Category:** Bug
 **Status:** Confirmed
-**Location:** `src/tapio/cluster/daemon.py:1110-1127`, `src/tapio/cluster/daemon.py:432-471`, `src/tapio/actor/cell.py:1363-1379`
+**Location:** `src/tapio/cluster/daemon.py:1110-1127`, `src/tapio/cluster/daemon.py:1100-1108`, `src/tapio/cluster/daemon.py:1141-1168`, `src/tapio/cluster/daemon.py:432-471`, `src/tapio/actor/cell.py:1363-1379`
 
-**What's wrong.** `_subscribe` watches every new subscriber:
+**What's wrong.** Two things about a subscriber can raise inside the daemon's turn, and the daemon has no supervision layer, so either one stops it with the default decision. The daemon's `_receive` catches nothing.
+
+First, `_subscribe` watches every new subscriber:
 
 ```python
 ref = message.subscriber
@@ -290,9 +295,20 @@ if ref.path not in self._subscribers:
 
 An adapter is the natural subscriber. The clustering page says the subscriber "has to accept the events it asks for as part of its declared message type", and the getting-started page says the way to accept a foreign protocol without widening your own type is `ctx.message_adapter`. Following both pages together produces this crash.
 
-**Why it matters.** The node silently leaves the cluster. The daemon's well-known name is deregistered, so gossip addressed to it dead-letters on every other node. Its heartbeats stop, and its watchers report it unreachable; with a downing strategy configured, the cluster downs a healthy node because one actor subscribed to events. Observed: the daemon's log line was `stopping after a failure in Subscribe`, and `system.refs.lookup(/system/cluster)` returned `None` afterwards.
+Second, `_deliver` and `_replay` send each event with a plain `ref.tell(event)`. A local `tell` validates against the recipient's declared type on the caller's side and raises `MessageTypeError` to the caller, which here is the daemon. A subscriber whose declared type does not cover an event it asked for, or that asked for everything and declared less, therefore stops the daemon the first time such an event is produced. `_replay` sends `LeaderChanged` to every subscriber that did not filter, immediately on subscribing, so "subscribe to everything" with a type that omits `LeaderChanged` kills the daemon at once.
 
-**Proposed fix.** Two parts. Refuse an unwatchable subscriber in the daemon without failing:
+That second case is already in the repository. `tests/cluster/test_events.py:17-34` declares its recorder as `MemberUp | MemberRemoved` and `test_a_subscriber_that_asked_for_nothing_hears_everything` subscribes it with no filter. Running that test with error logging on shows:
+
+```
+ERROR tapio.actor:cell.py:976 tapio://node1/system/cluster#2: stopping after a failure in Subscribe
+tapio.errors.MessageTypeError: LeaderChanged sent to tapio://node1/user/watcher#4 does not match the declared message type MemberUp | MemberRemoved
+```
+
+The test passes because the `MemberUp` replays land before the `LeaderChanged` that raises. The comment on issue #140 noticed the intermittent `MessageTypeError` and called it a latent test defect; the defect it exposes is in the daemon (see also T-23).
+
+**Why it matters.** The node silently leaves the cluster. The daemon's well-known name is deregistered, so gossip addressed to it dead-letters on every other node. Its heartbeats stop, and its watchers report it unreachable; with a downing strategy configured, the cluster downs a healthy node because one actor subscribed to events. `Cluster.subscribe` is fire-and-forget, so the caller hears nothing, and the only trace is one error log line from the actor logger. Observed for the adapter case: `stopping after a failure in Subscribe`, and `system.refs.lookup(/system/cluster)` returned `None` afterwards.
+
+**Proposed fix.** Three parts. Refuse an unwatchable subscriber in the daemon without failing:
 
 ```diff
  if ref.path not in self._subscribers:
@@ -305,6 +321,22 @@ An adapter is the natural subscriber. The clustering page says the subscriber "h
 ```
 
 And make an adapter watchable, since it has an owner whose death is the right signal: `AdapterRef.watch_target` can return `self._cell`, exactly as `LocalActorRef` does. That is also the answer the getting-started page already gives ("Watch the actor that owns it"), made automatic. With that, the `try/except` becomes a guard against test doubles and dead-letter refs only.
+
+Treat a delivery the subscriber refuses as the subscriber's problem, in `_deliver` and `_replay`:
+
+```diff
+-        for ref, wanted in self._subscribers.values():
++        for ref, wanted in list(self._subscribers.values()):
+             if not wanted or type(event) in wanted:
+-                ref.tell(event)
++                try:
++                    ref.tell(event)
++                except MessageTypeError as error:
++                    _log.warning("dropping subscriber %s: %s", ref.path, error)
++                    self._subscribers.pop(ref.path, None)
+```
+
+together with a `dead_letter` for the event, so the absence is observable. The cleaner long-term answer is for `Cluster.subscribe` to check the subscriber's declared type against the requested events up front, which is possible for a `LocalActorRef` through `cell.msg_type`.
 
 Independently, the daemon should carry a `Behaviors.supervise(...).on_failure(SupervisorStrategy.resume())` layer for `TapioError`, since a bad request from a local caller must not end the node's membership. The `_peer` docstring already argues this for address resolution; the same argument covers every message the daemon accepts from application code.
 
@@ -845,6 +877,23 @@ Positive note: the merge laws are property-tested with Hypothesis in `tests/clus
 **What's wrong.** `Association.send` delivers an `Outbound(payload=message, frame=frame, recipient=recipient)` through the association actor's ordinary `tell`, so the cell validates it like user traffic: an `isinstance` against the `AssociationMessage` union plus, under `validate_on_tell`, a strict `TypeAdapter` re-validation of a wrapper the runtime built a microsecond earlier, including the `bytes` frame and the `ActorPath`. The message itself was already validated by `RemoteRef.tell`. This is runtime-internal traffic paying the user-facing check.
 
 **Proposed fix.** Spawn the association actor with a validator that checks the type only, for instance by building it through a runtime-internal spawn that passes `validate_on_tell=False` for that cell, or by letting `Association.send` call `cell.deliver` directly, which skips validation by design.
+
+### [T-23] A cluster events test passes while the daemon it exercises has died
+
+**Severity:** Low
+**Category:** Quality
+**Status:** Confirmed
+**Location:** `tests/cluster/test_events.py:17-34`, `tests/cluster/test_events.py:70-86`
+
+**What's wrong.** The recorder behavior declares `MemberUp | MemberRemoved`, and the test subscribes it to every event. The daemon's replay delivers the two `MemberUp` events, then `LeaderChanged`, which the recorder's type rejects, and the daemon stops (T-04). The test's `eventually` sees the two `MemberUp` entries it wanted and passes. A test that checks the daemon is still alive at the end, or a recorder declared as `ClusterEvent`, would have caught T-04 months ago. The `MessageTypeError` shows up intermittently as an unraisable warning attributed to whichever test the collector interrupts, which is how it was noticed on issue #140 and mistaken for that issue.
+
+**Proposed fix.** Declare the recorder as `ClusterEvent`, since that is what "asked for nothing" means, and end every daemon test by asserting the daemon's well-known name still resolves:
+
+```python
+assert nodes[0].system.refs.lookup(daemon_path(nodes[0])) is not None
+```
+
+Better still, make the `cluster_of` fixture assert it on the way out, the way `actor_system` asserts no leaked tasks: a daemon that died during a test is a failed test whatever else the test observed.
 
 ## 4. Design disagreements
 
