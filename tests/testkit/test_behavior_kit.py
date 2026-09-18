@@ -6,14 +6,16 @@ from tapio import Behavior, Behaviors, Message
 from tapio.actor import (
     AbstractBehavior,
     ActorContext,
+    ActorPath,
     ActorRef,
+    DeadLetterReason,
     MailboxConfig,
     PostStop,
     SupervisorStrategy,
 )
 from tapio.errors import BehaviorTypeError, MessageTypeError, TapioError
 from tapio.settings import TapioSettings
-from tapio.testkit import BehaviorTestKit, Spawned, Watched
+from tapio.testkit import BehaviorTestKit, DeadLettered, Spawned, Watched
 
 
 class Count(Message):
@@ -186,6 +188,33 @@ async def test_watches_are_recorded():
         Watched(target, watching=True),
         Watched(target, watching=False),
     )
+
+
+async def test_dead_letters_are_recorded_with_the_reason_and_the_message():
+    unreachable = ActorPath.root("sys").child("user").child("gone", uid=1)
+    job = Job(item=7)
+
+    async def on_message(ctx: ActorContext[Job], message: Job) -> Behavior[Job]:
+        ctx.dead_letter(
+            message,
+            unreachable,
+            DeadLetterReason.UNKNOWN_RECIPIENT,
+            detail="nowhere to route it",
+        )
+        return Behaviors.same()
+
+    kit: BehaviorTestKit[Job] = BehaviorTestKit(Behaviors.receive(on_message))
+    await kit.run(job)
+
+    # The reason alone is what most tests care about, so an effect compares
+    # equal to it. The message is the object the handler was given.
+    assert kit.effects == (DeadLetterReason.UNKNOWN_RECIPIENT,)
+    recorded = kit.effects[0]
+    assert isinstance(recorded, DeadLettered)
+    assert recorded.message is job
+    assert recorded.recipient == unreachable
+    assert recorded.detail == "nowhere to route it"
+    assert "unknown-recipient" in repr(recorded)
 
 
 async def test_a_behavior_that_stops_says_so():

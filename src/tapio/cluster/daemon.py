@@ -67,11 +67,19 @@ from tapio.cluster.monitor import RingMonitor, deadline_detectors, phi_detectors
 from tapio.cluster.reachability import ReachabilityStatus
 from tapio.errors import RefResolutionError
 from tapio.logging import runtime_logger
+from tapio.message import Message
 from tapio.remote.failure import PeerReachable, PeerUnreachable
 from tapio.remote.registry import RefRegistry
 from tapio.settings import ClusterSettings
 
-__all__ = ["DAEMON_NAME", "ClusterDaemon", "daemon_uri", "local_daemon"]
+__all__ = [
+    "DAEMON_NAME",
+    "ClusterDaemon",
+    "daemon_uri",
+    "local_daemon",
+    "start_subscribing",
+    "subscribe_when_ready",
+]
 
 DAEMON_NAME = "cluster"
 """What the daemon is called under `/system`, and half of its well-known name."""
@@ -82,6 +90,15 @@ _GOSSIP_TIMER = "gossip"
 _JOIN_TIMER = "join"
 _FORM_TIMER = "form"
 _HEARTBEAT_TIMER = "heartbeat"
+
+_SUBSCRIBE_RETRY = timedelta(milliseconds=50)
+"""How often a cluster-aware actor retries subscribing until the daemon exists.
+
+A singleton manager or a group router can be spawned in the same breath as the
+cluster, before the daemon has registered its well-known name, so the first
+look may find nothing. This is short because the daemon starts moments later,
+and it stops the moment the subscription lands.
+"""
 
 _LEAVING_STATUSES = frozenset({MemberStatus.LEAVING, MemberStatus.EXITING})
 """The statuses a member holds while leaving gracefully, before it is removed.
@@ -119,6 +136,61 @@ async def local_daemon(
     if isinstance(ref, LocalActorRef):
         return cast("ActorRef[ClusterMessage]", ref)
     return None
+
+
+def start_subscribing(
+    timers: TimerScheduler[Any], key: str, reconcile: Message
+) -> None:
+    """Ask for this node's daemon now, and keep asking until it answers.
+
+    Pair this with [subscribe_when_ready][tapio.cluster.daemon.subscribe_when_ready]:
+    this starts the retry in the caller's `Behaviors.setup`, and that one ends
+    it once the subscription lands.
+
+    Args:
+        timers: The caller's timer scheduler.
+        key: The timer key to retry under. One per actor, so two cluster-aware
+            actors in the same tree do not share a key.
+        reconcile: The message to send on each tick. It belongs to the caller's
+            own message type, which is why it is passed in rather than declared
+            here.
+    """
+    timers.start_fixed_delay(
+        key, reconcile, _SUBSCRIBE_RETRY, initial_delay=timedelta(0)
+    )
+
+
+async def subscribe_when_ready(
+    ctx: ActorContext[Any],
+    timers: TimerScheduler[Any],
+    key: str,
+    events: tuple[type[ClusterEvent], ...],
+) -> ActorRef[ClusterMessage] | None:
+    """Subscribe to this node's daemon once it has started, then stop retrying.
+
+    Every cluster-aware actor needs this: a singleton manager, a group router,
+    and anything else that reacts to membership in the system it runs in. The
+    daemon may not exist yet when such an actor starts, so the caller ticks a
+    `start_subscribing` timer and calls this on each tick until it returns a
+    ref.
+
+    Args:
+        ctx: The calling actor's context. It is the subscriber.
+        timers: The caller's timer scheduler, holding the retry this cancels.
+        key: The timer key `start_subscribing` was given.
+        events: The event types to subscribe to.
+
+    Returns:
+        The daemon, once it has been found and sent the subscription, or `None`
+        while it has not started yet. Keep the ref: a caller holding one stops
+        calling this, which is what stops the retry from asking again.
+    """
+    daemon = await local_daemon(ctx)
+    if daemon is None:
+        return None
+    daemon.tell(Subscribe(subscriber=ctx.self_ref, events=events))
+    timers.cancel(key)
+    return daemon
 
 
 @dataclass(frozen=True, slots=True)

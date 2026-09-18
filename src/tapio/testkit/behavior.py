@@ -54,7 +54,14 @@ from tapio.message import Message
 from tapio.settings import TapioSettings
 from tapio.validation import MessageType, normalize_msg_type, resolve_validator
 
-__all__ = ["BehaviorTestKit", "Effect", "RecordingRef", "Spawned", "Watched"]
+__all__ = [
+    "BehaviorTestKit",
+    "DeadLettered",
+    "Effect",
+    "RecordingRef",
+    "Spawned",
+    "Watched",
+]
 
 T = TypeVar("T", bound=Message)
 U = TypeVar("U", bound=Message)
@@ -140,6 +147,59 @@ class Watched(Effect):
     def __repr__(self) -> str:
         """Render which way round it was, and about whom."""
         return f"{'Watched' if self.watching else 'Unwatched'}({str(self.ref.path)!r})"
+
+
+@final
+class DeadLettered(Effect):
+    """The behavior accounted for a message it could not pass on.
+
+    What a router does with work it cannot route. There is no office here to
+    publish to, so the kit records the call and a test asserts on it.
+    """
+
+    __slots__ = ("detail", "message", "reason", "recipient")
+
+    def __init__(
+        self, message: Message, recipient: ActorPath, reason: str, detail: str | None
+    ) -> None:
+        """Record one dead letter, as the behavior described it."""
+        self.message = message
+        """What could not be delivered, as the object that was passed."""
+        self.recipient = recipient
+        """Where the behavior said it was addressed."""
+        self.reason = reason
+        """The `DeadLetterReason` constant it gave."""
+        self.detail = detail
+        """The specifics it added, or `None`."""
+
+    def __eq__(self, other: object) -> bool:
+        """Equal on the message and the reason, and to the reason alone.
+
+        The reason is what a test usually cares about, so comparing against
+        the bare string reads well: `assert kit.effects == ("mailbox-full",)`.
+        The detail is a message for a human and is left out, so a reworded one
+        does not fail a test.
+        """
+        if isinstance(other, DeadLettered):
+            return (
+                self.message == other.message
+                and self.recipient == other.recipient
+                and self.reason == other.reason
+            )
+        if isinstance(other, str):
+            return self.reason == other
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        """Hash by recipient and reason, to match equality."""
+        return hash((self.recipient, self.reason))
+
+    def __repr__(self) -> str:
+        """Render the reason, the message, and where it was going."""
+        return (
+            f"DeadLettered({self.reason!r}, {type(self.message).__name__}, "
+            f"{str(self.recipient)!r})"
+        )
 
 
 class RecordingRef(ActorRef[T]):
@@ -485,6 +545,17 @@ class _KitContext(ActorContext[T]):
             "for a test that resolves."
         )
         raise TapioError(msg)
+
+    def dead_letter(
+        self,
+        message: Message,
+        recipient: ActorPath,
+        reason: str,
+        *,
+        detail: str | None = None,
+    ) -> None:
+        """Record a dead letter. There is no office here to publish to."""
+        self.effects.append(DeadLettered(message, recipient, reason, detail))
 
     def watch(self, ref: ActorRef[Any]) -> None:
         """Record a watch. Nothing here can stop, so nothing is delivered."""

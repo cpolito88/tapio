@@ -231,6 +231,36 @@ class ActorContext(ABC, Generic[T]):
         """
 
     @abstractmethod
+    def dead_letter(
+        self,
+        message: Message,
+        recipient: ActorPath,
+        reason: str,
+        *,
+        detail: str | None = None,
+    ) -> None:
+        """Account for a message this actor forwarded and could not pass on.
+
+        For an actor that is a conduit rather than an origin: a router, or
+        anything else holding refs it did not write the traffic for. A message
+        it cannot hand on is a recipient error, and a conduit that failed
+        instead would take itself down because somebody else was busy. This is
+        where that message goes.
+
+        It is not how an ordinary actor produces a dead letter. Sending to an
+        actor that has stopped already publishes one, with the runtime filling
+        in the reason, and that is the usual path. Reach for this only when the
+        message is not yours and the recipient is one you were given.
+
+        Args:
+            message: What could not be delivered.
+            recipient: Where it was addressed. A router names the routee it
+                tried, or its own path when it had nowhere to try.
+            reason: One of the `DeadLetterReason` constants.
+            detail: The specifics the reason alone does not carry.
+        """
+
+    @abstractmethod
     def watch(self, ref: ActorRef[Any]) -> None:
         """Ask to be sent `Terminated` when another actor stops.
 

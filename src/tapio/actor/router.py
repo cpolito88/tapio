@@ -23,12 +23,12 @@ A router is a conduit, not an origin. Two decisions follow from that:
 """
 
 from collections.abc import Sequence
-from typing import Any, Protocol, TypeVar, cast, runtime_checkable
+from typing import Any, Protocol, TypeVar, runtime_checkable
 
 from tapio.actor.behavior import Behavior, Behaviors, ReceivingBehavior
 from tapio.actor.cell import LocalActorRef
 from tapio.actor.context import ActorContext
-from tapio.actor.dead_letters import DeadLetterOffice, DeadLetterReason
+from tapio.actor.dead_letters import DeadLetterReason
 from tapio.actor.mailbox import MailboxConfig
 from tapio.actor.ref import ActorRef
 from tapio.actor.signals import Signal, Terminated
@@ -97,12 +97,10 @@ class _PoolBehavior(ReceivingBehavior[T]):
         routees: list[ActorRef[T]],
         strategy: RoutingStrategy,
         msg_type: MessageType,
-        office: DeadLetterOffice,
     ) -> None:
-        """Bind the pool, its strategy, and where undeliverable work goes."""
+        """Bind the pool and its strategy."""
         self._routees = routees
         self._strategy = strategy
-        self._office = office
         self.msg_type = msg_type
 
     async def receive(self, ctx: ActorContext[T], message: T) -> Behavior[T]:
@@ -115,7 +113,7 @@ class _PoolBehavior(ReceivingBehavior[T]):
             # a recipient error like any other. Raising here would fail the
             # whole pool because one member was busy.
             ctx.log.warning("%s is full; the message could not be routed", routee.path)
-            self._office.publish(message, routee.path, DeadLetterReason.MAILBOX_FULL)
+            ctx.dead_letter(message, routee.path, DeadLetterReason.MAILBOX_FULL)
         return Behaviors.same()
 
     async def receive_signal(self, ctx: ActorContext[T], signal: Signal) -> Behavior[T]:
@@ -204,7 +202,7 @@ class Routers:
                 # The router has to hear about a routee that stops, or it goes
                 # on sending work to an address nobody reads.
                 ctx.watch(routee)
-            return _PoolBehavior(routees, chosen, _pool_msg_type(routees), _office(ctx))
+            return _PoolBehavior(routees, chosen, _pool_msg_type(routees))
 
         return Behaviors.setup(build)
 
@@ -271,15 +269,3 @@ def _pool_msg_type(routees: Sequence[ActorRef[Any]]) -> MessageType:
         )
         raise BehaviorTypeError(msg)
     return msg_type
-
-
-def _office(ctx: ActorContext[Any]) -> DeadLetterOffice:
-    """Find the system's dead letter office from inside a behavior.
-
-    A router forwards messages it did not write, so it needs somewhere to
-    account for the ones it could not pass on. Nothing else in the library
-    needs this, which is why it is a function here rather than a member of
-    `ActorContext`. A user's actor produces dead letters by sending to an
-    actor that has stopped, not by publishing them.
-    """
-    return cast(LocalActorRef[Any], ctx.self_ref).cell.runtime.dead_letters

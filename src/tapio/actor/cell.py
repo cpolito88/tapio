@@ -1440,6 +1440,19 @@ class _CellContext(ActorContext[T]):
             raise RefResolutionError(msg)
         return cast("ActorRef[U]", await resolver(uri, expect))
 
+    def dead_letter(
+        self,
+        message: Message,
+        recipient: ActorPath,
+        reason: str,
+        *,
+        detail: str | None = None,
+    ) -> None:
+        """Account for a message this actor could not pass on."""
+        self._cell.runtime.dead_letters.publish(
+            message, recipient, reason, detail=detail
+        )
+
     def watch(self, ref: ActorRef[Any]) -> None:
         """Ask to be sent `Terminated` when another actor stops."""
         self._cell.watch(ref)

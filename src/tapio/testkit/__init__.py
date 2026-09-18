@@ -20,6 +20,7 @@ an entry point, so they need no import and no `conftest.py`.
 
 from tapio.testkit.behavior import (
     BehaviorTestKit,
+    DeadLettered,
     Effect,
     RecordingRef,
     Spawned,
@@ -38,6 +39,7 @@ __all__ = [
     "DEFAULT_TIMEOUT",
     "NO_MESSAGE_WINDOW",
     "BehaviorTestKit",
+    "DeadLettered",
     "Effect",
     "IsolatedClusterSettings",
     "IsolatedRemoteSettings",
