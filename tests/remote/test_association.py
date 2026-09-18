@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import logging
 import threading
 from datetime import timedelta
 
@@ -17,6 +18,7 @@ from tapio.actor import (
     Terminated,
 )
 from tapio.actor.dead_letters import DeadLetterReason
+from tapio.actor.path import ActorPath
 from tapio.dispatch.dispatcher import Dispatcher
 from tapio.errors import MessageEncodingError
 from tapio.remote.address import Address
@@ -883,3 +885,42 @@ async def test_detach_finishes_even_when_the_reader_raised():
         await association.detach()
 
         assert retired.closed
+
+
+def _association_on_a_closed_loop() -> Association:
+    """An association whose system's loop has already been closed."""
+    gone = asyncio.new_event_loop()
+    gone.close()
+    host = _LoneHost()
+    host.dispatcher = Dispatcher(gone)
+    peer = Address.parse("tapio://peer@127.0.0.1:2551")
+    association = Association(host=host, peer=peer, initiator=peer)  # type: ignore[arg-type]
+    # Bound, and not closing, so `send` reaches the hop onto the loop rather
+    # than dead-lettering on the association's own state first.
+    association.bind(object())  # type: ignore[arg-type]
+    return association
+
+
+async def test_a_send_from_a_thread_after_the_loop_closed_does_not_raise(
+    caplog: pytest.LogCaptureFixture,
+):
+    # A background thread holding a RemoteRef while the service shuts down is
+    # the window: the hop onto the system's loop finds it closed and
+    # `call_soon_threadsafe` raises. Every local sender catches that and logs a
+    # dead letter, and this must too. The thread has no supervisor and no ask
+    # to fail, so an exception there is unhandled in a thread nobody watches,
+    # and `remote/ref.py` opens by promising a tell never raises about its
+    # recipient.
+    with assert_no_leaked_tasks():
+        association = _association_on_a_closed_loop()
+        recipient = ActorPath.root("peer").child("user").child("ticker", uid=1)
+        frame = encode(Tick(n=1), to=recipient)
+
+        with caplog.at_level(logging.WARNING, logger="tapio.remote"):
+            await asyncio.to_thread(association.send, Tick(n=1), frame, recipient)
+
+        assert "dead letter" in caplog.text
+        assert "after the loop closed" in caplog.text
+        # The peer is named, which is the whole point of hopping `send` rather
+        # than `tell` from off the loop.
+        assert str(association.peer) in caplog.text
