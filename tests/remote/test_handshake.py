@@ -15,7 +15,7 @@ from tapio.remote.transport import FrameLink, connect, framed
 from tapio.testkit import assert_no_leaked_tasks
 from tapio.version import __version__
 from tests.failures import eventually
-from tests.remote.peers import GHOST, Tick, counting, dial, remoting
+from tests.remote.peers import GHOST, Tick, counting, dial, dial_raw, remoting
 
 
 @pytest.fixture
@@ -361,3 +361,76 @@ async def test_a_handshake_completing_while_the_endpoint_stops_is_closed_cleanly
 
     # The handshake finished cleanly instead of raising ActorSystemTerminating.
     assert result == [None], result
+
+
+def _hello(**overrides: object) -> dict[str, object]:
+    """A client-hello that would be accepted, before the test spoils one field."""
+    body: dict[str, object] = {
+        "link": "client-hello",
+        "system": "ghost",
+        "address": str(GHOST),
+        "uid": 99,
+        "protocol": PROTOCOL_VERSION,
+        "version": __version__,
+        "nonce": "0" * 32,
+        "proof": "",
+    }
+    body.update(overrides)
+    return body
+
+
+async def test_a_peer_that_advertises_a_non_address_is_refused():
+    # The address keys the association and is what this system would dial
+    # back, so a peer that cannot state one is refused before any message
+    # frame is read. Unaddressable is already covered; this is the string
+    # that does not parse at all.
+    with assert_no_leaked_tasks():
+        system = ActorSystem("beta", remoting())
+        try:
+            link = await dial_raw(system, _hello(address="not an address"))
+            try:
+                assert await closed(link)
+                assert system.remote is not None
+                assert system.remote.associations == ()
+            finally:
+                await link.close()
+        finally:
+            await system.terminate()
+
+
+async def test_a_frame_of_the_wrong_kind_is_refused():
+    # A heartbeat where a client-hello belongs. The handshake reads the one
+    # frame it is expecting and refuses anything else, rather than looking for
+    # the fields it wants in whatever turned up.
+    with assert_no_leaked_tasks():
+        system = ActorSystem("beta", remoting())
+        try:
+            link = await dial_raw(system, {"link": "heartbeat"})
+            try:
+                assert await closed(link)
+                assert system.remote is not None
+                assert system.remote.associations == ()
+            finally:
+                await link.close()
+        finally:
+            await system.terminate()
+
+
+async def test_a_client_hello_that_fails_its_own_model_is_refused():
+    # Malformed rather than wrong: the frame names itself correctly and then
+    # fails validation. It has to be refused as a HandshakeError, which is
+    # what the endpoint catches. A ValidationError escaping here would miss
+    # that clause, die in a task nobody awaits, and leave the socket open,
+    # which is why the leak invariant is asserted with the close.
+    with assert_no_leaked_tasks():
+        system = ActorSystem("beta", remoting())
+        try:
+            link = await dial_raw(system, {"link": "client-hello", "system": "x"})
+            try:
+                assert await closed(link)
+                assert system.remote is not None
+                assert system.remote.associations == ()
+            finally:
+                await link.close()
+        finally:
+            await system.terminate()
