@@ -16,6 +16,7 @@ import pytest
 
 from tapio.actor import ActorSystem
 from tapio.cluster import Cluster, DownStrategy, MemberStatus
+from tapio.remote.address import Address
 from tapio.settings import ClusterSettings, ManagementSettings, TapioSettings
 from tapio.testkit import (
     IsolatedClusterSettings,
@@ -69,9 +70,18 @@ see one.
 """
 
 
-def remoting() -> TapioSettings:
-    """Settings for a system listening on a loopback port the OS picks."""
-    return IsolatedTapioSettings(remote=IsolatedRemoteSettings(bind_port=0))
+def remoting(port: int = 0) -> TapioSettings:
+    """Settings for a system listening on a loopback port.
+
+    Args:
+        port: The port to bind, or zero to let the OS pick, which is what
+            every test wants except one that restarts a node where the
+            cluster already expects it.
+
+    Returns:
+        The settings.
+    """
+    return IsolatedTapioSettings(remote=IsolatedRemoteSettings(bind_port=port))
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,6 +243,49 @@ def mutual_tls_certs(tmp_path_factory: pytest.TempPathFactory) -> TlsCerts:
     )
 
 
+def start_node(
+    name: str,
+    *,
+    port: int = 0,
+    settings: ClusterSettings = QUICK,
+    downing: DownStrategy | None = None,
+    terminate_on_down: bool = False,
+    management: ManagementSettings | None = None,
+) -> Node:
+    """Start one system with a cluster daemon, joined to nothing yet.
+
+    Fault injection is installed before the cluster is built, so it is in
+    place before the node sends anything.
+
+    Args:
+        name: The system name, which is the first half of the address members
+            are named by.
+        port: The port to listen on, or zero to let the OS pick.
+        settings: How the node gossips.
+        downing: The strategy it resolves a split with, or `None` to leave a
+            split blocking convergence.
+        terminate_on_down: Whether it shuts its own system down when it downs
+            itself.
+        management: Open a management endpoint, or `None` to leave it off.
+
+    Returns:
+        The node. Terminating its system is the caller's job.
+    """
+    system = ActorSystem(name, remoting(port))
+    faults = link_faults(system)
+    return Node(
+        system=system,
+        cluster=Cluster(
+            system,
+            settings,
+            downing=downing,
+            terminate_on_down=terminate_on_down,
+            management=management,
+        ),
+        faults=faults,
+    )
+
+
 @asynccontextmanager
 async def cluster_of(
     count: int,
@@ -265,22 +318,54 @@ async def cluster_of(
     nodes: list[Node] = []
     try:
         for index in range(1, count + 1):
-            system = ActorSystem(f"node{index}", remoting())
-            faults = link_faults(system)
             nodes.append(
-                Node(
-                    system=system,
-                    cluster=Cluster(
-                        system,
-                        settings,
-                        downing=downing,
-                        terminate_on_down=terminate_on_down,
-                        management=management,
-                    ),
-                    faults=faults,
+                start_node(
+                    f"node{index}",
+                    settings=settings,
+                    downing=downing,
+                    terminate_on_down=terminate_on_down,
+                    management=management,
                 )
             )
         yield tuple(nodes)
     finally:
         for node in reversed(nodes):
             await node.system.terminate()
+
+
+@asynccontextmanager
+async def replacement_for(
+    node: Node, *, settings: ClusterSettings = QUICK
+) -> AsyncIterator[Node]:
+    """Start a node at a terminated one's exact address, the way a restart does.
+
+    A member is named by its address, so a process that comes back has to bind
+    the same port under the same system name for the cluster to see the same
+    address answering. The port is read back from the address rather than
+    chosen, since `cluster_of` binds port zero and the OS settles it. The node
+    being replaced has to be terminated first, or its port is still held.
+
+    The replacement is a different member: its incarnation uid is fresh, which
+    is what tells the cluster the old one is gone.
+
+    Args:
+        node: The node being replaced, already terminated.
+        settings: How the replacement gossips.
+
+    Yields:
+        The replacement, joined to nothing yet. It is terminated however the
+        block ends.
+
+    Raises:
+        ValueError: If the node names no port, which a clustered node always
+            does since a cluster requires remoting.
+    """
+    address = Address.parse(node.address)
+    if address.port is None:
+        msg = f"{node.address} names no port for a replacement to bind"
+        raise ValueError(msg)
+    replacement = start_node(address.system, port=address.port, settings=settings)
+    try:
+        yield replacement
+    finally:
+        await replacement.system.terminate()
