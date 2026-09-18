@@ -14,7 +14,6 @@ the test suite asserts.
 """
 
 import asyncio
-import contextlib
 import itertools
 import random
 from collections.abc import Awaitable, Callable
@@ -49,6 +48,7 @@ from tapio.actor.timers import TimerScheduler
 from tapio.actor.watch import DeathWatch, Watcher, WatchTarget
 from tapio.dispatch.blocking import BlockingPool, describe_blocking
 from tapio.dispatch.dispatcher import Dispatcher
+from tapio.dispatch.tasks import cancel_and_wait
 from tapio.errors import (
     ActorNameError,
     ActorSystemTerminating,
@@ -806,9 +806,11 @@ class ActorCell(Generic[T]):
             async with asyncio.timeout_at(deadline):
                 await asyncio.shield(self._task)
         except TimeoutError:
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.shield(self._task)
+            # Not `suppress(CancelledError)` around the wait: this site resumes
+            # work afterwards, so swallowing a cancellation aimed at this
+            # caller would let the sweep carry on stopping the rest of the tree
+            # after being told to stop.
+            await cancel_and_wait(self._task)
             self._log.warning(
                 "did not stop within the shutdown deadline while handling %s; "
                 "cancelled",

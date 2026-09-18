@@ -23,7 +23,7 @@ from tapio.dispatch.dispatcher import Dispatcher
 from tapio.errors import MessageEncodingError
 from tapio.message import Message
 from tapio.remote.address import Address
-from tapio.remote.association import Association, _cancel_and_wait
+from tapio.remote.association import Association
 from tapio.remote.codec import LENGTH_PREFIX, encode
 from tapio.remote.transport import framed, is_link_frame, link_body
 from tapio.settings import RemoteSettings
@@ -766,49 +766,6 @@ async def test_resume_does_not_resume_reads_after_its_own_cancellation():
         # `_resume` already cancelled the reader; drain it for a clean exit.
         with contextlib.suppress(asyncio.CancelledError):
             await reader
-
-
-async def test_cancel_and_wait_reraises_the_callers_own_cancellation():
-    # The caller is cancelled while waiting, so it must stop rather than run on.
-    reached = False
-
-    async def caller() -> None:
-        nonlocal reached
-        await _cancel_and_wait(asyncio.ensure_future(_pending()))
-        reached = True
-
-    task: asyncio.Task[None] = asyncio.ensure_future(caller())
-    await asyncio.sleep(0)  # park inside `_cancel_and_wait` at `await task`
-    task.cancel()
-
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert reached is False
-
-
-async def test_cancel_and_wait_swallows_the_awaited_tasks_cancellation():
-    # The awaited task's own cancellation is not the caller's, so the caller
-    # carries on: this is the ordinary retire path.
-    reached = await _returns_after_waiting(asyncio.ensure_future(_pending()))
-    assert reached is True
-
-
-async def test_cancel_and_wait_swallows_the_awaited_tasks_exception():
-    async def boom() -> None:
-        raise RuntimeError("the reader failed")
-
-    task: asyncio.Task[None] = asyncio.ensure_future(boom())
-    with contextlib.suppress(RuntimeError):
-        await task  # let it finish and retrieve the exception
-
-    reached = await _returns_after_waiting(task)
-    assert reached is True
-
-
-async def _returns_after_waiting(task: "asyncio.Task[None]") -> bool:
-    """Run `_cancel_and_wait` from an uncancelled caller and say it returned."""
-    await _cancel_and_wait(task)
-    return True
 
 
 async def _finished_raising(exc: Exception) -> "asyncio.Task[None]":
