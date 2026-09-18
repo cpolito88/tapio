@@ -26,8 +26,10 @@ from tapio.remote.address import Address
 from tapio.remote.association import Association
 from tapio.remote.codec import LENGTH_PREFIX, encode
 from tapio.remote.transport import framed, is_link_frame, link_body
-from tapio.settings import RemoteSettings
-from tapio.testkit import assert_no_leaked_tasks
+from tapio.testkit import (
+    IsolatedRemoteSettings,
+    assert_no_leaked_tasks,
+)
 from tests.failures import eventually
 from tests.remote.peers import (
     GHOST,
@@ -97,7 +99,8 @@ async def test_a_message_off_the_wire_equals_what_was_sent_without_being_it(
     # A message rebuilt from JSON is equal to what was sent, never the same
     # object. `Message` is frozen, so equality is enough.
     answers: list[Pong] = []
-    echo = beta.spawn(echoing(), "echo")
+    received: list[Ping] = []
+    echo = beta.spawn(echoing(received), "echo")
     cart = alpha.spawn(collecting(answers), "cart")
     sent = Ping(n=3, reply_to=cart)
 
@@ -106,7 +109,12 @@ async def test_a_message_off_the_wire_equals_what_was_sent_without_being_it(
     await eventually(lambda: len(answers) == 1)
 
     assert answers[0] == Pong(n=3)
-    assert answers[0] is not sent
+    # The ping is the message that crossed the link, so it is the one the
+    # guarantee is about. Comparing the answer to the request instead put a
+    # Pong beside a Ping, which are never the same object whatever remoting
+    # does.
+    assert received[0] == sent
+    assert received[0] is not sent
 
 
 async def test_fifo_holds_for_ten_thousand_messages(
@@ -679,7 +687,7 @@ class _LoneHost:
 
     def __init__(self) -> None:
         """Bind to the running loop, with default remoting settings."""
-        self.settings = RemoteSettings(_env_file=None, bind_port=0)  # type: ignore[call-arg]
+        self.settings = IsolatedRemoteSettings(bind_port=0)
         self.dispatcher = Dispatcher.from_running_loop()
         self.is_closing = True
 
@@ -731,7 +739,7 @@ class _ResumeProbe(Association):
 
     resumed = False
 
-    async def _run(self) -> None:  # type: ignore[override]
+    async def _run(self) -> None:
         self.resumed = True
 
 
@@ -959,7 +967,7 @@ async def test_watching_through_a_closing_association_is_answered_at_once():
     watcher = _RecordingWatcher()
     watchee = ActorPath.root("peer").child("user").child("worker", uid=1)
 
-    association.watch(watchee, watcher)  # type: ignore[arg-type]
+    association.watch(watchee, watcher)
 
     assert len(watcher.unreachable) == 1
     assert str(peer) in watcher.unreachable[0]
@@ -989,7 +997,7 @@ async def test_a_link_adopted_by_a_closing_association_is_still_closed():
             association._closing = True
             link = RecordingLink()
 
-            association.adopt(link, uid=7)  # type: ignore[arg-type]
+            association.adopt(link, uid=7)
 
             # The endpoint took it, and its close drains what it took.
             await system.terminate()

@@ -10,7 +10,7 @@ from datetime import timedelta
 
 import pytest
 
-from tapio import ActorSystem, Behavior, Behaviors, TapioSettings
+from tapio import ActorSystem, Behavior, Behaviors
 from tapio.actor import (
     ActorContext,
     ActorRef,
@@ -20,7 +20,11 @@ from tapio.actor import (
     SupervisorStrategy,
 )
 from tapio.errors import BehaviorTypeError
-from tapio.testkit import NO_MESSAGE_WINDOW, assert_no_leaked_tasks
+from tapio.testkit import (
+    NO_MESSAGE_WINDOW,
+    IsolatedTapioSettings,
+    assert_no_leaked_tasks,
+)
 from tests.failures import (
     BoomError,
     Job,
@@ -86,7 +90,7 @@ async def test_restart_preserves_the_mailbox_and_drops_the_failed_message(
 async def test_restart_re_evaluates_the_original_behavior(system: ActorSystem):
     seen: list[str] = []
 
-    def switched(message: Job) -> Behavior[Job]:
+    async def switched(message: Job) -> Behavior[Job]:
         raise AssertionError("the switched-to behavior should not survive a restart")
 
     async def on_message(ctx: ActorContext[Job], message: Job) -> Behavior[Job]:
@@ -251,7 +255,7 @@ async def test_messages_arriving_during_backoff_are_buffered_not_dropped(
 
 async def test_a_stop_during_backoff_is_not_waited_out():
     shutdown_timeout = timedelta(seconds=2)
-    settings = TapioSettings(_env_file=None, shutdown_timeout=shutdown_timeout)
+    settings = IsolatedTapioSettings(shutdown_timeout=shutdown_timeout)
     seen: list[str] = []
     backoff_window = timedelta(seconds=30)
     strategy = SupervisorStrategy.restart(

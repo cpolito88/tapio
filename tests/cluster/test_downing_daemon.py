@@ -42,7 +42,7 @@ async def test_the_minority_downs_itself_and_the_majority_carries_on():
             # The isolated node is the minority of one, so it downs itself and
             # says so, which is the signal to shut the process down.
             await asyncio.wait_for(odd.cluster.when_downed(), timeout=5.0)
-            assert odd.cluster.self_member.status is MemberStatus.DOWN
+            assert odd.status is MemberStatus.DOWN
 
             # The majority writes the loser off and converges as a smaller
             # cluster, rather than blocking for ever on a member it cannot hear.
@@ -55,7 +55,7 @@ async def test_the_minority_downs_itself_and_the_majority_carries_on():
                 within=5.0,
             )
             for node in majority:
-                assert node.cluster.self_member.status is MemberStatus.UP
+                assert node.status is MemberStatus.UP
                 assert node.status_of(odd.address) in (
                     MemberStatus.DOWN,
                     MemberStatus.REMOVED,
@@ -76,7 +76,7 @@ async def test_down_all_stops_every_node_on_a_split():
                 *(asyncio.wait_for(n.cluster.when_downed(), timeout=5.0) for n in nodes)
             )
             for node in nodes:
-                assert node.cluster.self_member.status is MemberStatus.DOWN
+                assert node.status is MemberStatus.DOWN
 
 
 async def test_a_blip_shorter_than_the_window_downs_nobody():
@@ -119,17 +119,10 @@ async def test_lease_majority_leaves_one_survivor_of_an_even_split():
             # the other cannot and downs itself: exactly one survivor, which is
             # the guarantee the count could not make about an even split.
             await eventually(
-                lambda: (
-                    sum(
-                        n.cluster.self_member.status is MemberStatus.DOWN for n in nodes
-                    )
-                    == 1
-                ),
+                lambda: sum(n.status is MemberStatus.DOWN for n in nodes) == 1,
                 within=5.0,
             )
-            survivors = [
-                n for n in nodes if n.cluster.self_member.status is MemberStatus.UP
-            ]
+            survivors = [n for n in nodes if n.status is MemberStatus.UP]
             assert len(survivors) == 1
 
 
@@ -157,7 +150,7 @@ async def test_terminate_on_down_shuts_the_losing_node_down():
                 within=5.0,
             )
             for node in (first, second):
-                assert node.cluster.self_member.status is MemberStatus.UP
+                assert node.status is MemberStatus.UP
 
 
 async def test_the_shutdown_a_downed_node_starts_carries_a_name():

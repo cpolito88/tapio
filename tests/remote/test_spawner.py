@@ -1,6 +1,7 @@
 """Starting an actor on another node, and everything a spawner refuses."""
 
 from datetime import timedelta
+from typing import Any
 
 import pytest
 
@@ -28,8 +29,10 @@ from tapio.actor import (
 )
 from tapio.errors import BehaviorRegistrationError
 from tapio.remote.spawner import factory_for_key, offered_keys
-from tapio.testkit import LinkFaults, assert_no_leaked_tasks, two_nodes
+from tapio.remote.transport import FrameLink, Link, LinkFrame
+from tapio.testkit import assert_no_leaked_tasks, two_nodes
 from tests.failures import eventually
+from tests.internals import endpoint
 from tests.remote.peers import remoting, uri
 
 STARTS: list[str] = []
@@ -124,9 +127,13 @@ def spawnable_unoffered(args: NoArgs) -> Behavior[Crash]:
 
 
 class RefArgs(Message):
-    """A misconfigured arguments model: it carries a ref, which it may not."""
+    """A misconfigured arguments model: it carries a ref, which it may not.
 
-    partner: ActorRef[Result]
+    Any ref at all is the fault, so the field takes any: what a test hands it
+    is whichever ref it already has.
+    """
+
+    partner: ActorRef[Any]
 
 
 @remote_behavior("test-ref-args", args=RefArgs)
@@ -136,25 +143,44 @@ def spawnable_ref_args(args: RefArgs) -> Behavior[Work]:
     The factory itself never runs: its arguments are rebuilt after the decode
     that resolves refs, so building them fails before this is called.
     """
-    return Behaviors.receive_message(lambda message: Behaviors.same(), msg_type=Work)
+    return Behaviors.ignore()
 
 
-class CountingFaults(LinkFaults):
-    """Link faults that also count what the system wrote.
+class CountingLink:
+    """A link that counts what the system wrote through it.
 
-    Nothing is broken. The count is the point: a supervision decision must not
-    put a single frame on the wire.
+    Nothing is broken, which is why this counts rather than extending
+    `LinkFaults`: the count is the point, since a supervision decision must
+    not put a single frame on the wire.
     """
 
-    def __init__(self) -> None:
-        """Start with links that behave, and nothing written."""
-        super().__init__()
+    def __init__(self, link: Link) -> None:
+        """Wrap a link, with nothing written yet."""
+        self._link = link
         self.written = 0
 
-    async def allow_write(self) -> bool:
-        allowed = await super().allow_write()
-        self.written += int(allowed)
-        return allowed
+    @property
+    def peer(self) -> str:
+        """The socket address on the other end."""
+        return self._link.peer
+
+    async def read_frame(self) -> bytes:
+        """Read a frame, which this counts nothing about."""
+        return await self._link.read_frame()
+
+    async def write_frame(self, data: bytes) -> None:
+        """Count a frame and write it."""
+        self.written += 1
+        await self._link.write_frame(data)
+
+    async def write_link(self, message: LinkFrame) -> None:
+        """Count a link frame and write it, so a heartbeat counts too."""
+        self.written += 1
+        await self._link.write_link(message)
+
+    async def close(self) -> None:
+        """Close the link underneath."""
+        await self._link.close()
 
 
 def offering(*keys: str) -> Behavior[Spawn]:
@@ -211,7 +237,7 @@ def test_a_factory_with_no_annotation_is_refused_where_it_is_written():
     with pytest.raises(BehaviorRegistrationError, match="has no annotation"):
 
         @remote_behavior("test-unannotated")
-        def unannotated(args) -> Behavior[Crash]:  # type: ignore[no-untyped-def]
+        def unannotated(args) -> Behavior[Crash]:
             return Behaviors.ignore()
 
 
@@ -226,7 +252,7 @@ def test_a_factory_whose_arguments_are_not_a_message_is_refused():
 def test_a_factory_that_takes_no_arguments_is_refused():
     with pytest.raises(BehaviorRegistrationError, match="exactly one arguments model"):
 
-        @remote_behavior("test-no-params")
+        @remote_behavior("test-no-params")  # type: ignore[type-var]
         def no_params() -> Behavior[Crash]:
             return Behaviors.ignore()
 
@@ -253,6 +279,7 @@ async def test_an_unknown_factory_key_is_refused_and_starts_nothing(
 
     reply = await ask_to_spawn(ref, "nobody-has-this")
 
+    assert isinstance(reply, SpawnFailed)
     assert "same code" in reply.detail
     assert _children_of(system, "spawner") == ()
 
@@ -405,8 +432,15 @@ async def test_the_spawner_supervises_its_child_with_nothing_crossing_the_link()
             ActorSystem("asker", settings) as here,
             ActorSystem("compute", settings) as there,
         ):
-            counted = CountingFaults()
-            there.remote.set_link_filter(counted.wrap)
+            # One link, so the filter can hand back the same counter each
+            # time it is called and the test can read it afterwards.
+            counters: list[CountingLink] = []
+
+            def counting(link: FrameLink) -> Link:
+                counters.append(CountingLink(link))
+                return counters[-1]
+
+            endpoint(there).set_link_filter(counting)
             local = there.spawn(offering("test-worker"), "spawner")
             remote = await here.resolve(uri(there, local), expect=Spawn)
             reply = await ask_to_spawn(
@@ -414,6 +448,7 @@ async def test_the_spawner_supervises_its_child_with_nothing_crossing_the_link()
             )
             assert isinstance(reply, Spawned)
             started = STARTS.count("supervised")
+            counted = counters[0]
             wrote = counted.written
             # The counter is live: the spawn reply itself crossed the link.
             assert wrote > 0

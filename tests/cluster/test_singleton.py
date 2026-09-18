@@ -93,7 +93,7 @@ async def test_a_singleton_runs_on_the_oldest_member_alone():
                 )
 
             await eventually(lambda: len(probe.running) == 1, within=5.0)
-            oldest = min(nodes, key=lambda n: n.cluster.self_member.up_number)
+            oldest = min(nodes, key=lambda n: n.member.up_number)
             assert probe.running == {oldest.address}
             # The one that matters: never two at once, even for a moment while
             # the managers were working out which of them was oldest.

@@ -18,13 +18,16 @@ from tapio import (
     DeadLetterReason,
     Message,
     MessageTypeError,
-    TapioSettings,
 )
-from tapio.actor import ActorContext, LocalActorRef
+from tapio.actor import ActorContext
 from tapio.actor.mailbox import MailboxConfig, OverflowStrategy
 from tapio.errors import MailboxFullError
-from tapio.testkit import assert_no_leaked_tasks
+from tapio.testkit import (
+    IsolatedTapioSettings,
+    assert_no_leaked_tasks,
+)
 from tests.failures import eventually, well_inside
+from tests.internals import cell_of
 
 
 class Answer(Message):
@@ -57,6 +60,20 @@ class Silence(Message):
 
 
 Request = Query | Silence
+
+
+def discarding() -> Behavior[Answer]:
+    """Takes an answer and drops it.
+
+    For a `reply_to` the test never reads. A responder was used here, and a
+    responder does not receive an `Answer`: naming one said the reply would
+    be delivered somewhere it would only have become a dead letter.
+    """
+
+    async def on_message(message: Answer) -> Behavior[Answer]:
+        return Behaviors.same()
+
+    return Behaviors.receive_message(on_message)
 
 
 def responder() -> Behavior[Request]:
@@ -107,12 +124,6 @@ def stopper(gate: asyncio.Event) -> Behavior[Query]:
         return Behaviors.stopped()
 
     return Behaviors.receive_message(on_message)
-
-
-def cell_of(ref: ActorRef[object]) -> object:
-    """The cell behind a ref, for the tests that assert on runtime state."""
-    assert isinstance(ref, LocalActorRef)
-    return ref.cell
 
 
 async def test_ask_returns_the_reply_object(system: ActorSystem):
@@ -174,7 +185,7 @@ async def test_a_timeout_is_a_builtin_timeout_error(system: ActorSystem):
 
 async def test_the_default_timeout_comes_from_settings():
     """A short default is honoured without the call site saying anything."""
-    settings = TapioSettings(_env_file=None, ask_timeout=timedelta(milliseconds=20))
+    settings = IsolatedTapioSettings(ask_timeout=timedelta(milliseconds=20))
     async with ActorSystem("defaults", settings) as system:
         ref = system.spawn(responder(), name="quiet")
 
@@ -285,7 +296,7 @@ async def test_a_target_that_stops_mid_ask_fails_fast(system: ActorSystem):
 
 async def test_asking_an_already_stopped_actor_fails_at_once(system: ActorSystem):
     ref = system.spawn(responder(), name="gone")
-    ref.tell(Query(value=0, reply_to=system.spawn(responder(), name="sink")))
+    ref.tell(Query(value=0, reply_to=system.spawn(discarding(), name="sink")))
     await eventually(lambda: not cell_of(ref).is_alive)
 
     with pytest.raises(AskTargetTerminated) as caught:
@@ -388,7 +399,7 @@ async def test_a_wrong_request_raises_in_the_sender(system: ActorSystem):
 
     with pytest.raises(MessageTypeError):
         await ref.ask(
-            lambda reply_to: Misdirected(reply_to=reply_to),  # type: ignore[arg-type]
+            lambda reply_to: Misdirected(reply_to=reply_to),  # type: ignore[arg-type,return-value]
             expect=Answer,
         )
 
@@ -401,7 +412,7 @@ async def test_an_unusable_reply_type_is_refused(system: ActorSystem):
 
     with pytest.raises(MessageTypeError):
         await ref.ask(
-            lambda reply_to: Query(reply_to=reply_to),
+            lambda reply_to: Query(reply_to=reply_to),  # type: ignore[arg-type]
             expect=int,  # type: ignore[type-var]
         )
 
@@ -455,7 +466,7 @@ async def test_an_actor_can_ask_from_inside_a_handler(system: ActorSystem):
 
     target = system.spawn(responder(), name="responder")
     front = system.spawn(asker(target), name="front")
-    sink = system.spawn(responder(), name="sink")
+    sink = system.spawn(discarding(), name="sink")
 
     with assert_no_leaked_tasks():
         front.tell(Query(value=9, reply_to=sink))
@@ -485,9 +496,7 @@ def test_the_base_ref_cannot_ask():
     ref: ActorRef[Query] = ActorRef(ActorPath.root("sys").child("user"))
 
     with pytest.raises(NotImplementedError, match="cannot deliver"):
-        asyncio.run(
-            ref.ask(lambda reply_to: Query(reply_to=reply_to), expect=Answer)  # type: ignore[arg-type]
-        )
+        asyncio.run(ref.ask(lambda reply_to: Query(reply_to=reply_to), expect=Answer))
 
 
 async def test_ask_raises_when_the_targets_mailbox_is_full(system: ActorSystem):
@@ -500,7 +509,7 @@ async def test_ask_raises_when_the_targets_mailbox_is_full(system: ActorSystem):
         name="brimming",
         mailbox=MailboxConfig(capacity=1, on_overflow=OverflowStrategy.FAIL),
     )
-    sink = system.spawn(responder(), name="sink")
+    sink = system.spawn(discarding(), name="sink")
 
     # No await between here and the ask, so the cell never runs and the one
     # slot stays taken.

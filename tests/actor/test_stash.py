@@ -183,14 +183,16 @@ def test_a_stash_refuses_a_capacity_below_one():
 
 def test_the_buffer_reports_what_it_holds():
     buffer: StashBuffer[Work] = StashBuffer(2)
-    assert buffer.is_empty
-    assert not buffer.is_full
+    # Read as a tuple rather than asserted one at a time. A type checker takes
+    # `assert not buffer.is_full` as settling the property for the rest of the
+    # function, and then calls the `is_full` below unreachable, which it is
+    # not: two stashes happen in between.
+    assert (buffer.size, buffer.is_empty, buffer.is_full) == (0, True, False)
 
     buffer.stash(Work(item=1))
     buffer.stash(Work(item=2))
 
-    assert buffer.size == 2
-    assert buffer.is_full
+    assert (buffer.size, buffer.is_empty, buffer.is_full) == (2, False, True)
     with pytest.raises(StashOverflowError):
         buffer.stash(Work(item=3))
 

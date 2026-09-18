@@ -8,16 +8,19 @@ command line actually moves the member.
 
 import asyncio
 
-from click.testing import Result
-from typer.testing import CliRunner
+from typer.testing import CliRunner, Result
 
 from tapio.cluster.cli import _print_status, app
-from tapio.settings import ManagementSettings, TLSSettings
-from tapio.testkit import assert_no_leaked_tasks
+from tapio.settings import ManagementSettings
+from tapio.testkit import (
+    IsolatedManagementSettings,
+    IsolatedTLSSettings,
+    assert_no_leaked_tasks,
+)
 from tests.cluster.conftest import Node, TlsCerts, cluster_of, seeds_of
 from tests.failures import eventually
 
-MANAGED = ManagementSettings(_env_file=None, bind_port=0)  # type: ignore[call-arg]
+MANAGED = IsolatedManagementSettings(bind_port=0)
 
 runner = CliRunner()
 
@@ -37,7 +40,9 @@ async def _joined(nodes: tuple[Node, ...]) -> None:
 
 async def _run(*args: str) -> Result:
     """Run the command in a thread, so its blocking client does not stall the loop."""
-    return await asyncio.to_thread(runner.invoke, app, list(args))
+    # Through a lambda: `to_thread` takes a plain callable, and a bound
+    # method of an overloaded signature does not match one.
+    return await asyncio.to_thread(lambda: runner.invoke(app, list(args)))
 
 
 async def test_status_prints_the_members():
@@ -112,11 +117,9 @@ async def test_a_refused_request_exits_one():
 
 def _tls_managed(certs: TlsCerts) -> ManagementSettings:
     """A management endpoint that speaks mutual TLS with the given certificates."""
-    return ManagementSettings(  # type: ignore[call-arg]
-        _env_file=None,  # type: ignore[call-arg]
+    return IsolatedManagementSettings(
         bind_port=0,
-        tls=TLSSettings(  # type: ignore[call-arg]
-            _env_file=None,  # type: ignore[call-arg]
+        tls=IsolatedTLSSettings(
             certfile=certs.server_cert,
             keyfile=certs.server_key,
             cafile=certs.ca,

@@ -72,13 +72,15 @@ async def test_a_partition_covers_both_nodes_and_heals_on_both():
         async with two_nodes(unreachable_after=timedelta(seconds=30)) as nodes:
             nodes.partition()
 
-            assert nodes.alpha_faults.partitioned
-            assert nodes.beta_faults.partitioned
+            both = (nodes.alpha_faults, nodes.beta_faults)
+            # Read as a pair rather than asserted one at a time, since a type
+            # checker takes an assertion about a property as settling it for
+            # the rest of the function, and `heal` is what changes it.
+            assert [f.partitioned for f in both] == [True, True]
 
             nodes.heal()
 
-            assert not nodes.alpha_faults.partitioned
-            assert not nodes.beta_faults.partitioned
+            assert [f.partitioned for f in both] == [False, False]
 
 
 async def test_faults_need_a_system_with_remoting_switched_on(

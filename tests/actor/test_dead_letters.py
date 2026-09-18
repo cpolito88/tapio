@@ -163,7 +163,7 @@ async def quick(settings: TapioSettings) -> AsyncIterator[ActorSystem]:
 async def test_a_tell_to_a_stopped_actor_dead_letters(system: ActorSystem):
     seen: list[DeadLetter] = []
     system.dead_letters.subscribe(seen.append)
-    ref = system.spawn(Behaviors.stopped(), name="already-gone")
+    ref: ActorRef[Ping] = system.spawn(Behaviors.stopped(), name="already-gone")
 
     ref.tell(Ping(n=1))
     await asyncio.sleep(0)

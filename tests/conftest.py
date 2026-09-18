@@ -7,7 +7,7 @@ the test leaves running.
 
 import os
 from collections.abc import AsyncIterator, Callable, Iterator
-from typing import Any
+from typing import Any, TypeVar
 
 import pytest
 
@@ -22,9 +22,16 @@ from tapio.actor import (
 )
 from tapio.logging import ActorLogAdapter, actor_logger
 from tapio.settings import TapioSettings
-from tapio.testkit import IsolatedTapioSettings
+from tapio.testkit import (
+    IsolatedTapioSettings,
+)
 from tapio.validation import MessageType
 from tests.messages import Greeted
+
+# The fake stands in for a real context, so its spawning methods stay generic
+# in the child protocol the way `ActorContext` declares them. Pinning them to
+# `Message` would make the fake accept calls the runtime would reject.
+U = TypeVar("U", bound=Message)
 
 
 class FakeContext(ActorContext[Message]):
@@ -48,22 +55,22 @@ class FakeContext(ActorContext[Message]):
 
     def spawn(
         self,
-        behavior: Behavior[Message],
+        behavior: Behavior[U],
         name: str,
         mailbox: MailboxConfig | None = None,
-    ) -> ActorRef[Message]:
+    ) -> ActorRef[U]:
         raise NotImplementedError
 
     def spawn_anonymous(
-        self, behavior: Behavior[Message], mailbox: MailboxConfig | None = None
-    ) -> ActorRef[Message]:
+        self, behavior: Behavior[U], mailbox: MailboxConfig | None = None
+    ) -> ActorRef[U]:
         raise NotImplementedError
 
     def message_adapter(
         self,
-        adapt: Callable[[Message], Message],
+        adapt: Callable[[U], Message],
         msg_type: MessageType | None = None,
-    ) -> ActorRef[Message]:
+    ) -> ActorRef[U]:
         raise NotImplementedError
 
     async def run_blocking(

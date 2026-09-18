@@ -63,15 +63,17 @@ def _cluster_waiting(late: Member) -> Cluster:
     cluster = object.__new__(Cluster)
     daemon = SimpleNamespace(changed=asyncio.Event())
     cluster._daemon = daemon  # type: ignore[assignment]
-    state = {"member": None, "reads": 0}
+    reads = 0
+    member: Member | None = None
 
     def self_member(self: Cluster) -> Member | None:
-        state["reads"] += 1
-        if state["reads"] == 1:
-            state["member"] = late
+        nonlocal reads, member
+        reads += 1
+        if reads == 1:
+            member = late
             daemon.changed.set()
             return None
-        return state["member"]
+        return member
 
     # Patched on a throwaway subclass, so the property stays a property and no
     # other Cluster is affected.

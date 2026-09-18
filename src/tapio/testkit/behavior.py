@@ -300,16 +300,25 @@ class BehaviorTestKit(Generic[T]):
         self._behavior = resolved
 
     @property
-    def self_ref(self) -> "RecordingRef[T]":
+    def self_ref(self) -> "RecordingRef[Any]":
         """A ref to the behavior under test, which records rather than delivers.
 
         Hand it to the code under test as a `reply_to`, then read `self_inbox`.
+
+        Typed as a ref to anything on purpose. What this is for is standing in
+        as the `reply_to` of a request, and a reply belongs to the protocol of
+        whoever answers, not to the protocol of the behavior under test. Typed
+        as `RecordingRef[T]` it fitted nowhere it is actually used.
         """
         return self._ctx.self_recording
 
     @property
-    def self_inbox(self) -> list[T]:
-        """What the behavior has sent to itself, in order."""
+    def self_inbox(self) -> list[Any]:
+        """What the behavior has been sent, in order.
+
+        Anything, for the reason `self_ref` is: what arrives here is usually a
+        reply in somebody else's protocol.
+        """
         return self._ctx.self_recording.inbox
 
     @property
@@ -318,8 +327,17 @@ class BehaviorTestKit(Generic[T]):
         return self._ctx
 
     @property
-    def effects(self) -> tuple[Effect, ...]:
-        """Everything the behavior asked its context to do, in order."""
+    def effects(self) -> tuple[Any, ...]:
+        """Everything the behavior asked its context to do, in order.
+
+        Every item is an [Effect][tapio.testkit.behavior.Effect]. The
+        annotation is wider than that on purpose. Each effect compares equal
+        to a shorthand as well as to another effect, a spawn to its name and a
+        dead letter to its reason, and a type checker reads
+        `tuple[Effect, ...] == ("worker",)` as a comparison that can never
+        hold. Narrowing an item with `isinstance` gives its own fields back,
+        and `children` and `child` stay typed as spawns.
+        """
         return tuple(self._ctx.effects)
 
     @property

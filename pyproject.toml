@@ -149,6 +149,22 @@ strict = true
 warn_unreachable = true
 enable_error_code = ["redundant-expr", "truthy-bool", "ignore-without-code"]
 
+# Tests are checked like the library, minus the annotation rules. That is the
+# same split ruff already applies in per-file-ignores above: a test function
+# needs no `-> None`, and everything else about it is still checked. Anything
+# stricter would annotate hundreds of sites this project deliberately decided
+# not to ask for; anything looser leaves a tree the size of the library
+# checked only by running it.
+[[tool.mypy.overrides]]
+module = "tests.*"
+disable_error_code = ["no-untyped-def", "no-untyped-call"]
+
+# py-cpuinfo ships no stubs. One benchmark reads the CPU model for a report
+# line, so the alternative is writing stubs for a library used once.
+[[tool.mypy.overrides]]
+module = "cpuinfo.*"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]

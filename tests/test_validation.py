@@ -119,7 +119,7 @@ def test_lax_construction_leaves_nothing_for_strict_revalidation_to_reject(
     What strict mode still catches is a message that skipped construction
     altogether, which is the tampering tested above.
     """
-    message = Greet(whom="w", count=sent, reply_to=ref)  # type: ignore[arg-type]
+    message = Greet(whom="w", count=sent, reply_to=ref)
     assert message.count == stored
     assert type(message.count) is int
 
