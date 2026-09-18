@@ -420,9 +420,20 @@ class Association:
             # overflow itself, dead-lettering it at this actor's own path with
             # no peer. Hop `send` instead, so the overflow is caught here and
             # accounted for with the peer named, the same as on the loop.
-            self._host.dispatcher.call_soon_threadsafe(
-                self.send, message, frame, recipient
-            )
+            try:
+                self._host.dispatcher.call_soon_threadsafe(
+                    self.send, message, frame, recipient
+                )
+            except RuntimeError:
+                # The loop is closed, so there is nothing to schedule onto and
+                # the system that would have published the dead letter is gone.
+                # Logging is all that remains, which is what a local `tell`
+                # does from the same position.
+                _log.warning(
+                    "dead letter: %s to %s sent after the loop closed",
+                    type(message).__name__,
+                    self._peer,
+                )
             return
         try:
             ref.tell(Outbound(payload=message, frame=frame, recipient=recipient))
