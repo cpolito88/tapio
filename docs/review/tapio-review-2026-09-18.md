@@ -20,29 +20,29 @@ Everything above was reproduced with the tests quoted under each finding. No Cri
 
 | ID | Severity | Category | Status | File | Title | Issue |
 |---|---|---|---|---|---|---|
-| T-01 | Critical | Bug | Confirmed | `src/tapio/actor/watch.py` | Watchers are keyed by path only, so peers sharing a system name lose `Terminated` | |
-| T-02 | High | Bug | Confirmed | `src/tapio/actor/cell.py` | A `setup` returned from a handler that raises escapes supervision and kills the actor | |
-| T-03 | High | Bug | Confirmed | `src/tapio/actor/cell.py` | A `setup` that spawns children and then raises orphans them past termination | |
-| T-04 | High | Bug | Confirmed | `src/tapio/cluster/daemon.py` | A subscriber the daemon cannot watch, or cannot deliver to, stops the cluster daemon | |
-| T-05 | High | Bug | Confirmed | `src/tapio/remote/spawner.py` | A remote factory whose `setup` raises stops the spawner and its children | |
-| T-06 | Medium | Bug | Confirmed | `src/tapio/actor/cell.py` | Self-sends and timers scheduled during the first construction skip validation | |
-| T-07 | Medium | Bug | Confirmed | `src/tapio/remote/endpoint.py` | An off-loop remote `tell` with no association spawns an actor from the wrong thread | |
-| T-08 | Medium | Bug | Confirmed | `src/tapio/cluster/router.py` | A group router freezes its own node's routee at the moment it heard `MemberUp` | |
-| T-09 | Medium | Bug | Confirmed | `src/tapio/actor/system.py` | `terminate()` awaited inside a handler waits out the whole deadline and cancels the caller | |
-| T-10 | Medium | Docs | Confirmed | `docs/unreachable.md` | The page says `Terminated` always comes with a quarantine; a failed link tells watchers and re-dials | |
-| T-11 | Medium | Docs | Confirmed | `docs/getting-started.md` | Two pages still say clustering does not exist | |
-| T-12 | Medium | Docs | Confirmed | `src/tapio/remote/failure.py` | Docstrings say clustering replaces the decider and the peer provider; nothing does | |
-| T-13 | Medium | Quality | Confirmed | `src/tapio/actor/cell.py` | Deferred construction has four call sites and three failure policies | |
-| T-14 | Medium | Bug | Suspected | `src/tapio/remote/association.py` | A simultaneous dial resolved during a stalled write closes the surviving association | |
-| T-15 | Low | Bug | Confirmed | `src/tapio/actor/ask.py` | `ask` with a union reply type raises `AttributeError` | |
-| T-16 | Low | Bug | Suspected | `src/tapio/actor/system.py` | A failure inside the drain leaves `when_terminated` waiting for ever | |
-| T-17 | Low | Quality | Confirmed | `src/tapio/remote/codec.py` | `decode` re-serializes the payload the encoder was careful not to | |
-| T-18 | Low | Quality | Confirmed | `src/tapio/actor/cell.py` | A restart racing a parent's stop logs a traceback for a benign race | |
-| T-19 | Low | Dead code | Confirmed | several | Unused public members: `describe_blocking`, `last_heard`, `logged`, `use_peers` | |
-| T-20 | Low | Quality | Confirmed | `tests/actor/test_dead_letters.py` | Tests that sleep a guessed duration before asserting | |
-| T-21 | Low | Docs | Confirmed | `src/tapio/actor/system.py` | `resolve` skips the `expect` check for a local address though its docstring says it raises | |
-| T-22 | Low | Quality | Confirmed | `src/tapio/remote/association.py` | Every remote send re-validates the `Outbound` wrapper when `validate_on_tell` is on | |
-| T-23 | Low | Quality | Confirmed | `tests/cluster/test_events.py` | A cluster events test passes while the daemon it exercises has died | |
+| T-01 | Critical | Bug | Confirmed | `src/tapio/actor/watch.py` | Watchers are keyed by path only, so peers sharing a system name lose `Terminated` | #141 |
+| T-02 | High | Bug | Confirmed | `src/tapio/actor/cell.py` | A `setup` returned from a handler that raises escapes supervision and kills the actor | #142 |
+| T-03 | High | Bug | Confirmed | `src/tapio/actor/cell.py` | A `setup` that spawns children and then raises orphans them past termination | #143 |
+| T-04 | High | Bug | Confirmed | `src/tapio/cluster/daemon.py` | A subscriber the daemon cannot watch, or cannot deliver to, stops the cluster daemon | #144 |
+| T-05 | High | Bug | Confirmed | `src/tapio/remote/spawner.py` | A remote factory whose `setup` raises stops the spawner and its children | #145 |
+| T-06 | Medium | Bug | Confirmed | `src/tapio/actor/cell.py` | Self-sends and timers scheduled during the first construction skip validation | #146 |
+| T-07 | Medium | Bug | Confirmed | `src/tapio/remote/endpoint.py` | An off-loop remote `tell` with no association spawns an actor from the wrong thread | #147 |
+| T-08 | Medium | Bug | Confirmed | `src/tapio/cluster/router.py` | A group router freezes its own node's routee at the moment it heard `MemberUp` | #148 |
+| T-09 | Medium | Bug | Confirmed | `src/tapio/actor/system.py` | `terminate()` awaited inside a handler waits out the whole deadline and cancels the caller | #149 |
+| T-10 | Medium | Docs | Confirmed | `docs/unreachable.md` | The page says `Terminated` always comes with a quarantine; a failed link tells watchers and re-dials | #150 |
+| T-11 | Medium | Docs | Confirmed | `docs/getting-started.md` | Two pages still say clustering does not exist | #151 |
+| T-12 | Medium | Docs | Confirmed | `src/tapio/remote/failure.py` | Docstrings say clustering replaces the decider and the peer provider; nothing does | #152 |
+| T-13 | Medium | Quality | Confirmed | `src/tapio/actor/cell.py` | Deferred construction has four call sites and three failure policies | #153 |
+| T-14 | Medium | Bug | Suspected | `src/tapio/remote/association.py` | A simultaneous dial resolved during a stalled write closes the surviving association | #154 |
+| T-15 | Low | Bug | Confirmed | `src/tapio/actor/ask.py` | `ask` with a union reply type raises `AttributeError` | report only |
+| T-16 | Low | Bug | Suspected | `src/tapio/actor/system.py` | A failure inside the drain leaves `when_terminated` waiting for ever | report only |
+| T-17 | Low | Quality | Confirmed | `src/tapio/remote/codec.py` | `decode` re-serializes the payload the encoder was careful not to | report only |
+| T-18 | Low | Quality | Confirmed | `src/tapio/actor/cell.py` | A restart racing a parent's stop logs a traceback for a benign race | report only |
+| T-19 | Low | Dead code | Confirmed | several | Unused public members: `describe_blocking`, `last_heard`, `logged`, `use_peers` | #155 |
+| T-20 | Low | Quality | Confirmed | `tests/actor/test_dead_letters.py` | Tests that sleep a guessed duration before asserting | report only |
+| T-21 | Low | Docs | Confirmed | `src/tapio/actor/system.py` | `resolve` skips the `expect` check for a local address though its docstring says it raises | report only |
+| T-22 | Low | Quality | Confirmed | `src/tapio/remote/association.py` | Every remote send re-validates the `Outbound` wrapper when `validate_on_tell` is on | report only |
+| T-23 | Low | Quality | Confirmed | `tests/cluster/test_events.py` | A cluster events test passes while the daemon it exercises has died | report only |
 
 ## 3. Findings, in full
 
@@ -52,6 +52,7 @@ Everything above was reproduced with the tests quoted under each finding. No Cri
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/actor/watch.py:113-121`, `src/tapio/remote/association.py:1006-1017`, `src/tapio/remote/association.py:1206-1209`, `src/tapio/actor/ref.py:145-153`
+**Issue:** #141
 
 **What's wrong.** A cell's watchers live in `DeathWatch._watchers`, a dict keyed by `watcher.path`:
 
@@ -134,6 +135,7 @@ Observed: `watchers on the target cell: (ActorPath('tapio://worker/user/$1#2'),)
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/actor/cell.py:896-906`, `src/tapio/actor/cell.py:1127-1143`, `src/tapio/actor/cell.py:1197-1205`
+**Issue:** #142
 
 **What's wrong.** `_on_message` guards the handler with `except Exception`, then applies the returned behavior outside that guard:
 
@@ -212,6 +214,7 @@ Observed before the fix: `restarts: 1`, the probe watching the actor received `T
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/actor/cell.py:766-786`, `src/tapio/actor/cell.py:484-508`
+**Issue:** #143
 
 **What's wrong.** `_spawn_child` registers the child cell, starts it, and on any exception removes it from the parent's map:
 
@@ -279,6 +282,7 @@ async def test_a_setup_that_spawns_then_raises_leaves_no_orphan():
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/cluster/daemon.py:1110-1127`, `src/tapio/cluster/daemon.py:1100-1108`, `src/tapio/cluster/daemon.py:1141-1168`, `src/tapio/cluster/daemon.py:432-471`, `src/tapio/actor/cell.py:1363-1379`
+**Issue:** #144
 
 **What's wrong.** Two things about a subscriber can raise inside the daemon's turn, and the daemon has no supervision layer, so either one stops it with the default decision. The daemon's `_receive` catches nothing.
 
@@ -378,6 +382,7 @@ async def test_subscribing_through_an_adapter_keeps_the_daemon_running():
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/remote/spawner.py:487-514`, `src/tapio/remote/spawner.py:413-422`
+**Issue:** #145
 
 **What's wrong.** `_answer` guards `factory.build(args)` with `except Exception` and the spawn with three narrow clauses:
 
@@ -440,6 +445,7 @@ async def test_a_factory_whose_setup_raises_is_answered_with_spawn_failed():
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/actor/cell.py:492-515`, `src/tapio/actor/cell.py:423-424`, `src/tapio/actor/timers.py:85-104`, `src/tapio/actor/timers.py:294-303`
+**Issue:** #146
 
 **What's wrong.** `start` evaluates the behavior first and resolves the validator second:
 
@@ -489,6 +495,7 @@ async def test_a_timer_started_in_the_factory_is_type_checked():
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/remote/endpoint.py:871-890`, `src/tapio/remote/endpoint.py:454-474`, `src/tapio/remote/endpoint.py:735-753`, `src/tapio/remote/association.py:383-402`
+**Issue:** #147
 
 **What's wrong.** `Association.send` hops onto the loop when called from another thread, and the docstring explains why. But `PeerOutbox.send` runs before it:
 
@@ -554,6 +561,7 @@ async def test_a_remote_tell_from_a_thread_dials_on_the_loop():
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/cluster/router.py:165-178`, `src/tapio/actor/system.py:410-420`
+**Issue:** #148
 
 **What's wrong.** On `MemberUp` the router resolves the routee once and keeps the ref:
 
@@ -603,6 +611,7 @@ async def test_a_group_router_finds_a_local_routee_published_later():
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/actor/system.py:675-688`, `src/tapio/actor/cell.py:806-825`
+**Issue:** #149
 
 **What's wrong.** `terminate` starts the drain task and awaits it shielded. The drain stops `/user`, which stops each child by putting `PostStop` on its lane and waiting for its task. An actor that is inside a handler awaiting `terminate()` is waiting for a drain that is waiting for that actor. Nothing breaks the cycle until the tree deadline, when `stop` cancels the actor's task, the shield keeps the drain alive, and shutdown proceeds. The system logs `did not stop within the shutdown deadline while handling ...; cancelled` about the actor that asked for the shutdown.
 
@@ -644,6 +653,7 @@ async def test_terminate_from_inside_a_handler_does_not_wait_the_deadline():
 **Category:** Docs
 **Status:** Confirmed
 **Location:** `docs/unreachable.md:13-24`, `docs/unreachable.md:61-65`, `src/tapio/remote/association.py:1102-1131`, `src/tapio/remote/failure.py:349-355`
+**Issue:** #150
 
 **What's wrong.** The page states that "three things happen together" when silence outlasts `unreachable_after`: watchers are told, the association is quarantined, and `PeerUnreachable` is published. It then says "Recovery is explicit, never automatic", because "watchers here were already told `Terminated` for actors that are alive". The code tells watchers on *every* association end, quarantine or not:
 
@@ -674,6 +684,7 @@ And qualify "Recovery is explicit, never automatic" with "after a quarantine".
 **Category:** Docs
 **Status:** Confirmed
 **Location:** `docs/getting-started.md:282-284`, `docs/unreachable.md:43-46`, `docs/getting-started.md:376-441`
+**Issue:** #151
 
 **What's wrong.** The getting-started page says, after the partition example: "Fixing that needs enough nodes to hold a vote ... That is clustering, and it is not in this version." The unreachability page says split brain "needs membership and a quorum, which v0.1 does not have." Both pages elsewhere link to the clustering page, and the README, the index page and `docs/clustering.md` describe membership, downing strategies and a lease as shipped. The list "What the runtime gives you today" on the getting-started page also omits clustering entirely.
 
@@ -687,6 +698,7 @@ And qualify "Recovery is explicit, never automatic" with "after a quarantine".
 **Category:** Docs
 **Status:** Confirmed
 **Location:** `src/tapio/remote/failure.py:7-19`, `src/tapio/remote/failure.py:297-306`, `src/tapio/remote/peers.py:11-16`, `src/tapio/remote/endpoint.py:609-629`, `src/tapio/remote/association.py:275-279`, `src/tapio/cluster/cluster.py:163-181`
+**Issue:** #152
 
 **What's wrong.** `failure.py` says a `DownDecider` "says yes, alone, immediately. Clustering replaces it with a strategy over converged membership, so that a minority partition stops itself rather than both halves declaring the other dead." `peers.py` says "Clustering answers the same question from membership instead: a member that the cluster has downed is refused". Neither happens. `Association._decider` is assigned `DownAlone()` in `__init__` and never reassigned; there is no setter. `RemoteEndpoint.use_peers` is called from two tests and from nowhere in `src`. The cluster works around the association's lone verdict by calling `clear_quarantine` on every alive member every heartbeat round (`_keep_knocking`), which the clustering page documents under "One rule this contradicts". A downed member is not refused by remoting at all; it is simply no longer forgiven.
 
@@ -700,6 +712,7 @@ And qualify "Recovery is explicit, never automatic" with "after a quarantine".
 **Category:** Quality
 **Status:** Confirmed
 **Location:** `src/tapio/actor/cell.py:492`, `src/tapio/actor/cell.py:1043`, `src/tapio/actor/cell.py:1143`, `src/tapio/actor/cell.py:1171-1218`, `src/tapio/remote/spawner.py:497-514`, `src/tapio/testkit/behavior.py:454-477`
+**Issue:** #153
 
 **What's wrong.** `_evaluate` runs user factories. It is called from `start` (failure propagates to the spawner, children leak: T-03), from `_restart` (failure is caught and the actor stops), and from `_become` (failure escapes the task: T-02). The spawner adds a fourth site with its own partial `except` list (T-05), and the test kit re-implements the unwrapping loop in `_resolve` without `UnstashBehavior`. Three of the four bugs above are the same bug: the code that runs a factory does not own what happens when the factory raises.
 
@@ -725,6 +738,7 @@ with `start` translating `None` into an exception for the spawner after `_finish
 **Category:** Bug
 **Status:** Suspected
 **Location:** `src/tapio/remote/association.py:499-534`, `src/tapio/remote/association.py:536-553`, `src/tapio/remote/association.py:703-741`
+**Issue:** #154
 
 **What's wrong.** `adopt` swaps the socket under a running association and retires the old handle in a new task, whose first act is `previous.close()`, which closes the old link. The association's actor may at that moment be parked in `_write` on that old link:
 
@@ -773,6 +787,7 @@ The same guard belongs in `_beat`.
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/actor/ask.py:265-268`, `src/tapio/actor/ask.py:335`, `src/tapio/actor/ask.py:360`, `src/tapio/remote/ref.py:253-257`
+**Issue:** none (kept in this report)
 
 **What's wrong.** `normalize_msg_type` accepts unions, `TestProbe` and `resolve` accept unions, and `ask_through` normalizes `expect`. But `ask`, `RemoteRef.ask` and the timeout message all read `expect.__name__`, and `types.UnionType` has no `__name__`. `await ref.ask(make, expect=Spawned | SpawnFailed)` fails with `AttributeError: 'types.UnionType' object has no attribute '__name__'` before sending anything. The `SpawnReply` base class exists partly to sidestep this, but nothing says a union is refused.
 
@@ -795,6 +810,7 @@ async def test_ask_accepts_a_union_reply_type(system):
 **Category:** Bug
 **Status:** Suspected
 **Location:** `src/tapio/actor/system.py:644-673`
+**Issue:** none (kept in this report)
 
 **What's wrong.** `_drain` sets `self._runtime.terminated` and `self._terminated` only after the three awaits succeed. If `_user.stop`, `_system.stop` or `_blocking.shutdown` raises anything but `CancelledError`, the drain task ends with an exception, `terminate()` re-raises it once to its caller, and every `when_terminated()` waits for ever because the event is never set.
 
@@ -808,6 +824,7 @@ async def test_ask_accepts_a_union_reply_type(system):
 **Category:** Quality
 **Status:** Confirmed
 **Location:** `src/tapio/remote/codec.py:163-167`, `src/tapio/remote/codec.py:228-257`, `src/tapio/remote/codec.py:326-328`
+**Issue:** none (kept in this report)
 
 **What's wrong.** `encode` splices the header and the payload as text with a comment: "parsing it just to serialize it again would double the cost of every send." `decode` then does the opposite on every receive: `json.loads` the whole body, `json.dumps(payload)` to get text back, and `model_validate_json` to parse it a second time. Every inbound message is parsed twice and serialized once for nothing.
 
@@ -821,6 +838,7 @@ async def test_ask_accepts_a_union_reply_type(system):
 **Category:** Quality
 **Status:** Confirmed
 **Location:** `src/tapio/actor/cell.py:1042-1050`, `src/tapio/actor/cell.py:582-588`
+**Issue:** none (kept in this report)
 
 **What's wrong.** When a parent's stop sweep sets `_terminating` while a child is mid-restart, the child's re-run `setup` calls `ctx.spawn`, which raises `ActorSystemTerminating`, which `_restart` catches and logs with `_log.exception("failed while restarting; stopping")`. The outcome is right, the log is wrong: an error with a traceback for an ordinary shutdown ordering.
 
@@ -832,6 +850,7 @@ async def test_ask_accepts_a_union_reply_type(system):
 **Category:** Dead code
 **Status:** Confirmed
 **Location:** `src/tapio/dispatch/blocking.py:177-187`, `src/tapio/remote/failure.py:97-100`, `src/tapio/actor/dead_letters.py:228-231`, `src/tapio/remote/endpoint.py:609-629`, `src/tapio/remote/endpoint.py:713-723`
+**Issue:** #155
 
 These are dead in the sense that nothing in `src`, `tests`, `examples` or `docs` references them, checked by grep. Vulture at 60% confidence flagged 69 candidates; the rest are public API that tests or docs use, or properties exposed for tests by design and documented as such (`Mailbox.user_size`, `ActorCell.watchers`, `Cluster.heartbeats_sent`), which I do not count.
 
@@ -849,6 +868,7 @@ Not dead, and worth saying why: `Reachability.empty` and `VectorClock.empty` are
 **Category:** Quality
 **Status:** Confirmed
 **Location:** `tests/actor/test_dead_letters.py:212`, `tests/actor/test_dead_letters.py:237`, `tests/actor/test_dead_letters.py:288`, `tests/actor/test_dead_letters.py:387`, `tests/actor/test_supervision.py:220`, `tests/actor/test_supervision.py:616`, `tests/actor/test_timers.py:108-215`
+**Issue:** none (kept in this report)
 
 **What's wrong.** The testing page says: "poll it against a deadline rather than sleeping for a guessed duration". `tests/failures.py` provides `eventually` for exactly that. Of forty `asyncio.sleep` calls in the suite, most are deliberate (a handler that wedges for 30 s, a fault injector's delay, the polling inside `eventually`). About ten are the pattern the page warns against: `ref.tell(...)`, `await asyncio.sleep(0.05)`, `assert seen == [...]`. On a slow CI leg these are the tests that fail without a code change.
 
@@ -862,6 +882,7 @@ Positive note: the merge laws are property-tested with Hypothesis in `tests/clus
 **Category:** Docs
 **Status:** Confirmed
 **Location:** `src/tapio/actor/system.py:464-481`
+**Issue:** none (kept in this report)
 
 **What's wrong.** The docstring lists `MessageTypeError: If expect is not a Message subclass or a union of them.` The local-address branch returns before `normalize_msg_type(expect, ...)` runs, so `await system.resolve("tapio://t/user/x#1", expect=int)` succeeds for a local path and raises for a remote one.
 
@@ -873,6 +894,7 @@ Positive note: the merge laws are property-tested with Hypothesis in `tests/clus
 **Category:** Quality
 **Status:** Confirmed
 **Location:** `src/tapio/remote/association.py:403-404`, `src/tapio/actor/cell.py:524-530`, `src/tapio/validation.py:172-186`
+**Issue:** none (kept in this report)
 
 **What's wrong.** `Association.send` delivers an `Outbound(payload=message, frame=frame, recipient=recipient)` through the association actor's ordinary `tell`, so the cell validates it like user traffic: an `isinstance` against the `AssociationMessage` union plus, under `validate_on_tell`, a strict `TypeAdapter` re-validation of a wrapper the runtime built a microsecond earlier, including the `bytes` frame and the `ActorPath`. The message itself was already validated by `RemoteRef.tell`. This is runtime-internal traffic paying the user-facing check.
 
@@ -884,6 +906,7 @@ Positive note: the merge laws are property-tested with Hypothesis in `tests/clus
 **Category:** Quality
 **Status:** Confirmed
 **Location:** `tests/cluster/test_events.py:17-34`, `tests/cluster/test_events.py:70-86`
+**Issue:** none (kept in this report)
 
 **What's wrong.** The recorder behavior declares `MemberUp | MemberRemoved`, and the test subscribes it to every event. The daemon's replay delivers the two `MemberUp` events, then `LeaderChanged`, which the recorder's type rejects, and the daemon stops (T-04). The test's `eventually` sees the two `MemberUp` entries it wanted and passes. A test that checks the daemon is still alive at the end, or a recorder declared as `ClusterEvent`, would have caught T-04 months ago. The `MessageTypeError` shows up intermittently as an unraisable warning attributed to whichever test the collector interrupts, which is how it was noticed on issue #140 and mistaken for that issue.
 
