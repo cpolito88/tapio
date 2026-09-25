@@ -418,14 +418,19 @@ class Cluster:
         The events are ordinary messages, so reacting to membership is
         behaviour switching and supervision like everything else. The
         subscriber must accept the events it asks for as part of its declared
-        message type. It hears the current membership straight away, as the
-        events that would have carried it, so an actor that subscribes after
-        the cluster has formed still learns who is up before it hears the next
-        change.
+        message type. One that cannot take an event it asked for is dropped,
+        with a warning in the log. An adapter from
+        [message_adapter][tapio.actor.context.ActorContext.message_adapter]
+        works as a subscriber. It hears the current membership straight away,
+        as the events that would have carried it, so an actor that subscribes
+        after the cluster has formed still learns who is up before it hears the
+        next change.
 
         A subscriber that stops is forgotten, because the daemon watches it, so
         [unsubscribe][tapio.cluster.cluster.Cluster.unsubscribe] is only for an
-        actor that wants to keep running and stop listening. Subscribing an
+        actor that wants to keep running and stop listening. For an adapter the
+        daemon watches the actor that owns it. A ref with nothing to watch,
+        such as a dead-letter ref, is refused with a warning. Subscribing an
         actor again replaces what it asked for rather than doubling its events.
 
         Args:

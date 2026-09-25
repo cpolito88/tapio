@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, cast, final
 
+from tapio.actor.adapter import AdapterRef
 from tapio.actor.behavior import Behavior, Behaviors
 from tapio.actor.cell import LocalActorRef
 from tapio.actor.context import ActorContext
@@ -29,6 +30,7 @@ from tapio.actor.events import EventStream, Subscription
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
 from tapio.actor.signals import PostStop, Signal, Terminated
+from tapio.actor.supervision import SupervisorStrategy
 from tapio.actor.timers import TimerScheduler
 from tapio.cluster.clock import Ordering
 from tapio.cluster.downing import DownStrategy
@@ -65,7 +67,13 @@ from tapio.cluster.messages import (
 )
 from tapio.cluster.monitor import RingMonitor, deadline_detectors, phi_detectors
 from tapio.cluster.reachability import ReachabilityStatus
-from tapio.errors import RefResolutionError
+from tapio.errors import (
+    MailboxFullError,
+    MessageTypeError,
+    RefResolutionError,
+    TapioError,
+    WatchError,
+)
 from tapio.logging import runtime_logger
 from tapio.message import Message
 from tapio.remote.failure import PeerReachable, PeerUnreachable
@@ -194,6 +202,29 @@ async def subscribe_when_ready(
 
 
 @dataclass(frozen=True, slots=True)
+class _Subscriber:
+    """One actor that asked to hear about membership, and what it asked for."""
+
+    ref: ActorRef[Any]
+    """Where the events go."""
+
+    wanted: frozenset[type[ClusterEvent]]
+    """The event types it asked for, empty meaning all of them."""
+
+    watched: ActorRef[Any]
+    """What the daemon watches to know when to forget it.
+
+    The subscriber itself, except for an adapter. An adapter cannot be watched,
+    so the daemon watches the actor that owns it: the adapter stops delivering
+    when that actor stops.
+    """
+
+    def wants(self, event: type[ClusterEvent]) -> bool:
+        """Whether it asked for this kind of event."""
+        return not self.wanted or event in self.wanted
+
+
+@dataclass(frozen=True, slots=True)
 class _Digest:
     """A snapshot of what this node's view says, taken to be diffed for events.
 
@@ -310,9 +341,7 @@ class ClusterDaemon:
         # Actors that asked to hear about membership changes, by their path so
         # that subscribing twice replaces rather than duplicates. Each is
         # watched, so one that stops is forgotten without an Unsubscribe.
-        self._subscribers: dict[
-            ActorPath, tuple[ActorRef[Any], frozenset[type[ClusterEvent]]]
-        ] = {}
+        self._subscribers: dict[ActorPath, _Subscriber] = {}
         self._monitor = RingMonitor(
             address=address,
             size=settings.monitored_peers,
@@ -370,6 +399,14 @@ class ClusterDaemon:
         return self._monitor.peers
 
     @property
+    def subscribers(self) -> tuple[ActorPath, ...]:
+        """The actors this daemon currently delivers events to, by path.
+
+        Exposed so a test can assert that a subscriber was forgotten.
+        """
+        return tuple(self._subscribers)
+
+    @property
     def downed(self) -> asyncio.Event:
         """Set once this node has downed itself, for the application to wait on."""
         return self._downed
@@ -388,7 +425,14 @@ class ClusterDaemon:
         return self._changed
 
     def behavior(self) -> Behavior[ClusterMessage]:
-        """Build the daemon actor."""
+        """Build the daemon actor.
+
+        It resumes after a tapio error rather than stopping. Such an error is
+        about one request, like a subscriber the daemon cannot deliver to, and
+        stopping over it would take this node out of the cluster. The daemon's
+        state lives on this object rather than in the behavior, so resuming
+        keeps all of it.
+        """
 
         def with_timers(
             timers: TimerScheduler[ClusterMessage],
@@ -416,9 +460,10 @@ class ClusterDaemon:
                     if isinstance(signal, PostStop):
                         self._stop_watching_the_links()
                     elif isinstance(signal, Terminated):
-                        # A subscriber stopped, so forget it. Nothing else is
-                        # watched, so this is the only reason one arrives.
-                        self._subscribers.pop(signal.ref.path, None)
+                        # A subscriber stopped, or the actor owning an adapter
+                        # that subscribed. Nothing else is watched, so this is
+                        # the only reason one arrives.
+                        self._forget_watched(signal.ref.path)
                     return Behaviors.same()
 
                 return Behaviors.receive(
@@ -427,7 +472,9 @@ class ClusterDaemon:
 
             return Behaviors.setup(build)
 
-        return Behaviors.with_timers(with_timers)
+        return Behaviors.supervise(Behaviors.with_timers(with_timers)).on_failure(
+            SupervisorStrategy.resume(), on=TapioError
+        )
 
     async def _receive(
         self,
@@ -474,7 +521,7 @@ class ClusterDaemon:
         await self._down()
         self._announce_if_downed()
         if before is not None:
-            self._emit(before)
+            self._emit(ctx, before)
         # The state has settled, and this is above the early return on purpose:
         # REMOVED is what `Cluster.leave` waits for, and it leaves by that
         # return, so a notification only at the bottom would never reach it.
@@ -1041,7 +1088,7 @@ class ClusterDaemon:
             self_status=me.status if me is not None else None,
         )
 
-    def _emit(self, before: _Digest) -> None:
+    def _emit(self, ctx: ActorContext[ClusterMessage], before: _Digest) -> None:
         """Tell every subscriber what changed between two views of the cluster.
 
         Called at the end of every turn, so a change made by any path produces
@@ -1049,6 +1096,7 @@ class ClusterDaemon:
         Nothing is computed when nobody is listening.
 
         Args:
+            ctx: This actor's context, for dropping a subscriber's death watch.
             before: The snapshot taken before this turn handled its message.
         """
         if not self._subscribers:
@@ -1058,12 +1106,12 @@ class ClusterDaemon:
             was = before.members.get(address)
             was_status = was.status if was is not None else None
             if member.status is MemberStatus.UP and was_status is not MemberStatus.UP:
-                self._deliver(MemberUp(member=member))
+                self._deliver(ctx, MemberUp(member=member))
             elif (
                 member.status is MemberStatus.REMOVED
                 and was_status is not MemberStatus.REMOVED
             ):
-                self._deliver(MemberRemoved(member=member))
+                self._deliver(ctx, MemberRemoved(member=member))
             elif (
                 member.status in _LEAVING_STATUSES
                 and was_status not in _LEAVING_STATUSES
@@ -1072,11 +1120,11 @@ class ClusterDaemon:
                 # A downed member never reaches here, so this is only the
                 # graceful path. It lets a singleton predecessor let go before
                 # a successor computed from the removal starts.
-                self._deliver(MemberLeaving(member=member))
+                self._deliver(ctx, MemberLeaving(member=member))
         for address in sorted(after.unreachable - before.unreachable):
             gone = after.members.get(address)
             if gone is not None:
-                self._deliver(UnreachableMember(member=gone))
+                self._deliver(ctx, UnreachableMember(member=gone))
         for address in sorted(before.unreachable - after.unreachable):
             back = after.members.get(address)
             # A member that went unreachable and was then removed is reported
@@ -1086,45 +1134,103 @@ class ClusterDaemon:
                 MemberStatus.DOWN,
                 MemberStatus.REMOVED,
             ):
-                self._deliver(ReachableMember(member=back))
+                self._deliver(ctx, ReachableMember(member=back))
         if before.leader != after.leader:
-            self._deliver(LeaderChanged(leader=after.leader))
+            self._deliver(ctx, LeaderChanged(leader=after.leader))
         if (
             after.self_status is MemberStatus.DOWN
             and before.self_status is not MemberStatus.DOWN
         ):
             me = self.self_member
             if me is not None:
-                self._deliver(SelfDown(member=me))
+                self._deliver(ctx, SelfDown(member=me))
 
-    def _deliver(self, event: ClusterEvent) -> None:
+    def _deliver(self, ctx: ActorContext[ClusterMessage], event: ClusterEvent) -> None:
         """Send one event to every subscriber that asked for its kind.
 
         Args:
+            ctx: This actor's context, for dropping a subscriber's death watch.
             event: The event to deliver.
         """
-        for ref, wanted in self._subscribers.values():
-            if not wanted or type(event) in wanted:
-                ref.tell(event)
+        # A copy, because a subscriber that cannot take the event is dropped
+        # while this loop runs.
+        for subscriber in list(self._subscribers.values()):
+            if subscriber.wants(type(event)):
+                self._tell(ctx, subscriber, event)
+
+    def _tell(
+        self,
+        ctx: ActorContext[ClusterMessage],
+        subscriber: _Subscriber,
+        event: ClusterEvent,
+    ) -> bool:
+        """Send one event to one subscriber, without letting it fail the daemon.
+
+        The daemon is the sender here, so an error about the message is raised
+        into this turn. Left alone it would stop the daemon, and this node
+        would leave the cluster because one local actor declared the wrong
+        type.
+
+        Args:
+            ctx: This actor's context, for dropping the subscriber's death watch.
+            subscriber: Who to tell.
+            event: What to tell it.
+
+        Returns:
+            Whether the subscriber is still subscribed.
+        """
+        try:
+            subscriber.ref.tell(event)
+        except MessageTypeError as error:
+            # It asked for an event its own type does not accept. It would
+            # refuse every later one of that kind too, so it is dropped.
+            _log.warning(
+                "dropped the cluster subscriber %s, which cannot accept the "
+                "events it asked for: %s",
+                subscriber.ref.path,
+                error,
+            )
+            self._forget(ctx, subscriber.ref.path)
+            return False
+        except MailboxFullError:
+            # A full mailbox can empty again, so the subscriber is kept. It
+            # misses this event, and the log says so.
+            _log.warning(
+                "the cluster subscriber %s missed %s: its mailbox is full",
+                subscriber.ref.path,
+                type(event).__name__,
+            )
+        return True
 
     def _subscribe(self, ctx: ActorContext[ClusterMessage], message: Subscribe) -> None:
         """Record a subscriber and hand it the current membership as events.
 
         Watching it is what lets a subscriber that stops be forgotten without
-        an Unsubscribe. The replay is why a subscriber that starts after the
-        cluster has formed still learns who is up: it hears the state it missed
-        as the events that would have carried it, then each change as it comes.
+        an Unsubscribe. An adapter cannot be watched, so for one the daemon
+        watches the actor that owns it. A ref with nothing to watch, such as a
+        dead-letter ref, is refused with a warning: it could never be
+        forgotten. The replay is why a subscriber that starts after the cluster
+        has formed still learns who is up: it hears the state it missed as the
+        events that would have carried it, then each change as it comes.
 
         Args:
             ctx: This actor's context, for the death watch.
             message: The subscription, naming the subscriber and what it wants.
         """
         ref = message.subscriber
-        wanted = frozenset(message.events)
-        if ref.path not in self._subscribers:
-            ctx.watch(ref)
-        self._subscribers[ref.path] = (ref, wanted)
-        self._replay(ref, wanted)
+        watched = ref.owner if isinstance(ref, AdapterRef) else ref
+        try:
+            # Watching twice is harmless, so a subscriber that subscribes
+            # again, or an adapter whose owner already subscribed, is fine.
+            ctx.watch(watched)
+        except WatchError as error:
+            _log.warning("refused a cluster subscription: %s", error)
+            return
+        subscriber = _Subscriber(
+            ref=ref, wanted=frozenset(message.events), watched=watched
+        )
+        self._subscribers[ref.path] = subscriber
+        self._replay(ctx, subscriber)
 
     def _unsubscribe(
         self, ctx: ActorContext[ClusterMessage], subscriber: ActorRef[Any]
@@ -1135,37 +1241,71 @@ class ClusterDaemon:
             ctx: This actor's context, for dropping the death watch.
             subscriber: The actor to forget. Harmless if it was not subscribed.
         """
-        if self._subscribers.pop(subscriber.path, None) is not None:
-            ctx.unwatch(subscriber)
+        self._forget(ctx, subscriber.path)
+
+    def _forget(self, ctx: ActorContext[ClusterMessage], path: ActorPath) -> None:
+        """Drop one subscriber, and its death watch unless another shares it.
+
+        An actor and the adapters it owns share one watch, so the watch stays
+        while any of them is still subscribed.
+
+        Args:
+            ctx: This actor's context, for dropping the death watch.
+            path: The subscriber's path. Harmless if it is not subscribed.
+        """
+        gone = self._subscribers.pop(path, None)
+        if gone is None:
+            return
+        watched = gone.watched.path
+        if all(s.watched.path != watched for s in self._subscribers.values()):
+            ctx.unwatch(gone.watched)
+
+    def _forget_watched(self, watched: ActorPath) -> None:
+        """Drop every subscriber whose watched actor has stopped.
+
+        That is the actor itself, and every adapter it owned. No unwatch is
+        needed, since the watch ended with the signal.
+
+        Args:
+            watched: The path of the actor that stopped.
+        """
+        for path, subscriber in list(self._subscribers.items()):
+            if subscriber.watched.path == watched:
+                del self._subscribers[path]
 
     def _replay(
-        self, ref: ActorRef[Any], wanted: frozenset[type[ClusterEvent]]
+        self, ctx: ActorContext[ClusterMessage], subscriber: _Subscriber
     ) -> None:
         """Send a new subscriber the events that describe the current view.
 
+        Stops at the first event it cannot take, since that drops it.
+
         Args:
-            ref: The subscriber.
-            wanted: The events it asked for, empty meaning all of them.
+            ctx: This actor's context, for dropping the subscriber's death
+                watch if it cannot take an event.
+            subscriber: The subscriber, and what it asked for.
         """
-
-        def wants(event: type[ClusterEvent]) -> bool:
-            return not wanted or event in wanted
-
-        if wants(MemberUp):
-            for member in self._state.alive:
-                if member.status is MemberStatus.UP:
-                    ref.tell(MemberUp(member=member))
-        if wants(UnreachableMember):
+        replay: list[ClusterEvent] = []
+        if subscriber.wants(MemberUp):
+            replay.extend(
+                MemberUp(member=member)
+                for member in self._state.alive
+                if member.status is MemberStatus.UP
+            )
+        if subscriber.wants(UnreachableMember):
             for address in sorted(self._unreachable_alive()):
                 gone = self._state.member(address)
                 if gone is not None:
-                    ref.tell(UnreachableMember(member=gone))
-        if wants(LeaderChanged):
-            ref.tell(LeaderChanged(leader=self._state.leader))
-        if wants(SelfDown):
+                    replay.append(UnreachableMember(member=gone))
+        if subscriber.wants(LeaderChanged):
+            replay.append(LeaderChanged(leader=self._state.leader))
+        if subscriber.wants(SelfDown):
             me = self.self_member
             if me is not None and me.status is MemberStatus.DOWN:
-                ref.tell(SelfDown(member=me))
+                replay.append(SelfDown(member=me))
+        for event in replay:
+            if not self._tell(ctx, subscriber, event):
+                return
 
     def _is_member_of(self, state: Gossip) -> bool:
         """Whether this node appears in a view it is about to adopt."""

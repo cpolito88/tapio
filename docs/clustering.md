@@ -277,7 +277,10 @@ There are seven events, all carrying the member they are about:
 [SelfDown][tapio.cluster.events.SelfDown]. Subscribing to none of them in
 particular means all of them. The subscriber has to accept the events it asks
 for as part of its declared message type, because they arrive on its own
-mailbox and are type-checked like anything else.
+mailbox and are type-checked like anything else. A subscriber that cannot take
+an event it asked for is dropped, with a warning in the log. An actor that
+does not want the events in its own type can subscribe an adapter from
+[message_adapter][tapio.actor.context.ActorContext.message_adapter] instead.
 
 A subscriber hears the current membership the moment it subscribes, as the
 events that would have carried it: an actor that starts after the cluster has
@@ -289,7 +292,9 @@ An event is this node's view, not the truth. It is emitted when this node's own
 membership state moves, so two nodes may see the same change a gossip round
 apart. That is the same guarantee everything else in clustering gives.
 
-A subscriber that stops is forgotten, because the daemon watches it. Call
+A subscriber that stops is forgotten, because the daemon watches it. For an
+adapter, the daemon watches the actor that owns it. A ref with nothing to
+watch, such as a dead-letter ref, is refused with a warning. Call
 [unsubscribe][tapio.cluster.cluster.Cluster.unsubscribe] only for an actor that
 wants to keep running and stop listening.
 

@@ -111,7 +111,8 @@ class AdapterRef(ActorRef[U]):
     deliver becomes a dead letter reporting the message the sender sent.
 
     It is not an actor. It has no mailbox, no cell and no children, so it
-    cannot be watched or asked. Watch the actor that owns it instead.
+    cannot be watched or asked. Watch the actor that owns it instead, which
+    [owner][tapio.actor.adapter.AdapterRef.owner] names.
 
     An adapter lives until its owner stops, or until somebody calls
     [release][tapio.actor.adapter.AdapterRef.release]. Most actors want one
@@ -145,6 +146,15 @@ class AdapterRef(ActorRef[U]):
         self._adapt = adapt
         self._validate = validate
         self._released = False
+
+    @property
+    def owner(self) -> ActorRef[Any]:
+        """The actor this adapter delivers into.
+
+        The adapter stops delivering when this actor stops, so this is what to
+        watch for someone who holds only the adapter.
+        """
+        return self._cell.ref
 
     @property
     def is_released(self) -> bool:
