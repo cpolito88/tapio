@@ -100,6 +100,11 @@ class PeerWatch:
         self._path = path
 
     @property
+    def address(self) -> Address:
+        """The peer the watched actor runs on."""
+        return self._outbox.peer
+
+    @property
     def path(self) -> ActorPath:
         """Where the watched actor sits in the peer's tree."""
         return self._path

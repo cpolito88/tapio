@@ -1171,9 +1171,10 @@ class _PeerWatcher:
     """A watch a peer holds on one of this system's actors.
 
     It stands in the cell's watcher map exactly as a local watcher does, and
-    turns the death it is told about into a frame. Keyed by the peer's own
-    watcher path, so two peers watching the same actor are two watchers and
-    one peer watching twice is one.
+    turns the death it is told about into a frame. Keyed by the peer's address
+    and its own watcher path, so two peers watching the same actor are two
+    watchers even when they share a system name, and one peer watching twice
+    is one.
     """
 
     __slots__ = ("_association", "_reply_to", "_target", "_watchee", "_watcher")
@@ -1204,8 +1205,13 @@ class _PeerWatcher:
         self._reply_to = reply_to
 
     @property
+    def address(self) -> Address:
+        """The peer the watcher runs on, which is half of this proxy's key."""
+        return self._association.peer
+
+    @property
     def path(self) -> ActorPath:
-        """The peer's watcher path, which is the key this is held under."""
+        """The peer's watcher path, which is the other half of the key."""
         return self._watcher
 
     def notify_terminated(self, ref: ActorRef[Any]) -> None:

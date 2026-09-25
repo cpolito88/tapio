@@ -2,12 +2,15 @@
 
 import json
 
-from tapio.actor import ActorSystem
+from tapio import Behavior, Behaviors
+from tapio.actor import ActorContext, ActorRef, ActorSystem
+from tapio.actor.signals import Signal, Terminated
 from tapio.remote.codec import encode
 from tapio.remote.failure import PeerUnreachable
 from tapio.remote.transport import framed
 from tapio.testkit import assert_no_leaked_tasks
 from tests.failures import eventually
+from tests.internals import cell_of
 from tests.remote.peers import Tick, counting, dial, remoting, uri, watching
 
 
@@ -179,3 +182,125 @@ async def test_a_link_frame_that_is_not_json_is_ignored_without_dropping_the_lin
         await eventually(lambda: ticks == [1])
     finally:
         await link.close()
+
+
+def watching_two(
+    first: ActorRef[Tick], second: ActorRef[Tick], seen: list[str]
+) -> Behavior[Tick]:
+    """An actor that watches two refs and records which node each signal names.
+
+    A negative tick makes it stop watching the first one.
+    """
+
+    def build(ctx: ActorContext[Tick]) -> Behavior[Tick]:
+        ctx.watch(first)
+        ctx.watch(second)
+
+        async def on_message(message: Tick) -> Behavior[Tick]:
+            if message.n < 0:
+                ctx.unwatch(first)
+                seen.append("unwatched")
+            return Behaviors.same()
+
+        async def on_signal(ctx: ActorContext[Tick], signal: Signal) -> Behavior[Tick]:
+            if isinstance(signal, Terminated):
+                seen.append(f"terminated on {signal.ref.address}")
+            return Behaviors.same()
+
+        return Behaviors.receive_message(on_message, msg_type=Tick, on_signal=on_signal)
+
+    return Behaviors.setup(build)
+
+
+async def test_two_peers_with_one_system_name_are_two_watchers():
+    with assert_no_leaked_tasks():
+        target = ActorSystem("target", remoting())
+        # Two nodes of one deployment: the same system name, and the same
+        # actors spawned in the same order, so the same paths and uids.
+        east = ActorSystem("orders", remoting())
+        west = ActorSystem("orders", remoting())
+        try:
+            ticks: list[int] = []
+            worker = target.spawn(counting(ticks), "worker")
+            seen_east: list[str] = []
+            seen_west: list[str] = []
+            from_east = await east.resolve(uri(target, worker), expect=Tick)
+            from_west = await west.resolve(uri(target, worker), expect=Tick)
+            watcher_east = east.spawn(watching(from_east, seen_east), "watcher")
+            watcher_west = west.spawn(watching(from_west, seen_west), "watcher")
+            assert watcher_east.path == watcher_west.path
+
+            await eventually(lambda: len(cell_of(worker).watchers) == 2)
+
+            from_east.tell(Tick(n=-1))
+
+            await eventually(lambda: seen_east == [f"terminated {worker.path}"])
+            await eventually(lambda: seen_west == [f"terminated {worker.path}"])
+        finally:
+            await west.terminate()
+            await east.terminate()
+            await target.terminate()
+
+
+async def test_one_peer_unwatching_leaves_the_other_peers_watch():
+    with assert_no_leaked_tasks():
+        target = ActorSystem("target", remoting())
+        east = ActorSystem("orders", remoting())
+        west = ActorSystem("orders", remoting())
+        try:
+            ticks: list[int] = []
+            worker = target.spawn(counting(ticks), "worker")
+            seen_east: list[str] = []
+            seen_west: list[str] = []
+            from_east = await east.resolve(uri(target, worker), expect=Tick)
+            from_west = await west.resolve(uri(target, worker), expect=Tick)
+            watcher_east = east.spawn(watching(from_east, seen_east), "watcher")
+            west.spawn(watching(from_west, seen_west), "watcher")
+            await eventually(lambda: len(cell_of(worker).watchers) == 2)
+
+            watcher_east.tell(Tick(n=-1))
+            await eventually(lambda: len(cell_of(worker).watchers) == 1)
+            from_west.tell(Tick(n=-1))
+
+            await eventually(lambda: seen_west == [f"terminated {worker.path}"])
+            assert seen_east == ["unwatched"]
+        finally:
+            await west.terminate()
+            await east.terminate()
+            await target.terminate()
+
+
+async def test_one_actor_watches_the_same_path_on_two_nodes_apart():
+    with assert_no_leaked_tasks():
+        hub = ActorSystem("hub", remoting())
+        east = ActorSystem("orders", remoting())
+        west = ActorSystem("orders", remoting())
+        try:
+            ticks: list[int] = []
+            on_east = east.spawn(counting(ticks), "worker")
+            on_west = west.spawn(counting(ticks), "worker")
+            assert on_east.path == on_west.path
+            first = await hub.resolve(uri(east, on_east), expect=Tick)
+            second = await hub.resolve(uri(west, on_west), expect=Tick)
+            seen: list[str] = []
+            watcher = hub.spawn(watching_two(first, second, seen), "watcher")
+            await eventually(lambda: len(cell_of(on_east).watchers) == 1)
+            await eventually(lambda: len(cell_of(on_west).watchers) == 1)
+
+            # Withdrawing the watch on east must withdraw that one, and not
+            # the watch on west, which sits at the same path.
+            watcher.tell(Tick(n=-1))
+            await eventually(lambda: cell_of(on_east).watchers == ())
+            assert len(cell_of(on_west).watchers) == 1
+
+            on_east.tell(Tick(n=-1))
+            await eventually(lambda: east.refs.lookup(on_east.path) is None)
+            on_west.tell(Tick(n=-1))
+
+            await eventually(
+                lambda: seen == ["unwatched", f"terminated on {west.address}"]
+            )
+        finally:
+            await west.terminate()
+            await east.terminate()
+            await hub.terminate()

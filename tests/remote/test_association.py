@@ -1065,6 +1065,11 @@ class _RecordingWatcher:
         self.unreachable: list[str] = []
 
     @property
+    def address(self) -> Address:
+        """A fixed address, since nothing here is registered anywhere."""
+        return Address(system="watcher")
+
+    @property
     def path(self) -> ActorPath:
         """A fixed path, since nothing here is registered anywhere."""
         return ActorPath.root("watcher").child("user").child("looker", uid=1)

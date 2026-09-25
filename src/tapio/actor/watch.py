@@ -18,16 +18,26 @@ it is watching. It lives here rather than in the cell because it is entirely
 about the two protocols above and needs nothing else from an actor. The cell
 still is the watcher and the target, so it keeps the protocol methods and
 delegates the bookkeeping to this.
+
+Both ends are keyed by address and path together. A path names a place in one
+system's tree and says nothing about which node that system runs on. Two nodes
+of one deployment share a system name and spawn the same actors in the same
+order, so they hand out the same paths, uids included. Keyed by path alone,
+a watch from one of them would replace the other's.
 """
 
-from typing import TYPE_CHECKING, Any, Protocol, final, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, TypeAlias, final, runtime_checkable
 
 from tapio.actor.path import ActorPath
+from tapio.remote.address import Address
 
 if TYPE_CHECKING:
     from tapio.actor.ref import ActorRef
 
-__all__ = ["DeathWatch", "WatchTarget", "Watcher"]
+__all__ = ["DeathWatch", "WatchKey", "WatchTarget", "Watcher"]
+
+WatchKey: TypeAlias = tuple[Address, ActorPath]
+"""What one end of a watch is held under: the node it is on, and its path."""
 
 
 @runtime_checkable
@@ -35,11 +45,16 @@ class Watcher(Protocol):
     """Something that can be registered for another actor's death."""
 
     @property
-    def path(self) -> ActorPath:
-        """Where this watcher sits, which is the key it is held under.
+    def address(self) -> Address:
+        """The system this watcher runs in, which is half of its key."""
+        ...
 
-        Watchers are keyed by path so that watching twice still delivers
-        exactly one signal.
+    @property
+    def path(self) -> ActorPath:
+        """Where this watcher sits, which is the other half of its key.
+
+        Watchers are keyed by address and path, so that watching twice still
+        delivers exactly one signal.
         """
         ...
 
@@ -78,8 +93,13 @@ class WatchTarget(Protocol):
     """Something a death watch can be registered on."""
 
     @property
+    def address(self) -> Address:
+        """The system the watched actor runs in, which is half of its key."""
+        ...
+
+    @property
     def path(self) -> ActorPath:
-        """Where the watched actor sits, which is the key it is held under."""
+        """Where the watched actor sits, which is the other half of its key."""
         ...
 
     @property
@@ -117,23 +137,28 @@ class DeathWatch:
 
     def __init__(self) -> None:
         """Start with no watch registered in either direction."""
-        self._watchers: dict[ActorPath, Watcher] = {}
-        self._watching: dict[ActorPath, WatchTarget] = {}
+        self._watchers: dict[WatchKey, Watcher] = {}
+        self._watching: dict[WatchKey, WatchTarget] = {}
 
     @property
     def watchers(self) -> tuple[ActorPath, ...]:
-        """Who has asked to be told when this actor stops."""
-        return tuple(self._watchers)
+        """Who has asked to be told when this actor stops.
+
+        Two watchers on different nodes can share a path, so a path can
+        appear here twice.
+        """
+        return tuple(path for _, path in self._watchers)
 
     def add_watcher(self, watcher: Watcher) -> None:
         """Register something to be told when this actor stops.
 
-        Keyed by path, so watching twice still delivers exactly one signal.
+        Keyed by address and path, so watching twice still delivers exactly
+        one signal, and two watchers on different nodes stay two.
 
         Args:
             watcher: What to tell.
         """
-        self._watchers[watcher.path] = watcher
+        self._watchers[(watcher.address, watcher.path)] = watcher
 
     def remove_watcher(self, watcher: Watcher) -> None:
         """Deregister a watcher. Harmless if it was not registered.
@@ -141,7 +166,7 @@ class DeathWatch:
         Args:
             watcher: What to stop telling.
         """
-        self._watchers.pop(watcher.path, None)
+        self._watchers.pop((watcher.address, watcher.path), None)
 
     def watching(self, target: WatchTarget) -> None:
         """Record that this actor is watching another.
@@ -149,19 +174,20 @@ class DeathWatch:
         Args:
             target: What is being watched. It has already been told.
         """
-        self._watching[target.path] = target
+        self._watching[(target.address, target.path)] = target
 
-    def stop_watching(self, path: ActorPath) -> WatchTarget | None:
+    def stop_watching(self, ref: "ActorRef[Any]") -> WatchTarget | None:
         """Forget a watch this actor holds, and say what it was on.
 
         Args:
-            path: The watched actor.
+            ref: The watched actor. Its address matters as much as its path,
+                since two nodes can hold an actor at the same path.
 
         Returns:
             What was being watched, so the caller can deregister from it, or
             `None` if this actor was not watching it.
         """
-        return self._watching.pop(path, None)
+        return self._watching.pop((ref.address, ref.path), None)
 
     def release(self, watcher: Watcher, ref: "ActorRef[Any]") -> None:
         """Tell the watchers, and leave nothing behind in the watched.
