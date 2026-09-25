@@ -10,8 +10,15 @@ from typing import Any
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
 from tapio.actor.watch import DeathWatch, Watcher, WatchTarget
+from tapio.remote.address import Address
 
 ROOT = ActorPath.root("test")
+
+HERE = Address(system="test")
+"""Where a base `ActorRef` under `ROOT` says it is, since it has no runtime."""
+
+EAST = Address(system="test", host="127.0.0.1", port=2551)
+WEST = Address(system="test", host="127.0.0.1", port=2552)
 
 STOPPING: ActorRef[Any] = ActorRef(ROOT.child("stopping"))
 """The ref `release` hands to the watchers, which they record verbatim."""
@@ -20,8 +27,9 @@ STOPPING: ActorRef[Any] = ActorRef(ROOT.child("stopping"))
 class FakeWatcher:
     """Something that can be told, and remembers what it was told."""
 
-    def __init__(self, name: str) -> None:
-        """Name it, so it has a path to be keyed under."""
+    def __init__(self, name: str, address: Address = HERE) -> None:
+        """Name it and place it, so it has a key to be held under."""
+        self.address = address
         self.path = ROOT.child(name)
         self.terminated: list[str] = []
 
@@ -35,8 +43,9 @@ class FakeWatcher:
 class FakeTarget:
     """Something that can be watched, and remembers who is watching."""
 
-    def __init__(self, name: str) -> None:
-        """Name it, so it has a path to be keyed under."""
+    def __init__(self, name: str, address: Address = HERE) -> None:
+        """Name it and place it, so it has a key to be held under."""
+        self.address = address
         self.path = ROOT.child(name)
         self.is_alive = True
         self.watchers: list[ActorPath] = []
@@ -81,10 +90,10 @@ def test_a_watch_is_returned_once_and_then_forgotten():
     target = FakeTarget("target")
     book.watching(target)
 
-    assert book.stop_watching(target.path) is target
+    assert book.stop_watching(ActorRef(target.path)) is target
     # The caller deregisters from what it gets back, so handing the same
     # target out twice would deregister twice.
-    assert book.stop_watching(target.path) is None
+    assert book.stop_watching(ActorRef(target.path)) is None
 
 
 def test_stopping_tells_every_watcher_once_and_keeps_none():
@@ -114,4 +123,33 @@ def test_stopping_deregisters_from_everything_it_was_watching():
     # A registration outliving the actor it names is the leak death watch
     # exists to prevent, and it leaks in this direction too.
     assert [target.watchers for target in watched] == [[], []]
-    assert book.stop_watching(watched[0].path) is None
+    assert book.stop_watching(ActorRef(watched[0].path)) is None
+
+
+def test_watchers_at_one_path_on_two_nodes_are_held_apart():
+    book = DeathWatch()
+    east, west = FakeWatcher("watcher", EAST), FakeWatcher("watcher", WEST)
+    book.add_watcher(east)
+    book.add_watcher(west)
+
+    book.remove_watcher(FakeWatcher("watcher", EAST))
+    book.release(FakeWatcher("stopping"), STOPPING)
+
+    assert east.terminated == []
+    assert west.terminated == [str(STOPPING)]
+
+
+def test_a_watch_is_stopped_on_the_node_the_ref_names():
+    book = DeathWatch()
+    east, west = FakeTarget("target", EAST), FakeTarget("target", WEST)
+    book.watching(east)
+    book.watching(west)
+
+    class OnWest(ActorRef[Any]):
+        @property
+        def address(self) -> Address:
+            return WEST
+
+    assert book.stop_watching(OnWest(west.path)) is west
+    assert book.stop_watching(OnWest(west.path)) is None
+    assert book.stop_watching(ActorRef(east.path)) is None

@@ -444,6 +444,15 @@ class ActorCell(Generic[T]):
         return self._runtime
 
     @property
+    def address(self) -> Address:
+        """The canonical address of the system this actor runs in.
+
+        Half of what a death watch keys this actor under, as watcher and as
+        target alike.
+        """
+        return self._runtime.address
+
+    @property
     def watchers(self) -> tuple[ActorPath, ...]:
         """Who has asked to be told when this actor stops.
 
@@ -731,14 +740,15 @@ class ActorCell(Generic[T]):
         Args:
             ref: The actor to stop watching.
         """
-        target = self._watch.stop_watching(ref.path)
+        target = self._watch.stop_watching(ref)
         if target is not None:
             target.remove_watcher(self)
 
     def add_watcher(self, watcher: Watcher) -> None:
         """Register something to be told when this actor stops.
 
-        Keyed by path, so watching twice still delivers exactly one signal.
+        Keyed by address and path, so watching twice still delivers exactly
+        one signal.
         """
         self._watch.add_watcher(watcher)
 
@@ -1264,7 +1274,7 @@ class ActorCell(Generic[T]):
 
     def notify_terminated(self, ref: ActorRef[Any]) -> None:
         """Take delivery of a watched actor's death, on the system lane."""
-        self._watch.stop_watching(ref.path)
+        self._watch.stop_watching(ref)
         if self._alive:
             self._mailbox.put_system(Terminated(ref))
 
