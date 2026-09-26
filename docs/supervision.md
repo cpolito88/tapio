@@ -21,11 +21,13 @@ on=IOError)`.
 | `stop()` | the actor stops, and its watchers hear about it | this actor cannot do its job any more |
 | `escalate()` | the parent fails too, and its own supervisor decides | this actor's failure means the subtree is broken |
 
-`on=` narrows a layer to a class of failure, and layers are checked from the
-inside out, so a specific rule can sit inside a general one. A failure nobody
-wrote a rule for is **stopped**, not restarted: an actor that failed for a
-reason nobody anticipated is in a state nobody described, and restarting it in
-a loop turns one bug into a busy one.
+`on=` narrows a layer to a class of failure. Layers are checked from the
+outermost in, and the first layer that matches decides. So a specific rule
+goes outside a general one: inside it, the general rule would match first and
+the specific one would never be reached. A failure nobody wrote a rule for is
+**stopped**, not restarted: an actor that failed for a reason nobody
+anticipated is in a state nobody described, and restarting it in a loop turns
+one bug into a busy one.
 
 A handler can return a behavior that has to be built first, such as a
 `Behaviors.setup`. If building it fails, the failure goes to the actor's
