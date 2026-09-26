@@ -266,7 +266,12 @@ watcher of an actor over there is told `Terminated`, a `PeerUnreachable` event
 is published on `system.events`, and the address is **quarantined**: sends to
 it dead-letter and nothing dials it again.
 
-Recovery is explicit, never automatic. Watchers have already been told that
+A link can also end without that verdict: the socket fails, or the peer closes
+it. Watchers are told `Terminated` then too, because the association that held
+their watches is gone. The address is not quarantined, though, and the next
+send dials again. Only silence quarantines.
+
+After a quarantine, recovery is explicit, never automatic. Watchers have already been told that
 live actors are gone, so a link coming quietly back would leave two nodes
 holding contradictory beliefs with nothing to notice it. `clear_quarantine`
 says this node is willing to talk to that peer again, and `remote.reconnect`
@@ -281,9 +286,12 @@ alive and each convinced the other has died:
 
 Both nodes are wrong, and both are locally correct. Fixing that needs enough
 nodes to hold a vote, so that the minority side of a partition can discover
-that it is the minority. That is clustering, and it is not in this version.
-What is here instead is a default chosen to be recoverable: fail fast, freeze
-the address, and let a person or a supervisor decide when to try again. For
+that it is the minority. That is clustering: with a downing strategy
+configured, the losing side of a partition downs itself, and
+[Clustering](clustering.md) has the strategies and what each one promises.
+Without a cluster, a pair of nodes gets a default chosen to be recoverable:
+fail fast, freeze the address, and let a person or a supervisor decide when to
+try again. For
 request/response and work distribution, wrongly deciding a peer is dead costs
 a retry. Waiting forever costs availability.
 
@@ -439,3 +447,9 @@ the network is doing.
   another node without any supervision crossing the wire. The requester
   watches what it gets back, a refused request comes back as `SpawnFailed`
   with a reason, and both nodes have to be running the same code.
+- `Cluster`, which joins systems into a membership by gossip, watches its
+  members through a ring of monitors, and downs the losing side of a partition
+  with the downing strategy you configure. `ClusterSingleton` runs one actor
+  on the oldest member of a role and moves it when that member goes away, and
+  `Routers.group(...)` spreads work over the actor each member of a role
+  publishes at a path. See [Clustering](clustering.md).
