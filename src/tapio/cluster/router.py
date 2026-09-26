@@ -9,7 +9,8 @@ The routee on each node is reached by its bare path, the way the cluster daemon
 itself is: it is published as a well-known name, so a router on any node can
 address it without knowing which incarnation is answering over there. Publish
 one with `system.refs.register_well_known(ref)` on each node that should take a
-share of the work.
+share of the work. The routee may be published after the router starts, and
+may be replaced by a new incarnation, on this node as on any other.
 
 Two differences from a pool follow from owning nothing. An empty group is not
 the end of the router: members come and go, and a router that stopped the first
@@ -115,6 +116,9 @@ class _GroupRouter:
         self._strategy = strategy
         self._daemon: ActorRef[Any] | None = None
         self._routees: dict[str, ActorRef[Any]] = {}
+        # This node's address, in the form members are named by. Set when the
+        # actor is built, since that is when there is a node to ask.
+        self._here: str | None = None
 
     def behavior(self) -> Behavior[Any]:
         """Build the router actor, accepting its own type plus cluster events."""
@@ -124,6 +128,7 @@ class _GroupRouter:
 
         def with_timers(timers: TimerScheduler[Any]) -> Behavior[Any]:
             def build(ctx: ActorContext[Any]) -> Behavior[Any]:
+                self._here = str(ctx.self_ref.address)
                 start_subscribing(timers, _SUBSCRIBE_TIMER, _Reconcile())
 
                 async def on_message(
@@ -159,16 +164,22 @@ class _GroupRouter:
             case UnreachableMember():
                 self._drop(ctx, message.member)
             case _:
-                self._forward(ctx, message)
+                await self._forward(ctx, message)
         return Behaviors.same()
 
     async def _offer(self, ctx: ActorContext[Any], member: Member) -> None:
         """Add a member's routee to the pool, if it carries the role.
 
-        Resolving names a path rather than an incarnation, so it returns a ref
-        whether or not the actor over there is published yet. One that is not
-        dead-letters what it is sent, which is the same as any other routee that
-        cannot take a message.
+        For another member, resolving gives a remote ref to a bare path, and
+        the peer looks the path up for each frame it receives. So the ref keeps
+        working whether the actor over there is published yet or not, and
+        across its restarts. Until it is published, what it is sent
+        dead-letters over there.
+
+        For this node, resolving gives whatever holds the name at that moment:
+        a live ref, or a dead-letter ref if nothing is published yet. Keeping
+        that answer would freeze it, so the local routee is resolved again for
+        each message instead. See `_routable`.
         """
         if self._role is not None and self._role not in member.roles:
             return
@@ -182,7 +193,24 @@ class _GroupRouter:
         if self._routees.pop(member.address, None) is not None:
             _log.debug("group router drops %s", member.address)
 
-    def _forward(self, ctx: ActorContext[Any], message: Message) -> None:
+    async def _routable(self, ctx: ActorContext[Any]) -> list[ActorRef[Any]]:
+        """The routees to choose from for one message, in a stable order.
+
+        This node's routee is looked up by its well-known name now, the same
+        lookup a peer makes for each frame. That is what lets a routee
+        published after the router, or a new incarnation of one, take its
+        share.
+        """
+        routees: list[ActorRef[Any]] = []
+        for address, ref in self._routees.items():
+            if address == self._here:
+                ref = await ctx.resolve(
+                    f"{address}{self._path}", expect=cast(Any, self._msg_type)
+                )
+            routees.append(ref)
+        return routees
+
+    async def _forward(self, ctx: ActorContext[Any], message: Message) -> None:
         """Send one message to the routee the strategy picked.
 
         An empty pool dead-letters the message rather than stopping the router:
@@ -190,7 +218,7 @@ class _GroupRouter:
         waiting for. A routee at capacity dead-letters too, the same recipient
         error a pool treats the same way.
         """
-        routees: Sequence[ActorRef[Any]] = list(self._routees.values())
+        routees: Sequence[ActorRef[Any]] = await self._routable(ctx)
         if not routees:
             ctx.dead_letter(
                 message,
