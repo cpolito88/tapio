@@ -41,7 +41,12 @@ from tapio.dispatch.dispatcher import Dispatcher
 from tapio.errors import InsecureRemoteConfig
 from tapio.logging import runtime_logger
 from tapio.message import Message
-from tapio.remote.transport import bind, is_loopback, server_ssl_context
+from tapio.remote.transport import (
+    bind,
+    close_server,
+    is_loopback,
+    server_ssl_context,
+)
 from tapio.settings import ManagementSettings, TLSSettings
 
 __all__ = [
@@ -434,9 +439,7 @@ class ClusterManagement:
         server = self._server
         self._server = None
         if server is not None:
-            server.close()
-            with contextlib.suppress(OSError, asyncio.CancelledError):
-                await server.wait_closed()
+            await close_server(server, self._listener)
         else:
             self._listener.close()
         for task in list(self._connections):

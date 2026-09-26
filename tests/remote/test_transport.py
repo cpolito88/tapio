@@ -1,6 +1,7 @@
 """Tests for the link: framing, frame kinds, binding and TLS."""
 
 import asyncio
+import socket
 from typing import Any
 
 import pytest
@@ -13,6 +14,7 @@ from tapio.remote.transport import (
     Heartbeat,
     bind,
     client_ssl_context,
+    close_server,
     connect,
     framed,
     is_link_frame,
@@ -87,6 +89,36 @@ async def test_a_closed_peer_ends_the_read():
     finally:
         await server_side.close()
         server.close()
+
+
+@pytest.mark.parametrize("turns", range(4))
+async def test_closing_a_server_closes_a_connection_it_already_accepted(turns: int):
+    # The loop accepts a connection one turn before it builds its transport.
+    # A close in that gap used to drop the socket with nothing left to close
+    # it, so the client waited until the garbage collector found it. Closing
+    # after each of these turn counts puts at least one close in that gap.
+    def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        writer.close()
+
+    loop = asyncio.get_running_loop()
+    listener = bind(remote(bind_port=0))
+    server = await listen(handle, listener, ssl_context=None)
+    client = socket.create_connection(listener.getsockname())
+    client.setblocking(False)
+    try:
+        for _ in range(turns):
+            await asyncio.sleep(0)
+        await close_server(server, listener)
+
+        # An accepted connection is closed by the handler. One the server
+        # never accepted is reset along with the listener.
+        try:
+            async with asyncio.timeout(2.0):
+                assert await loop.sock_recv(client, 1) == b""
+        except ConnectionResetError:
+            pass
+    finally:
+        client.close()
 
 
 def test_a_link_frame_is_recognised_without_being_parsed():

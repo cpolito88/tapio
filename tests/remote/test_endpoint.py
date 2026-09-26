@@ -378,6 +378,42 @@ async def test_a_connection_accepted_after_close_is_closed_at_once():
         await system.terminate()
 
 
+@pytest.mark.parametrize("turns", range(4))
+async def test_a_connection_accepted_as_the_listener_shuts_is_closed(turns: int):
+    # The loop accepts a connection one turn before it builds its transport.
+    # Closing the server in that gap dropped the socket before `_accept` ever
+    # saw it, and the garbage collector later reported it as an unclosed
+    # transport against whichever test was running. Closing after each of
+    # these turn counts puts at least one close in that gap.
+    loop = asyncio.get_running_loop()
+    with assert_no_leaked_tasks():
+        system = ActorSystem("alpha", remoting())
+        endpoint = system.remote
+        assert endpoint is not None
+        await eventually(lambda: endpoint._server is not None)
+        port = system.address.port
+        assert port is not None
+
+        client = socket.create_connection(("127.0.0.1", port))
+        client.setblocking(False)
+        try:
+            for _ in range(turns):
+                await asyncio.sleep(0)
+            await endpoint.close()
+
+            # An accepted connection is closed by the endpoint. One the
+            # listener never accepted is reset along with it.
+            try:
+                async with asyncio.timeout(2.0):
+                    assert await loop.sock_recv(client, 1) == b""
+            except ConnectionResetError:
+                pass
+        finally:
+            client.close()
+
+        await system.terminate()
+
+
 async def test_a_refused_link_is_closed_even_if_its_close_never_ran():
     # A link this endpoint will not use, the loser of a simultaneous dial or a
     # refusal, is handed to a task that closes it. A task cancelled before its
