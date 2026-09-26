@@ -225,11 +225,6 @@ class DeadLetterOffice:
         """How many dead letters this office has handled."""
         return self._total
 
-    @property
-    def logged(self) -> int:
-        """How many were logged in full, as opposed to summarised."""
-        return self._logged
-
     def subscribe(self, handler: Callable[[DeadLetter], None]) -> Subscription:
         """Register a handler to receive every dead letter.
 

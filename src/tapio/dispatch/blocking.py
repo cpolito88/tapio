@@ -29,9 +29,9 @@ import functools
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, ParamSpec, TypeVar
+from typing import ParamSpec, TypeVar
 
-from tapio.logging import describe_callable, runtime_logger
+from tapio.logging import runtime_logger
 
 __all__ = ["BlockingPool"]
 
@@ -172,16 +172,3 @@ class BlockingPool:
         """Render the bound and whether any threads exist yet."""
         state = "started" if self._executor is not None else "idle"
         return f"BlockingPool(size={self._size}, {state})"
-
-
-def describe_blocking(fn: Callable[..., Any]) -> str:
-    """Name a callable for a log line or an error message.
-
-    Kept because it is a published name that the reference page renders, so
-    removing it would break an import somebody may have written. It is the
-    one caller-facing spelling of `describe_callable` in `tapio.logging`,
-    which is where the implementation lives now that four places needed it.
-    Named in plain text rather than cross-referenced, because that module is
-    runtime plumbing and the reference does not render it.
-    """
-    return describe_callable(fn)

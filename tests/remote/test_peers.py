@@ -1,48 +1,7 @@
-"""Who says which peers a system may associate with.
+"""The table of peers a system has given up on, and the words that explain each."""
 
-One system decides alone, from a table of the peers it gave up on. A
-clustered one will decide from membership. The endpoint asks either of them
-the same question, which is what these tests hold in place.
-"""
-
-from collections.abc import Mapping
-
-from tapio import DeadLetter, DeadLetterReason
-from tapio.remote.address import Address
 from tapio.remote.peers import StaticPeers
-from tapio.testkit import assert_no_leaked_tasks, two_nodes
-from tests.failures import eventually
-from tests.internals import endpoint
-from tests.remote.peers import GHOST, Tick, counting, uri
-
-
-class RefusingPeers:
-    """A provider that refuses one address and nothing else.
-
-    It stands in for the membership-backed one: the refusal comes from
-    somewhere other than this system's own failure detector, and the endpoint
-    is not supposed to be able to tell the difference.
-    """
-
-    def __init__(self, peer: Address, detail: str) -> None:
-        """Refuse one peer from the start, for the stated reason."""
-        self._peer = peer
-        self._detail = detail
-
-    def refusal(self, peer: Address) -> str | None:
-        """Refuse the one address, and nothing else."""
-        return self._detail if peer == self._peer else None
-
-    def give_up(self, peer: Address, detail: str) -> None:
-        """Take the address it already refuses, and no others."""
-
-    def relent(self, peer: Address) -> str | None:
-        """Never relent: what refused this peer is not this system."""
-        return None
-
-    def refusals(self) -> Mapping[Address, str]:
-        """The one address, and why it is refused."""
-        return {self._peer: self._detail}
+from tests.remote.peers import GHOST
 
 
 def test_nothing_is_refused_until_something_gives_up():
@@ -67,44 +26,3 @@ def test_relenting_reports_what_it_cleared():
     assert peers.relent(GHOST) == "went silent"
     assert peers.refusal(GHOST) is None
     assert peers.relent(GHOST) is None
-
-
-async def test_the_endpoint_refuses_a_peer_because_the_provider_says_so():
-    with assert_no_leaked_tasks():
-        async with two_nodes() as nodes:
-            letters: list[DeadLetter] = []
-            nodes.alpha.dead_letters.subscribe(letters.append)
-            ticks: list[int] = []
-            worker = nodes.beta.spawn(counting(ticks), "worker")
-            remote = await nodes.alpha.resolve(uri(nodes.beta, worker), expect=Tick)
-
-            # Nothing here failed and nothing was quarantined. The peer is
-            # refused because the authority for that question says it is,
-            # which is how a downed member will read in a cluster.
-            endpoint(nodes.alpha).use_peers(
-                RefusingPeers(nodes.beta.address, "the cluster downed it")
-            )
-            remote.tell(Tick(n=1))
-
-            await eventually(lambda: bool(letters))
-            assert letters[0].reason == DeadLetterReason.QUARANTINED
-            detail = letters[0].detail
-            assert detail is not None
-            assert "the cluster downed it" in detail
-            assert endpoint(nodes.alpha).associations == ()
-            assert ticks == []
-
-
-async def test_installing_a_provider_carries_the_refusals_over():
-    with assert_no_leaked_tasks():
-        async with two_nodes() as nodes:
-            endpoint(nodes.alpha).quarantine(nodes.beta.address, "went silent")
-
-            endpoint(nodes.alpha).use_peers(StaticPeers())
-
-            # A refusal that was acted on outlives whoever made it. Watchers
-            # were already told the actors over there are gone, so a change of
-            # authority must not quietly make the peer dialable again.
-            assert endpoint(nodes.alpha).is_quarantined(nodes.beta.address)
-            assert endpoint(nodes.alpha).refusal(nodes.beta.address) == "went silent"
-            assert endpoint(nodes.alpha).quarantined == (nodes.beta.address,)
