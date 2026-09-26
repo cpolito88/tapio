@@ -7,7 +7,12 @@ import pytest
 from tapio.actor import ActorSystem
 from tapio.errors import TapioError
 from tapio.settings import TapioSettings
-from tapio.testkit import assert_no_leaked_tasks, link_faults, two_nodes
+from tapio.testkit import (
+    assert_no_leaked_tasks,
+    drop_links,
+    link_faults,
+    two_nodes,
+)
 from tests.failures import eventually
 from tests.remote.peers import Tick, counting, uri
 
@@ -90,5 +95,7 @@ async def test_faults_need_a_system_with_remoting_switched_on(
     try:
         with pytest.raises(TapioError, match="remoting"):
             link_faults(system)
+        with pytest.raises(TapioError, match="remoting"):
+            drop_links(system)
     finally:
         await system.terminate()

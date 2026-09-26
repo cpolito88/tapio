@@ -174,9 +174,9 @@ class RemoteEndpoint:
     def peers(self) -> PeerProvider:
         """Who decides which addresses this system may associate with.
 
-        [StaticPeers][tapio.remote.peers.StaticPeers] until something replaces
-        it: every address that was written down is a peer, minus the ones a
-        detector here gave up on.
+        Always [StaticPeers][tapio.remote.peers.StaticPeers]: every address
+        that was written down is a peer, minus the ones a detector here gave
+        up on.
         """
         return self._peers
 
@@ -607,28 +607,6 @@ class RemoteEndpoint:
         """
         self._peers.give_up(peer, detail)
 
-    def use_peers(self, peers: PeerProvider) -> None:
-        """Hand the question of who may be associated with to somebody else.
-
-        One system decides alone, so it decides from a table of its own. A
-        clustered one decides from membership, where a peer is refused because
-        the cluster downed it rather than because this node stopped hearing
-        from it. The consequences are the same either way, which is why this
-        replaces the answer and nothing else: an association is still refused,
-        watchers are still told, sends still dead-letter.
-
-        Whatever was already refused is carried over, because those refusals
-        were acted on. Watchers were told the actors over there are gone, and
-        a peer that quietly became dialable again on a change of authority
-        would leave two nodes believing different things.
-
-        Args:
-            peers: The new authority.
-        """
-        for peer, detail in self._peers.refusals().items():
-            peers.give_up(peer, detail)
-        self._peers = peers
-
     def refusal(self, peer: Address) -> str | None:
         """Why this system will not associate with a peer, if it will not.
 
@@ -710,18 +688,6 @@ class RemoteEndpoint:
         await association.wait_connected(
             self._settings.handshake_timeout.total_seconds()
         )
-
-    def forget_all(self, detail: str) -> None:
-        """Close every association, as a link failure would one at a time.
-
-        For the tests that need a link to go away while the peer stays, which
-        is the only way to show that a ref survives a failed link.
-
-        Args:
-            detail: Why, for the log and the dead letters that follow.
-        """
-        for association in list(self._associations.values()):
-            association.close(detail)
 
     def forget(self, association: Association) -> None:
         """Drop an association that has stopped.

@@ -8,17 +8,12 @@ peer is gone (`quarantine`, see
 [StaticPeers][tapio.remote.peers.StaticPeers] implements, and it is the whole
 answer for a system that has no membership to consult.
 
-Clustering answers the same question from membership instead: a member that
-the cluster has downed is refused, and it is refused for a reason every node
-agrees on rather than one this node reached alone. The consequences are
-identical either way, which is why there is one lookup and not two: watchers
-have been told the actors over there are gone, sends dead-letter, and nothing
-is dialled again until somebody says so. Only the voter changes.
+A clustered system uses the same table. The cluster does not refuse a downed
+member here. Its daemon clears the quarantine on every alive member each
+round, and a downed member is simply no longer cleared.
 
-So the endpoint asks rather than checking a table of its own. A refusal
-carries the words that explain it, because they end up in a log line and in
-the dead letter for every message that was on its way there, and "quarantined"
-on its own tells a reader nothing about which of the two decided it.
+A refusal carries the words that explain it, because they end up in a log line
+and in the dead letter for every message that was on its way there.
 """
 
 from collections.abc import Mapping

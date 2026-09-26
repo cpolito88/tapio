@@ -4,19 +4,21 @@ This is the part of remoting that cannot be made to feel local. A partition, a
 long pause and a peer that died all look the same from one node: the frames
 stop. So a system has to guess, and every guess it makes can be wrong.
 
-The guess is split in two, so that each half can be replaced on its own:
+The guess is split in two:
 
 * A [FailureDetector][tapio.remote.failure.FailureDetector] says whether a
-  peer still looks alive from here. Today that is a fixed timeout. Clustering
-  replaces it with phi-accrual, which reads the same interface.
+  peer still looks alive from here. An association uses a fixed timeout. The
+  cluster's own monitor can use phi-accrual instead, which reads the same
+  interface.
 * A [DownDecider][tapio.remote.failure.DownDecider] says what to do about it.
-  Today it says yes, alone, immediately. Clustering replaces it with a
-  strategy over converged membership, so that a minority partition stops
-  itself rather than both halves declaring the other dead.
+  An association always uses [DownAlone][tapio.remote.failure.DownAlone],
+  which says yes, alone, immediately. That holds in a cluster too.
 
-Writing the decider as an interface for a function that currently returns a
-constant is the whole point. The association asks rather than deciding inline,
-so the day the answer stops being a constant, nothing above it changes.
+A cluster does not change the association's verdict. Its daemon clears the
+quarantine on every alive member each round, so a member that was given up on
+is dialled again. It stops doing that for a member once the member is downed.
+So in a cluster, a quarantine still happens, and it lasts until the next
+round unless the member has been downed.
 
 **The verdict can be false and there is no fix for that inside one node.**
 Both sides of a partition will declare the other dead and both will be locally
@@ -93,11 +95,6 @@ class DeadlineDetector:
         """
         self._window = unreachable_after
         self._last = started_at
-
-    @property
-    def last_heard(self) -> float:
-        """When something last arrived, on the loop's clock."""
-        return self._last
 
     def heartbeat(self, at: float) -> None:
         """Record that something arrived from the peer."""
@@ -300,9 +297,9 @@ class DownAlone:
 
     One node cannot do better. It has no membership to consult and no quorum
     to be part of, so "wait and see" would only mean waiting, and waiting is
-    what the detector already did. Clustering replaces this with a strategy
-    that knows how many nodes there are and which side of a partition it is
-    on, and that is the entire difference.
+    what the detector already did. Every association uses this, clustered or
+    not. A cluster decides who is down from membership, in its own daemon,
+    and it does not replace this decider.
     """
 
     async def decide(self, peer: Address) -> DownDecision:

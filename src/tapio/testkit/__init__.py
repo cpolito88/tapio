@@ -28,7 +28,13 @@ from tapio.testkit.behavior import (
 )
 from tapio.testkit.leaks import assert_no_leaked_tasks, assert_no_leaked_threads
 from tapio.testkit.probe import DEFAULT_TIMEOUT, NO_MESSAGE_WINDOW, TestProbe
-from tapio.testkit.remote import LinkFaults, TwoNodes, link_faults, two_nodes
+from tapio.testkit.remote import (
+    LinkFaults,
+    TwoNodes,
+    drop_links,
+    link_faults,
+    two_nodes,
+)
 from tapio.testkit.settings import (
     IsolatedClusterSettings,
     IsolatedManagementSettings,
@@ -56,6 +62,7 @@ __all__ = [
     "Watched",
     "assert_no_leaked_tasks",
     "assert_no_leaked_threads",
+    "drop_links",
     "link_faults",
     "two_nodes",
 ]

@@ -23,6 +23,7 @@ from tapio.testkit import (
     IsolatedRemoteSettings,
     IsolatedTapioSettings,
     assert_no_leaked_tasks,
+    drop_links,
 )
 from tests.failures import eventually
 from tests.messages import NotAMessage
@@ -83,7 +84,7 @@ async def test_a_ref_outlives_the_link_it_was_resolved_on(
     assert alpha.remote is not None
     association = alpha.remote.associations
     assert association == (beta.address,)
-    alpha.remote.forget_all("the link went away")
+    drop_links(alpha, "the link went away")
     await eventually(lambda: alpha.remote.associations == ())  # type: ignore[union-attr]
 
     remote.tell(Tick(n=2))
@@ -105,7 +106,7 @@ async def test_a_send_while_the_old_link_is_still_draining_dials_a_new_one(
     await eventually(lambda: seen == [1])
 
     assert alpha.remote is not None
-    alpha.remote.forget_all("the link went away")
+    drop_links(alpha, "the link went away")
     # No wait for the table to clear: sending now is the case under test.
     assert alpha.remote.associations == (beta.address,)
     remote.tell(Tick(n=2))

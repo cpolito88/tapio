@@ -36,7 +36,7 @@ from tapio.errors import TapioError
 from tapio.remote.transport import FrameLink, Link, LinkFrame, framed
 from tapio.testkit.settings import IsolatedRemoteSettings, IsolatedTapioSettings
 
-__all__ = ["LinkFaults", "TwoNodes", "link_faults", "two_nodes"]
+__all__ = ["LinkFaults", "TwoNodes", "drop_links", "link_faults", "two_nodes"]
 
 
 @final
@@ -231,6 +231,34 @@ def link_faults(system: ActorSystem) -> LinkFaults:
     faults = LinkFaults()
     endpoint.set_link_filter(faults.wrap)
     return faults
+
+
+def drop_links(system: ActorSystem, detail: str = "the test dropped the link") -> None:
+    """Close every association a system holds, as a failed link would.
+
+    For a test that needs a link to go away while the peer stays up. That is
+    the only way to show that a ref survives a failed link and that the next
+    send dials again. Nothing is quarantined, so the peer stays dialable.
+
+    Args:
+        system: The system whose links to close.
+        detail: Why, for the log and for the dead letters that follow.
+
+    Raises:
+        TapioError: If the system has remoting switched off, in which case it
+            has no links to drop.
+    """
+    endpoint = system.remote
+    if endpoint is None:
+        msg = (
+            f"cannot drop the links of {system.name!r}: it has remoting "
+            "switched off, so it has no links."
+        )
+        raise TapioError(msg)
+    for peer in endpoint.associations:
+        association = endpoint.association_for(peer)
+        if association is not None:
+            association.close(detail)
 
 
 @final
