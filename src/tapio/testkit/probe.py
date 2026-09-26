@@ -251,7 +251,7 @@ class TestProbe(Generic[T]):
                 a different actor.
         """
         signal = await self._next(self._signals, f"Terminated({target.path})", timeout)
-        if not isinstance(signal, Terminated) or signal.ref.path != target.path:
+        if not isinstance(signal, Terminated) or signal.ref != target:
             msg = f"expected Terminated({target.path}) at {self.path}, got {signal!r}"
             raise AssertionError(msg)
         return signal

@@ -2,13 +2,15 @@
 
 import json
 
+import pytest
+
 from tapio import Behavior, Behaviors
 from tapio.actor import ActorContext, ActorRef, ActorSystem
 from tapio.actor.signals import Signal, Terminated
 from tapio.remote.codec import encode
 from tapio.remote.failure import PeerUnreachable
 from tapio.remote.transport import framed
-from tapio.testkit import assert_no_leaked_tasks
+from tapio.testkit import TestProbe, assert_no_leaked_tasks
 from tests.failures import eventually
 from tests.internals import cell_of
 from tests.remote.peers import Tick, counting, dial, remoting, uri, watching
@@ -304,3 +306,51 @@ async def test_one_actor_watches_the_same_path_on_two_nodes_apart():
             await west.terminate()
             await east.terminate()
             await hub.terminate()
+
+
+async def test_refs_to_one_path_on_two_nodes_are_told_apart():
+    with assert_no_leaked_tasks():
+        hub = ActorSystem("hub", remoting())
+        east = ActorSystem("orders", remoting())
+        west = ActorSystem("orders", remoting())
+        try:
+            ticks: list[int] = []
+            on_east = east.spawn(counting(ticks), "worker")
+            on_west = west.spawn(counting(ticks), "worker")
+            first = await hub.resolve(uri(east, on_east), expect=Tick)
+            second = await hub.resolve(uri(west, on_west), expect=Tick)
+            assert first.path == second.path
+
+            assert first != second
+            assert len({first, second}) == 2
+
+            probe: TestProbe[Tick] = TestProbe(hub, Tick)
+            probe.watch(first)
+            probe.watch(second)
+            await eventually(lambda: len(cell_of(on_west).watchers) == 1)
+            on_west.tell(Tick(n=-1))
+
+            # The signal is about west, so it is not the one east's ref
+            # expects, however alike the two paths are.
+            with pytest.raises(AssertionError, match="expected Terminated"):
+                await probe.expect_terminated(first)
+        finally:
+            await west.terminate()
+            await east.terminate()
+            await hub.terminate()
+
+
+async def test_a_ref_resolved_after_its_actor_stopped_still_equals_the_live_one(
+    alpha: ActorSystem,
+):
+    ticks: list[int] = []
+    worker = alpha.spawn(counting(ticks), "worker")
+    worker.tell(Tick(n=-1))
+    await eventually(lambda: alpha.refs.lookup(worker.path) is None)
+
+    # The same incarnation on the same node, so the same actor, although the
+    # answer is now a dead-letter target.
+    stale = await alpha.resolve(uri(alpha, worker), expect=Tick)
+
+    assert stale == worker
+    assert hash(stale) == hash(worker)

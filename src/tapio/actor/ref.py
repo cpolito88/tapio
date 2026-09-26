@@ -143,14 +143,20 @@ class ActorRef(Generic[T]):
         )
 
     def __eq__(self, other: object) -> bool:
-        """Refs are equal when they address the same incarnation."""
+        """Refs are equal when they address the same incarnation on one node.
+
+        The address is compared as well as the path. A path names a place in
+        one system's tree and says nothing about which node that system runs
+        on. Two nodes of one deployment share a system name and spawn the same
+        actors in the same order, so their refs share paths, uids included.
+        """
         if not isinstance(other, ActorRef):
             return NotImplemented
-        return self._path == other._path
+        return self._path == other._path and self.address == other.address
 
     def __hash__(self) -> int:
-        """Hash by path, so refs work as dict keys and set members."""
-        return hash(self._path)
+        """Hash by address and path, so refs work as dict keys and set members."""
+        return hash((self.address, self._path))
 
     def __repr__(self) -> str:
         """Render as the class name and the path string."""
