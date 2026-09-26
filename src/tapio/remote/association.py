@@ -366,6 +366,11 @@ class Association:
         association are all things the sender can do nothing about, so they
         become dead letters naming the peer.
 
+        Runs on the system's loop. A send from another thread hops onto the
+        loop in `PeerOutbox.send`, before the association is even looked up,
+        so an overflow is still caught here and dead-lettered with the peer
+        named.
+
         Args:
             message: The message the frame carries, for the dead letter.
             frame: The complete frame.
@@ -379,26 +384,6 @@ class Association:
                 else DeadLetterReason.NO_ASSOCIATION
             )
             self._dead_letter(message, recipient, reason)
-            return
-        if not self._host.dispatcher.is_current():
-            # Off-loop, `tell` hops the message onto the loop and swallows any
-            # overflow itself, dead-lettering it at this actor's own path with
-            # no peer. Hop `send` instead, so the overflow is caught here and
-            # accounted for with the peer named, the same as on the loop.
-            try:
-                self._host.dispatcher.call_soon_threadsafe(
-                    self.send, message, frame, recipient
-                )
-            except RuntimeError:
-                # The loop is closed, so there is nothing to schedule onto and
-                # the system that would have published the dead letter is gone.
-                # Logging is all that remains, which is what a local `tell`
-                # does from the same position.
-                _log.warning(
-                    "dead letter: %s to %s sent after the loop closed",
-                    type(message).__name__,
-                    self._peer,
-                )
             return
         try:
             ref.tell(Outbound(payload=message, frame=frame, recipient=recipient))

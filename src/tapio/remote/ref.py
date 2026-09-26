@@ -178,6 +178,10 @@ class RemoteRef(ActorRef[T]):
         node. The sender's declaration and the receiver's protocol are
         deployed separately.
 
+        Safe to call from any thread, like a local `tell`. The message is
+        checked and encoded on the calling thread, so an error about it raises
+        here. The frame is then handed to the link on the system's loop.
+
         Args:
             message: The message to deliver.
 
@@ -208,6 +212,8 @@ class RemoteRef(ActorRef[T]):
             MessageTypeError: If the message does not match the type this ref
                 was resolved with.
             MessageEncodingError: If the message cannot be written to a frame.
+            RuntimeError: If called from a thread that is not running the
+                system's loop. Use `tell` from other threads.
             pydantic.ValidationError: If content validation is on and the
                 message does not satisfy its own model.
         """

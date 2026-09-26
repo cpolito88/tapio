@@ -868,7 +868,29 @@ class PeerOutbox:
         return self._endpoint.is_quarantined(self._peer)
 
     def send(self, message: Message, frame: bytes, recipient: ActorPath) -> None:
-        """Queue a frame with the association for this peer, dialling if needed."""
+        """Queue a frame with the association for this peer, dialling if needed.
+
+        Safe to call from any thread, as a local `tell` is. Finding the
+        association can create one, and creating one spawns an actor, which
+        only the system's loop may do. So a send from another thread hops onto
+        the loop before it looks anything up, and everything after the hop
+        runs there.
+        """
+        dispatcher = self._endpoint.dispatcher
+        if not dispatcher.is_current():
+            try:
+                dispatcher.call_soon_threadsafe(self.send, message, frame, recipient)
+            except RuntimeError:
+                # The loop is closed, so there is nothing to schedule onto and
+                # the system that would have published the dead letter is gone.
+                # Logging is all that remains, which is what a local `tell`
+                # does from the same position.
+                _log.warning(
+                    "dead letter: %s to %s sent after the loop closed",
+                    type(message).__name__,
+                    self._peer,
+                )
+            return
         association = self._endpoint.outbound(self._peer)
         if association is None:
             refusal = self._endpoint.refusal(self._peer)
@@ -910,7 +932,19 @@ class PeerOutbox:
             association.unwatch(watchee, watcher)
 
     async def offer(self, message: Message, frame: bytes, recipient: ActorPath) -> None:
-        """Queue a frame, waiting for room in the outbound buffer."""
+        """Queue a frame, waiting for room in the outbound buffer.
+
+        Raises:
+            RuntimeError: If called from a thread that is not running the
+                system's loop. Checked before the association is looked up,
+                because looking it up can dial.
+        """
+        if not self._endpoint.dispatcher.is_current():
+            msg = (
+                f"offer to {self._peer} must run on the system's loop; `tell` "
+                "is the thread-safe send"
+            )
+            raise RuntimeError(msg)
         association = self._endpoint.outbound(self._peer)
         if association is None:
             self.send(message, frame, recipient)
