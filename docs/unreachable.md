@@ -27,6 +27,12 @@ From inside this node, that is indistinguishable from the peer having stopped,
 and it is meant to be: the code that handles a `Terminated` is the same code
 either way.
 
+A link can also end without a verdict: the socket fails, the peer closes it,
+or a frame is refused. Watchers are told `Terminated` in that case too,
+because the association that held their watches is gone, and `PeerUnreachable`
+is published with `quarantined=False`. The address is not frozen, and the next
+send dials again. Only silence quarantines.
+
 ## The part that can be wrong
 
 A partition, a long pause, an overloaded peer and a dead peer all look
@@ -42,8 +48,9 @@ correct:
 
 That example prints both nodes' beliefs next to each other. Both are still
 serving, each thinks the other is gone, and neither can tell. This is the
-split-brain problem, and resolving it needs membership and a quorum, which
-v0.1 does not have.
+split-brain problem, and resolving it needs membership and a quorum, which a
+bare pair of nodes does not have. A cluster with a downing strategy does: see
+[What changes this](#what-changes-this).
 
 ## Why fail fast is the default
 
@@ -59,6 +66,9 @@ The second half of the default matters as much: once wrong, tapio stays wrong
 in a way you can see. The quarantine does not clear itself.
 
 ## Recovery is explicit
+
+This section is about a quarantine. A link that ended without one needs no
+recovery, since the next send dials again.
 
 `await system.remote.reconnect(peer_address)` clears the quarantine and
 re-associates. Nothing does that on its own, even after the network is

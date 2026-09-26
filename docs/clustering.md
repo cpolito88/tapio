@@ -232,8 +232,9 @@ changes, and `phi_threshold` and `phi_acceptable_pause` tune it.
 
 ### One rule this contradicts
 
-Remoting says [recovery is never automatic](unreachable.md): a system that
-gave up on a peer stays given up on until somebody calls `reconnect`. A
+Remoting says [recovery from a quarantine is never
+automatic](unreachable.md#recovery-is-explicit): a system that gave up on a
+peer stays given up on until somebody calls `reconnect`. A
 clustered system does not follow that rule for its own members. Each round, a
 node clears the quarantine on every alive member, so nothing it might have to
 talk to is left refused.
