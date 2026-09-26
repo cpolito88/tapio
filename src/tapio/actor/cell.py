@@ -27,13 +27,10 @@ from tapio.actor.behavior import (
     Behavior,
     Directive,
     ReceivingBehavior,
-    SetupBehavior,
-    SuperviseBehavior,
-    WithStashBehavior,
-    WithTimersBehavior,
     directive_of,
     resolve_handler_msg_type,
 )
+from tapio.actor.construction import construct
 from tapio.actor.context import ActorContext
 from tapio.actor.dead_letters import Carrier, DeadLetterOffice, DeadLetterReason
 from tapio.actor.events import EventStream
@@ -42,7 +39,7 @@ from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
 from tapio.actor.restarts import RestartLog
 from tapio.actor.signals import ChildFailed, PostStop, PreRestart, Signal, Terminated
-from tapio.actor.stash import StashBuffer, UnstashBehavior
+from tapio.actor.stash import StashBuffer
 from tapio.actor.supervision import Decision, SupervisorStrategy
 from tapio.actor.timers import TimerScheduler
 from tapio.actor.watch import DeathWatch, Watcher, WatchTarget
@@ -85,9 +82,6 @@ R = TypeVar("R", bound=Message)
 B = TypeVar("B")
 
 _log = runtime_logger("runtime")
-
-_MAX_SETUP_DEPTH = 100
-"""How many rounds of deferred construction to allow before calling it a loop."""
 
 _STOP = SupervisorStrategy.stop()
 """What a failure nobody wrote a strategy for gets.
@@ -439,6 +433,11 @@ class ActorCell(Generic[T]):
         return self._log
 
     @property
+    def ctx(self) -> ActorContext[T]:
+        """The context this actor's behaviors and factories are given."""
+        return self._ctx
+
+    @property
     def runtime(self) -> ActorRuntime:
         """The system slice this cell runs in."""
         return self._runtime
@@ -526,7 +525,7 @@ class ActorCell(Generic[T]):
 
     def _start(self) -> None:
         """Do the work of `start`, leaving the cleanup after a failure to it."""
-        behavior = self._evaluate(self._initial)
+        behavior = self._construct(self._initial)
         self._install_behavior(behavior)
         if directive_of(behavior) is Directive.STOPPED:
             # Deferred construction decided there was nothing to run. The
@@ -1103,7 +1102,7 @@ class ActorCell(Generic[T]):
         # stale handler across.
         self._signalling = None
         try:
-            self._install_behavior(self._evaluate(self._initial))
+            behavior = self._construct(self._initial)
         except Exception:
             # The behavior itself cannot be rebuilt, so there is nothing to
             # restart into. Failing the restart the same way twice is a loop,
@@ -1111,7 +1110,8 @@ class ActorCell(Generic[T]):
             self._log.exception("failed while restarting; stopping")
             await self._stop_self()
             return
-        if directive_of(self._behavior) is Directive.STOPPED:
+        self._install_behavior(behavior)
+        if directive_of(behavior) is Directive.STOPPED:
             await self._stop_self()
 
     async def _backoff(self, seconds: float) -> bool:
@@ -1193,8 +1193,16 @@ class ActorCell(Generic[T]):
         The cell's declared message type is fixed at spawn. It is the contract
         every ref to this actor was validated against, so switching behavior
         changes what the actor does, never what it accepts.
+
+        A behavior that needs construction is built first, and what the
+        construction returns is applied by the same rules as what a handler
+        returns. A `setup` that decides there is nothing to run and returns
+        `Behaviors.stopped()` stops the actor, as it does at spawn.
         """
-        directive = directive_of(nxt)
+        behavior = nxt
+        if directive_of(behavior) is None:
+            behavior = self._construct(behavior, keep_supervisors=True)
+        directive = directive_of(behavior)
         if directive is Directive.SAME:
             return
         if directive is Directive.UNHANDLED:
@@ -1203,7 +1211,7 @@ class ActorCell(Generic[T]):
         if directive is Directive.STOPPED:
             await self._stop_self()
             return
-        self._install_behavior(self._evaluate(nxt, keep_supervisors=True))
+        self._install_behavior(behavior)
 
     def _install_behavior(self, behavior: Behavior[T]) -> None:
         """Adopt a behavior, remembering it for signals when it can take them.
@@ -1231,17 +1239,25 @@ class ActorCell(Generic[T]):
         seconds = self._runtime.settings.shutdown_timeout.total_seconds()
         return self._runtime.dispatcher.now() + seconds
 
-    def _evaluate(
+    def _construct(
         self, behavior: Behavior[T], *, keep_supervisors: bool = False
     ) -> Behavior[T]:
-        """Unwrap supervision and run deferred construction until a real behavior.
+        """Run deferred construction, and take back what it started if it fails.
 
-        Both wrappers are unwrapped in one loop, because either can enclose
-        the other. People write `supervise(setup(...))`, and they also write a
-        `setup` that returns a supervised behavior.
+        Every place this cell runs a factory comes through here: `start`, a
+        restart, and a handler that returns a behavior. A factory that raises
+        is therefore handled the same way wherever it ran. What it started is
+        undone here, and the error goes to the caller, which decides what the
+        failure means at that point.
+
+        Undoing matters most under a `resume` strategy. The actor carries on
+        with the behavior it had, and a child or a timer the failed factory
+        started would outlive the state it was started for. A child would also
+        keep its name, so the next attempt at the same construction would fail
+        on the name rather than on whatever went wrong the first time.
 
         Args:
-            behavior: What to evaluate.
+            behavior: What to construct.
             keep_supervisors: Keep the strategies already in force when the
                 new behavior declares none. Set when a handler returned a
                 behavior, because supervision belongs to the actor and not to
@@ -1250,35 +1266,49 @@ class ActorCell(Generic[T]):
 
         Returns:
             The behavior the actor will run.
-        """
-        supervisors: list[_Supervisor] = []
-        seen = 0
-        while True:
-            if isinstance(behavior, SuperviseBehavior):
-                supervisors.append(_Supervisor(behavior.on, behavior.strategy))
-                behavior = behavior.behavior
-            elif isinstance(behavior, SetupBehavior):
-                behavior = behavior.setup(self._ctx)
-            elif isinstance(behavior, WithTimersBehavior):
-                behavior = behavior.with_timers(self._timers)
-            elif isinstance(behavior, WithStashBehavior):
-                behavior = behavior.with_stash(self._stash_buffer(behavior.capacity))
-            elif isinstance(behavior, UnstashBehavior):
-                self._unstash(behavior.buffer)
-                behavior = behavior.behavior
-            else:
-                break
-            seen += 1
-            if seen > _MAX_SETUP_DEPTH:
-                msg = (
-                    f"{self._path}: deferred construction is still returning "
-                    f"another Behaviors.setup after {_MAX_SETUP_DEPTH} rounds"
-                )
-                raise BehaviorTypeError(msg)
 
-        if supervisors or not keep_supervisors:
-            self._supervisors = tuple(supervisors)
-        return behavior
+        Raises:
+            BehaviorTypeError: If construction does not come to an end.
+            Exception: Whatever a factory raised, after what it started has
+                been stopped.
+        """
+        children = set(self._children)
+        timers = set(self._timers.keys)
+        try:
+            constructed = construct(behavior, self)
+        except BaseException:
+            self._abandon(children, timers)
+            raise
+        if constructed.supervision or not keep_supervisors:
+            self._supervisors = tuple(
+                _Supervisor(layer.on, layer.strategy)
+                for layer in constructed.supervision
+            )
+        return constructed.behavior
+
+    def _abandon(self, children: set[str], timers: set[str]) -> None:
+        """Stop what a failed construction started.
+
+        Construction is synchronous, so a child it spawned has not run yet.
+        Aborting it is enough, and it has no `PostStop` to deliver. The watch
+        goes first, because a `Terminated` for a child the actor never got to
+        use would reach the behavior it kept.
+
+        A timer is cancelled only under a key that was not running before.
+        One the factory started under a key already in use replaced a timer
+        the actor had, and cancelling it would leave the actor without either.
+
+        Args:
+            children: The names of the children that existed beforehand.
+            timers: The keys of the timers that were running beforehand.
+        """
+        for name, child in list(self._children.items()):
+            if name not in children:
+                self.unwatch(child.ref)
+                child.abort()
+        for key in self._timers.keys:
+            if key not in timers:
+                self._timers.cancel(key)
 
     def _finish(self) -> None:
         """Run the stop hook, release children, and mark this cell terminated.
@@ -1347,7 +1377,7 @@ class ActorCell(Generic[T]):
         if self._children.get(child.path.name) is child:
             del self._children[child.path.name]
 
-    def _stash_buffer(self, capacity: int) -> StashBuffer[T]:
+    def stash_buffer(self, capacity: int) -> StashBuffer[T]:
         """The buffer this actor stashes into, created once and then kept.
 
         Created on the first evaluation and reused by every incarnation after
@@ -1358,7 +1388,7 @@ class ActorCell(Generic[T]):
             self._stash = StashBuffer(capacity)
         return self._stash
 
-    def _unstash(self, buffer: StashBuffer[T]) -> None:
+    def unstash(self, buffer: StashBuffer[T]) -> None:
         """Put everything held back at the head of the user lane.
 
         They go back in arrival order, ahead of whatever queued up while the

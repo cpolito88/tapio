@@ -78,9 +78,9 @@ watches are recorded as effects:
 
 Two things the kit deliberately does not do. It does not supervise, so a
 handler that raises raises into the test, where a unit test wants it. And it
-cannot provide timers, a stash, or a resolved ref, because those belong to a
-cell; asking for one is an error naming the alternative, which is a real
-system and a probe.
+cannot provide timers, a stash, the replay from `unstash_all`, or a resolved
+ref, because those belong to a cell; asking for one is an error naming the
+alternative, which is a real system and a probe.
 
 ## Fixtures, with nothing to import
 

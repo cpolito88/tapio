@@ -20,6 +20,7 @@ from tapio.actor import (
     SupervisorStrategy,
     Terminated,
 )
+from tapio.actor.timers import TimerScheduler
 from tapio.errors import BehaviorTypeError
 from tapio.testkit import (
     NO_MESSAGE_WINDOW,
@@ -34,6 +35,7 @@ from tests.failures import (
     recording,
     well_inside,
 )
+from tests.internals import cell_of
 from tests.messages import Ping
 
 RESTART = SupervisorStrategy.restart()
@@ -781,6 +783,49 @@ async def test_a_setup_returned_from_a_signal_handler_is_supervised(
 
     await eventually(lambda: seen.count("setup") == 2)
     assert seen == ["setup", "ping 1", "Terminated", "PreRestart", "setup"]
+
+
+async def test_a_resumed_construction_failure_leaves_nothing_it_started(
+    system: ActorSystem,
+):
+    seen: list[str] = []
+
+    def half_built(timers: TimerScheduler[Ping]) -> Behavior[Ping]:
+        def build(ctx: ActorContext[Ping]) -> Behavior[Ping]:
+            helper = ctx.spawn(
+                Behaviors.receive_message(_stop_on_ping, msg_type=Ping), "helper"
+            )
+            ctx.watch(helper)
+            timers.start_single("tick", Ping(n=99), timedelta(seconds=30))
+            seen.append("built")
+            raise BoomError("construction failed")
+
+        return Behaviors.setup(build)
+
+    async def on_message(ctx: ActorContext[Ping], message: Ping) -> Behavior[Ping]:
+        seen.append(f"ping {message.n}")
+        return Behaviors.with_timers(half_built)
+
+    async def on_signal(ctx: ActorContext[Ping], signal: Signal) -> Behavior[Ping]:
+        seen.append(type(signal).__name__)
+        return Behaviors.same()
+
+    actor = system.spawn(
+        Behaviors.supervise(
+            Behaviors.receive(on_message, Ping, on_signal=on_signal)
+        ).on_failure(SupervisorStrategy.resume()),
+        name="actor",
+    )
+
+    actor.tell(Ping(n=1))
+    actor.tell(Ping(n=2))
+
+    # The second attempt gets as far as the first. It could not while the
+    # first attempt's helper was still alive and holding the name.
+    await eventually(lambda: seen.count("built") == 2)
+    assert seen == ["ping 1", "built", "ping 2", "built"]
+    assert [p for p in system.refs.paths() if p.name == "helper"] == []
+    assert cell_of(actor).timers.keys == ()
 
 
 async def _stop_on_ping(message: Ping) -> Behavior[Ping]:

@@ -36,18 +36,17 @@ from tapio.actor.behavior import (
     Behavior,
     Directive,
     ReceivingBehavior,
-    SetupBehavior,
-    SuperviseBehavior,
-    WithStashBehavior,
-    WithTimersBehavior,
     directive_of,
 )
+from tapio.actor.construction import construct
 from tapio.actor.context import ActorContext
 from tapio.actor.mailbox import MailboxConfig
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
 from tapio.actor.signals import Signal
+from tapio.actor.stash import StashBuffer
 from tapio.actor.supervision import SupervisorStrategy
+from tapio.actor.timers import TimerScheduler
 from tapio.errors import BehaviorTypeError, TapioError
 from tapio.logging import ActorLogAdapter, actor_logger
 from tapio.message import Message
@@ -246,6 +245,7 @@ class BehaviorTestKit(Generic[T]):
     __slots__ = (
         "_behavior",
         "_ctx",
+        "_host",
         "_settings",
         "_stopped",
         "_supervision",
@@ -277,12 +277,13 @@ class BehaviorTestKit(Generic[T]):
             BehaviorTypeError: If the message type cannot be resolved, exactly
                 as a spawn would fail.
             TapioError: If the behavior needs a cell to exist at all, which
-                `with_timers` and `with_stash` do.
+                `with_timers`, `with_stash` and `unstash_all` do.
         """
         self._settings = settings if settings is not None else TapioSettings()
         path = ActorPath.root(system).child("user").child(name, uid=1)
         self._ctx: _KitContext[T] = _KitContext(path)
-        self._supervision: list[SupervisorStrategy] = []
+        self._host = _KitHost(self._ctx)
+        self._supervision: tuple[SupervisorStrategy, ...] = ()
         self._stopped = False
         resolved = self._resolve(behavior)
         declared = msg_type if msg_type is not None else resolved.msg_type
@@ -372,7 +373,7 @@ class BehaviorTestKit(Generic[T]):
         test. What can be asserted here is that the behavior declared what it
         meant to declare.
         """
-        return tuple(self._supervision)
+        return self._supervision
 
     @property
     def behavior(self) -> Behavior[T]:
@@ -439,47 +440,81 @@ class BehaviorTestKit(Generic[T]):
 
     def _become(self, nxt: Behavior[T]) -> None:
         """Apply what a handler returned, the way a cell would."""
-        directive = directive_of(nxt)
+        behavior = nxt
+        if directive_of(behavior) is None:
+            behavior = self._resolve(behavior, keep_supervision=True)
+        directive = directive_of(behavior)
         if directive is Directive.STOPPED:
             self._stopped = True
             return
-        if directive in (Directive.SAME, Directive.UNHANDLED, None):
-            if directive is None:
-                self._behavior = self._resolve(nxt)
+        if directive in (Directive.SAME, Directive.UNHANDLED):
             return
         # `empty` and `ignore` are behaviors in their own right, and a cell
         # keeps them as the current one.
-        self._behavior = nxt
+        self._behavior = behavior
 
-    def _resolve(self, behavior: Behavior[T]) -> Behavior[T]:
-        """Unwrap supervision and run deferred construction, as a spawn does."""
-        current = behavior
-        while True:
-            if isinstance(current, SuperviseBehavior):
-                self._supervision.append(current.strategy)
-                current = current.behavior
-                continue
-            if isinstance(current, SetupBehavior):
-                current = current.setup(self._ctx)
-                continue
-            if isinstance(current, WithTimersBehavior | WithStashBehavior):
-                kind = (
-                    "timers"
-                    if isinstance(current, WithTimersBehavior)
-                    else "a stash buffer"
-                )
-                msg = (
-                    f"cannot test {current!r} without a running system: it needs "
-                    f"{kind}, which belong to a cell and outlive an incarnation. "
-                    "Start an ActorSystem and use a TestProbe for this one."
-                )
-                raise TapioError(msg)
-            return current
+    def _resolve(
+        self, behavior: Behavior[T], *, keep_supervision: bool = False
+    ) -> Behavior[T]:
+        """Unwrap supervision and run deferred construction, as a cell does.
+
+        The strategies follow the cell's rule too. A behavior returned by a
+        handler that declares none keeps the ones already in force.
+        """
+        constructed = construct(behavior, self._host)
+        if constructed.supervision or not keep_supervision:
+            self._supervision = tuple(
+                layer.strategy for layer in constructed.supervision
+            )
+        return constructed.behavior
 
     def __repr__(self) -> str:
         """Render the current behavior and whether it is still running."""
         state = "stopped" if self._stopped else repr(self._behavior)
         return f"BehaviorTestKit({state})"
+
+
+class _KitHost(Generic[T]):
+    """What deferred construction is given in the kit: a context, and nothing else.
+
+    Timers and a stash belong to a cell and outlive an incarnation, and a
+    replay needs a mailbox to replay into. There is none of those here, so
+    asking for one is refused with a pointer to the kind of test that has them.
+    """
+
+    __slots__ = ("_ctx",)
+
+    def __init__(self, ctx: "_KitContext[T]") -> None:
+        """Bind the host to the context a `setup` factory is given."""
+        self._ctx = ctx
+
+    @property
+    def ctx(self) -> ActorContext[T]:
+        """The recording context."""
+        return self._ctx
+
+    @property
+    def timers(self) -> TimerScheduler[T]:
+        """Refuse: timers need a running system."""
+        raise _needs_a_system("Behaviors.with_timers", "timers")
+
+    def stash_buffer(self, capacity: int) -> StashBuffer[T]:
+        """Refuse: a stash buffer needs a running system."""
+        raise _needs_a_system("Behaviors.with_stash", "a stash buffer")
+
+    def unstash(self, buffer: StashBuffer[T]) -> None:
+        """Refuse: a replay needs a mailbox to replay into."""
+        raise _needs_a_system("unstash_all", "a mailbox to replay into")
+
+
+def _needs_a_system(what: str, needs: str) -> TapioError:
+    """Explain why the kit cannot run a wrapper, and what to use instead."""
+    msg = (
+        f"cannot test {what} without a running system, because it needs "
+        f"{needs} from a cell. Start an ActorSystem and use a TestProbe for "
+        "this one."
+    )
+    return TapioError(msg)
 
 
 class _KitContext(ActorContext[T]):
