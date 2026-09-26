@@ -17,7 +17,7 @@ from types import TracebackType
 from typing import Any, Final, Self, TypeVar, cast
 
 from tapio.actor.behavior import Behavior, Behaviors
-from tapio.actor.cell import ActorCell, ActorRuntime, LocalActorRef
+from tapio.actor.cell import ActorCell, ActorRuntime, LocalActorRef, running_cell
 from tapio.actor.dead_letters import DeadLetterOffice, DeadLetterReason, DeadLetterRef
 from tapio.actor.events import EventStream
 from tapio.actor.mailbox import MailboxConfig
@@ -682,8 +682,18 @@ class ActorSystem:
         shutdown: the tree still finishes and later callers still see it. This
         is the guarantee `ActorCell.stop` keeps for a single cell, one level
         up for the whole tree.
+
+        Awaited from inside one of this system's actors, it starts the shutdown
+        and returns at once. That actor is part of the tree being stopped, and
+        the tree cannot finish stopping while the actor waits in its handler.
+        Waiting would last until the shutdown deadline cancelled the actor.
+        Code outside the tree can await `when_terminated` to learn when the
+        shutdown has finished.
         """
         draining = self._begin_termination()
+        cell = running_cell()
+        if cell is not None and cell.runtime is self._runtime:
+            return
         # Shielded for the reason ActorCell.stop is: a caller that gives up
         # waiting must not cancel the shutdown it asked for.
         await asyncio.shield(draining)

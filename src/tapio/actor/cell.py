@@ -17,6 +17,7 @@ import asyncio
 import itertools
 import random
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Generic, TypeAlias, TypeVar, cast
@@ -66,7 +67,7 @@ from tapio.remote.registry import RefRegistry
 from tapio.settings import TapioSettings
 from tapio.validation import MessageType, MessageValidator, resolve_validator
 
-__all__ = ["ActorCell", "ActorRuntime", "LocalActorRef", "RefResolver"]
+__all__ = ["ActorCell", "ActorRuntime", "LocalActorRef", "RefResolver", "running_cell"]
 
 RefResolver: TypeAlias = Callable[[str, type[Message]], Awaitable["ActorRef[Any]"]]
 """Turns a ref's string form into a ref, against the system that holds it.
@@ -82,6 +83,31 @@ R = TypeVar("R", bound=Message)
 B = TypeVar("B")
 
 _log = runtime_logger("runtime")
+
+_RUNNING: ContextVar["ActorCell[Any] | None"] = ContextVar(
+    "tapio_running_cell", default=None
+)
+"""The cell whose receive loop set this, in the context of its task.
+
+Set once, on the first line of `_run`. A task keeps its own copy of the
+context, so this names the actor whose task is running. A task started from
+inside a handler copies the context too, which is why `running_cell` also
+compares the task.
+"""
+
+
+def running_cell() -> "ActorCell[Any] | None":
+    """The actor whose receive loop is the current task, if there is one.
+
+    Returns:
+        The cell, or `None` when the caller is not an actor's own task. A task
+        that an actor started from a handler is not the actor's own task.
+    """
+    cell = _RUNNING.get()
+    if cell is not None and cell._task is asyncio.current_task():
+        return cell
+    return None
+
 
 _STOP = SupervisorStrategy.stop()
 """What a failure nobody wrote a strategy for gets.
@@ -900,6 +926,7 @@ class ActorCell(Generic[T]):
     async def _run(self) -> None:
         """The receive loop: the whole of what an actor does."""
         self._running = True
+        _RUNNING.set(self)
         try:
             while self._alive:
                 envelope = await self._mailbox.get()
