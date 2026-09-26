@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from tapio import Message
 from tapio.actor import ActorPath, ActorRef
 from tapio.errors import RefResolutionError
+from tapio.remote.address import Address
 from tests.messages import Greet, Greeted
 
 
@@ -83,6 +84,25 @@ def test_refs_compare_and_hash_by_path(path):
 
 def test_refs_to_different_incarnations_differ(path):
     assert ActorRef(path) != ActorRef(path.with_uid(path.uid + 1))
+
+
+def test_refs_to_one_path_on_two_nodes_differ(path):
+    # Two nodes of one deployment share a system name and spawn the same
+    # actors in the same order, so only the address tells their refs apart.
+    class On(ActorRef[Greeted]):
+        def __init__(self, path: ActorPath, port: int) -> None:
+            super().__init__(path)
+            self._port = port
+
+        @property
+        def address(self) -> Address:
+            return Address(system=path.system, host="127.0.0.1", port=self._port)
+
+    east, west = On(path, 2551), On(path, 2552)
+
+    assert east != west
+    assert len({east, west}) == 2
+    assert east == On(path, 2551)
 
 
 def test_a_ref_is_not_equal_to_a_non_ref(ref):

@@ -330,7 +330,7 @@ class DeadLetterRef(ActorRef[Any]):
     than a claim that the target is alive.
     """
 
-    __slots__ = ("_dead_letters", "_peer", "_reason")
+    __slots__ = ("_dead_letters", "_home", "_peer", "_reason")
 
     def __init__(
         self,
@@ -339,6 +339,7 @@ class DeadLetterRef(ActorRef[Any]):
         dead_letters: DeadLetterOffice,
         reason: str,
         peer: Address | None = None,
+        home: Address | None = None,
     ) -> None:
         """Bind a dead-letter target to the office that will hear about it.
 
@@ -347,16 +348,25 @@ class DeadLetterRef(ActorRef[Any]):
             dead_letters: Where what is told to this ref is accounted for.
             reason: One of the `DeadLetterReason` constants.
             peer: The address involved, when a remote one was.
+            home: The canonical address of the system that resolved the
+                path, when the path is that system's own. It is what the
+                live ref at this path wrote itself down with, so a ref to a
+                stopped actor still equals the one handed out while it ran.
         """
         super().__init__(path)
         self._dead_letters = dead_letters
         self._reason = reason
         self._peer = peer
+        self._home = home
 
     @property
     def address(self) -> Address:
         """The address that was asked for, reachable or not."""
-        return self._peer if self._peer is not None else super().address
+        if self._peer is not None:
+            return self._peer
+        if self._home is not None:
+            return self._home
+        return super().address
 
     def tell(self, message: Message) -> None:
         """Account for a message that had nowhere to go.

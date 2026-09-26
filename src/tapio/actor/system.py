@@ -417,6 +417,7 @@ class ActorSystem:
                 path,
                 dead_letters=self._dead_letters,
                 reason=DeadLetterReason.UNKNOWN_RECIPIENT,
+                home=self._address,
             )
         if self._peer_resolver is not None:
             remote = self._peer_resolver(address, path)
