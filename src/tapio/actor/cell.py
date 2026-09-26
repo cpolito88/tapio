@@ -903,11 +903,12 @@ class ActorCell(Generic[T]):
             return
         try:
             nxt = await self._deliver_signal(signal)
+            # Inside the guard, like the handler: applying what it returned
+            # can run deferred construction, which is user code.
+            if nxt is not None:
+                await self._become(nxt, signal)
         except Exception as error:
             await self._on_failure(error)
-            return
-        if nxt is not None:
-            await self._become(nxt, signal)
 
     async def _on_message(self, message: Message) -> None:
         """Run one user message through the current behavior."""
@@ -931,14 +932,17 @@ class ActorCell(Generic[T]):
         self._current = message
         try:
             nxt = await behavior.receive(self._ctx, cast("T", message))
+            # Applying what the handler returned is inside the guard too. A
+            # returned `Behaviors.setup`, `with_timers` or `with_stash` runs
+            # its factory here, and that is user code that can raise like the
+            # handler itself.
+            await self._become(nxt, message)
         except Exception as error:
             # The exception never leaves this loop: it becomes a decision, and
             # the sender hears nothing about it.
             await self._on_failure(error)
-            return
         finally:
             self._current = None
-        await self._become(nxt, message)
 
     def _translate(self, envelope: AdaptedMessage) -> Message:
         """Turn a message that arrived through an adapter into one of this actor's.

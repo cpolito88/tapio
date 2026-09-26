@@ -18,6 +18,7 @@ from tapio.actor import (
     Decision,
     Signal,
     SupervisorStrategy,
+    Terminated,
 )
 from tapio.errors import BehaviorTypeError
 from tapio.testkit import (
@@ -33,6 +34,7 @@ from tests.failures import (
     recording,
     well_inside,
 )
+from tests.messages import Ping
 
 RESTART = SupervisorStrategy.restart()
 
@@ -666,3 +668,120 @@ async def test_a_backoff_counts_only_the_restarts_its_own_layer_made(
     # that test now states.
     assert waited > MIN_BACKOFF.total_seconds() / 2
     assert waited < well_inside(MAX_BACKOFF)
+
+
+def _failing_setup() -> Behavior[Ping]:
+    """A behavior whose deferred construction raises."""
+
+    def build(ctx: ActorContext[Ping]) -> Behavior[Ping]:
+        raise BoomError("construction failed")
+
+    return Behaviors.setup(build)
+
+
+def _switching(seen: list[str]) -> Behavior[Ping]:
+    """An actor that records its lifecycle and, on `Ping(n=1)`, returns a failing setup.
+
+    Every other ping is recorded and handled in place.
+    """
+
+    def build(ctx: ActorContext[Ping]) -> Behavior[Ping]:
+        seen.append("setup")
+
+        async def on_message(ctx: ActorContext[Ping], message: Ping) -> Behavior[Ping]:
+            seen.append(f"ping {message.n}")
+            if message.n == 1:
+                return _failing_setup()
+            return Behaviors.same()
+
+        async def on_signal(ctx: ActorContext[Ping], signal: Signal) -> Behavior[Ping]:
+            seen.append(type(signal).__name__)
+            return Behaviors.same()
+
+        return Behaviors.receive(on_message, Ping, on_signal=on_signal)
+
+    return Behaviors.setup(build)
+
+
+async def test_a_setup_returned_from_a_handler_is_supervised(system: ActorSystem):
+    seen: list[str] = []
+    actor = system.spawn(
+        Behaviors.supervise(_switching(seen)).on_failure(RESTART), name="actor"
+    )
+
+    actor.tell(Ping(n=1))
+    actor.tell(Ping(n=2))
+
+    # The failed construction is a restart like any other failure: the stop
+    # hook of the failed incarnation runs, the original setup runs again, and
+    # the next message reaches the new incarnation.
+    await eventually(lambda: "ping 2" in seen)
+    assert seen == ["setup", "ping 1", "PreRestart", "setup", "ping 2"]
+
+
+async def test_a_setup_returned_from_a_handler_can_be_resumed(system: ActorSystem):
+    seen: list[str] = []
+    actor = system.spawn(
+        Behaviors.supervise(_switching(seen)).on_failure(SupervisorStrategy.resume()),
+        name="actor",
+    )
+
+    actor.tell(Ping(n=1))
+    actor.tell(Ping(n=2))
+
+    # Resuming keeps the behavior the actor had, since the new one was never
+    # built.
+    await eventually(lambda: "ping 2" in seen)
+    assert seen == ["setup", "ping 1", "ping 2"]
+
+
+async def test_an_unsupervised_setup_failure_from_a_handler_runs_the_stop_hook(
+    system: ActorSystem,
+):
+    seen: list[str] = []
+    actor = system.spawn(_switching(seen), name="actor")
+
+    actor.tell(Ping(n=1))
+
+    await eventually(lambda: "PostStop" in seen)
+    assert seen == ["setup", "ping 1", "PostStop"]
+    await eventually(lambda: system.refs.lookup(actor.path) is None)
+
+
+async def test_a_setup_returned_from_a_signal_handler_is_supervised(
+    system: ActorSystem,
+):
+    seen: list[str] = []
+
+    def build(ctx: ActorContext[Ping]) -> Behavior[Ping]:
+        seen.append("setup")
+        child = ctx.spawn(
+            Behaviors.receive_message(_stop_on_ping, msg_type=Ping), "child"
+        )
+        ctx.watch(child)
+
+        async def on_message(ctx: ActorContext[Ping], message: Ping) -> Behavior[Ping]:
+            seen.append(f"ping {message.n}")
+            child.tell(message)
+            return Behaviors.same()
+
+        async def on_signal(ctx: ActorContext[Ping], signal: Signal) -> Behavior[Ping]:
+            seen.append(type(signal).__name__)
+            if isinstance(signal, Terminated):
+                return _failing_setup()
+            return Behaviors.same()
+
+        return Behaviors.receive(on_message, Ping, on_signal=on_signal)
+
+    actor = system.spawn(
+        Behaviors.supervise(Behaviors.setup(build)).on_failure(RESTART), name="actor"
+    )
+
+    actor.tell(Ping(n=1))
+
+    await eventually(lambda: seen.count("setup") == 2)
+    assert seen == ["setup", "ping 1", "Terminated", "PreRestart", "setup"]
+
+
+async def _stop_on_ping(message: Ping) -> Behavior[Ping]:
+    return Behaviors.stopped()
