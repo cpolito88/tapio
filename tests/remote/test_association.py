@@ -1094,3 +1094,79 @@ async def test_a_link_adopted_by_a_closing_association_is_still_closed():
             assert link.closed
         finally:
             await system.terminate()
+
+
+class _ResetOnCloseLink(_WritingLink):
+    """A link whose writes park until it is closed, then fail with a reset.
+
+    A write parks in `drain` when the peer's receive window is full. When the
+    losing link of a dial race is closed on both ends with unread data, the
+    peer's kernel sends a reset, and that is what wakes the parked write.
+    """
+
+    def __init__(self) -> None:
+        """Start open, with the reset not yet sent."""
+        super().__init__()
+        self._reset = asyncio.Event()
+
+    async def write_frame(self, data: bytes) -> None:
+        """Park until the link is closed, then fail as a reset connection does."""
+        await self._reset.wait()
+        raise ConnectionResetError(104, "Connection reset by peer")
+
+    async def write_link(self, message: object) -> None:
+        """Park and fail like any other write, heartbeats included."""
+        await self.write_frame(b"")
+
+    async def close(self) -> None:
+        """Close, which sends the reset the parked write is waiting for."""
+        self.closed = True
+        self._reset.set()
+
+
+async def test_a_write_parked_on_a_link_a_dial_race_retired_keeps_the_association():
+    with assert_no_leaked_tasks():
+        host = _RecordingHost()
+        peer = Address.parse("tapio://peer@127.0.0.1:2551")
+        association = _SwapProbe(host=host, peer=peer, initiator=peer)  # type: ignore[arg-type]
+        loser, winner = _ResetOnCloseLink(), _WritingLink()
+        association._handle = _held(loser)
+        await association._open(loser)
+        writing = asyncio.create_task(association._write(_queued(1)))
+        await asyncio.sleep(0)
+
+        # The peer's dial wins while a frame is parked on the old link.
+        association.adopt(winner, uid=7)
+        assert association._handle is not None
+        resuming = association._handle.reader
+        assert resuming is not None
+        await resuming
+        await writing
+
+        # The frame was on the old link, so it is lost with it: at most once,
+        # never sent again on the new one. The association itself survives.
+        assert not association._closing
+        assert host.letters == [(DeadLetterReason.LINK_FAILED, peer)]
+        await association._open(winner)
+        await association._write(_queued(2))
+        assert winner.written == [_queued(2).frame]
+
+
+async def test_a_heartbeat_parked_on_a_link_a_dial_race_retired_keeps_the_association():
+    with assert_no_leaked_tasks():
+        peer = Address.parse("tapio://peer@127.0.0.1:2551")
+        association = _SwapProbe(host=_LoneHost(), peer=peer, initiator=peer)  # type: ignore[arg-type]
+        loser, winner = _ResetOnCloseLink(), _WritingLink()
+        association._handle = _held(loser)
+        await association._open(loser)
+        beating = asyncio.create_task(association._beat())
+        await asyncio.sleep(0)
+
+        association.adopt(winner, uid=7)
+        assert association._handle is not None
+        resuming = association._handle.reader
+        assert resuming is not None
+        await resuming
+        await beating
+
+        assert not association._closing

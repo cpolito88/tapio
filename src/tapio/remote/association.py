@@ -707,6 +707,9 @@ class Association:
             # accepts no bytes is a different diagnosis from a link that
             # broke, and only this one means the peer should be given up on.
             stalled = f"{self._peer} accepted no bytes for {self._write_budget():g}s"
+            if self._was_replaced(link):
+                self._lost_with_old_link(outbound, stalled)
+                return
             if isinstance(outbound, Outbound):
                 self._dead_letter(
                     outbound.payload,
@@ -716,6 +719,9 @@ class Association:
                 )
             await self._declare_unreachable(stalled)
         except OSError as error:
+            if self._was_replaced(link):
+                self._lost_with_old_link(outbound, str(error))
+                return
             if isinstance(outbound, Outbound):
                 self._dead_letter(
                     outbound.payload,
@@ -724,6 +730,31 @@ class Association:
                     detail=str(error),
                 )
             self.close(f"the link failed while writing: {error}")
+
+    def _was_replaced(self, link: Link) -> bool:
+        """Whether a write failed on a link that a dial race has since retired.
+
+        A write can be parked on the old link, waiting for the peer's receive
+        window, when `adopt` swaps the socket. Retiring the old link then wakes
+        the write with a reset or leaves it to time out. Neither says anything
+        about the peer or about the link that won, so neither may close this
+        association or declare the peer unreachable.
+        """
+        return link is not self._link and not self._closing
+
+    def _lost_with_old_link(self, outbound: Outbound | LinkOut, why: str) -> None:
+        """Account for a frame that was on the link a dial race retired.
+
+        It is not sent again on the new link. It may already have reached the
+        peer in part or in full, and delivery is at most once.
+        """
+        if isinstance(outbound, Outbound):
+            self._dead_letter(
+                outbound.payload,
+                outbound.recipient,
+                DeadLetterReason.LINK_FAILED,
+                detail=f"the link it was written to was replaced: {why}",
+            )
 
     def _hold(self, outbound: Outbound | LinkOut) -> None:
         """Keep a frame until the link is up, or shed it if too many already are."""
@@ -758,11 +789,15 @@ class Association:
                 async with asyncio.timeout(self._write_budget()):
                     await link.write_link(Heartbeat())
             except TimeoutError:
+                if self._was_replaced(link):
+                    return
                 await self._declare_unreachable(
                     f"{self._peer} accepted no heartbeat for {self._write_budget():g}s"
                 )
                 return
             except OSError as error:
+                if self._was_replaced(link):
+                    return
                 self.close(f"the link failed while heartbeating: {error}")
                 return
         # Judged whether or not there was a link to write to. Having no
