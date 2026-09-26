@@ -11,6 +11,7 @@ from tapio.actor import (
     DeadLetterReason,
     MailboxConfig,
     PostStop,
+    StashBuffer,
     SupervisorStrategy,
 )
 from tapio.errors import BehaviorTypeError, MessageTypeError, TapioError
@@ -306,6 +307,50 @@ async def test_timers_and_stash_need_a_real_system():
 
     with pytest.raises(TapioError, match="stash"):
         BehaviorTestKit(Behaviors.with_stash(10, lambda stash: _sink()))
+
+
+async def test_a_replay_needs_a_real_system():
+    stash: StashBuffer[Job] = StashBuffer(1)
+
+    with pytest.raises(TapioError, match="mailbox"):
+        BehaviorTestKit(stash.unstash_all(_sink()))
+
+
+async def test_a_setup_returned_from_a_handler_can_stop():
+    def nothing_to_run(ctx: ActorContext[Job]) -> Behavior[Job]:
+        return Behaviors.stopped()
+
+    async def on_message(message: Job) -> Behavior[Job]:
+        return Behaviors.setup(nothing_to_run)
+
+    kit: BehaviorTestKit[Job] = BehaviorTestKit(
+        Behaviors.receive_message(on_message, msg_type=Job)
+    )
+    await kit.run(Job(item=1))
+
+    assert kit.is_stopped
+
+
+async def test_a_returned_behavior_replaces_the_strategies_only_if_it_declares_any():
+    resume = SupervisorStrategy.resume()
+    restart = SupervisorStrategy.restart()
+
+    async def on_message(message: Job) -> Behavior[Job]:
+        nxt = Behaviors.receive_message(on_message, msg_type=Job)
+        if message.item == 1:
+            return Behaviors.supervise(nxt).on_failure(resume)
+        return nxt
+
+    kit: BehaviorTestKit[Job] = BehaviorTestKit(
+        Behaviors.supervise(
+            Behaviors.receive_message(on_message, msg_type=Job)
+        ).on_failure(restart)
+    )
+
+    await kit.run(Job(item=2))
+    assert kit.supervision == (restart,)
+    await kit.run(Job(item=1))
+    assert kit.supervision == (resume,)
 
 
 async def test_resolving_a_ref_needs_a_real_system():

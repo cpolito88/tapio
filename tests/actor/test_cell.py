@@ -284,3 +284,51 @@ async def test_a_self_send_of_the_declared_type_during_setup_arrives():
         system.spawn(Behaviors.setup(build), name="actor")
 
         await eventually(lambda: seen == [1])
+
+
+async def test_a_setup_returned_from_a_handler_can_stop_the_actor(
+    system: ActorSystem,
+):
+    seen: list[str] = []
+
+    def nothing_to_run(ctx: ActorContext[Ping]) -> Behavior[Ping]:
+        return Behaviors.stopped()
+
+    async def on_message(ctx: ActorContext[Ping], message: Ping) -> Behavior[Ping]:
+        seen.append(f"ping {message.n}")
+        return Behaviors.setup(nothing_to_run)
+
+    async def on_signal(ctx: ActorContext[Ping], signal: Signal) -> Behavior[Ping]:
+        seen.append(type(signal).__name__)
+        return Behaviors.same()
+
+    actor = system.spawn(
+        Behaviors.receive(on_message, Ping, on_signal=on_signal), name="actor"
+    )
+    actor.tell(Ping(n=1))
+    actor.tell(Ping(n=2))
+
+    await eventually(lambda: "PostStop" in seen)
+    assert seen == ["ping 1", "PostStop"]
+    await eventually(lambda: system.refs.lookup(actor.path) is None)
+
+
+async def test_a_setup_returned_from_a_handler_can_keep_the_behavior(
+    system: ActorSystem,
+):
+    seen: list[int] = []
+
+    def nothing_new(ctx: ActorContext[Ping]) -> Behavior[Ping]:
+        return Behaviors.same()
+
+    async def on_message(message: Ping) -> Behavior[Ping]:
+        seen.append(message.n)
+        return Behaviors.setup(nothing_new)
+
+    actor = system.spawn(
+        Behaviors.receive_message(on_message, msg_type=Ping), name="actor"
+    )
+    actor.tell(Ping(n=1))
+    actor.tell(Ping(n=2))
+
+    await eventually(lambda: seen == [1, 2])

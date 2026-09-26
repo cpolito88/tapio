@@ -27,6 +27,14 @@ wrote a rule for is **stopped**, not restarted: an actor that failed for a
 reason nobody anticipated is in a state nobody described, and restarting it in
 a loop turns one bug into a busy one.
 
+A handler can return a behavior that has to be built first, such as a
+`Behaviors.setup`. If building it fails, the failure goes to the actor's
+supervision like any failure in the handler. Under `resume()` the actor keeps
+the behavior it had. The failed build is undone: the children it spawned are
+stopped, and the timers it started under a new key are cancelled. Otherwise a
+child would keep its name, and the next attempt at the same build would fail
+on that name.
+
 ## What a restart does, exactly
 
 This is the table worth knowing before choosing `restart()`.
