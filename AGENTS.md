@@ -3,6 +3,13 @@
 tapio is a Pekko-inspired actor toolkit for Python: local, typed,
 asyncio-native actors with supervision, and Pydantic models throughout.
 
+This file holds the rules, for agents and people alike.
+[CONTRIBUTING.md](CONTRIBUTING.md) is the entry point for a human
+contributor: it covers the process (setup, the gate, how a pull request
+becomes a release) and points back here for the rules. It summarises the
+commit and pull request rules below, so a change to those needs the same
+change there.
+
 ## Commands
 
 `make` with no target lists everything. The Makefile is the single source of

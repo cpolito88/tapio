@@ -290,6 +290,9 @@ make check      # pre-push gate: lint + types + tests
 make ci         # exactly what GitHub Actions runs
 ```
 
+[CONTRIBUTING.md](CONTRIBUTING.md) covers the rest: the gate, how commits
+become releases, and what a pull request needs.
+
 ## Trademark note
 
 Apache Pekko and Apache Kafka are trademarks of the Apache Software Foundation.
