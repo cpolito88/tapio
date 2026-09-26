@@ -14,8 +14,11 @@ import pytest
 
 from tapio import ActorSystem, Behavior, Behaviors, Message
 from tapio.actor import ActorContext, ActorRef, Signal
+from tapio.errors import BehaviorTypeError
 from tapio.testkit import assert_no_leaked_tasks
 from tests.failures import eventually
+from tests.internals import cell_of
+from tests.messages import Ping
 
 
 class Drain(Message):
@@ -165,3 +168,77 @@ async def test_a_cancelled_shutdown_sweep_stops_rather_than_carrying_on(
             assert "did not stop within the shutdown deadline" not in caplog.text
         finally:
             await system.terminate()
+
+
+async def _ignore(message: Ping) -> Behavior[Ping]:
+    return Behaviors.same()
+
+
+def _spawns_then_fails(
+    kids: list[ActorRef[Ping]], *, returning: Behavior[Ping] | None = None
+) -> Behavior[Ping]:
+    """A setup that spawns a child and makes an adapter, then fails.
+
+    With no `returning` it raises. Otherwise it returns that behavior, which
+    the tests pass as one the actor cannot start with.
+    """
+
+    def build(ctx: ActorContext[Ping]) -> Behavior[Ping]:
+        kids.append(ctx.spawn(Behaviors.receive_message(_ignore, msg_type=Ping), "kid"))
+        ctx.message_adapter(lambda ping: ping, msg_type=Ping)
+        if returning is None:
+            raise RuntimeError("setup failed after spawning")
+        return returning
+
+    return Behaviors.setup(build)
+
+
+async def test_a_setup_that_spawns_then_raises_leaves_nothing_running():
+    kids: list[ActorRef[Ping]] = []
+    with assert_no_leaked_tasks():
+        system = ActorSystem("t")
+        try:
+            with pytest.raises(RuntimeError, match="after spawning"):
+                system.spawn(_spawns_then_fails(kids), name="parent")
+
+            kid = kids[0]
+            assert system.refs.lookup(kid.path) is None
+            assert not cell_of(kid).is_alive
+            # Nothing under the failed actor is left in the registry either,
+            # its adapter included.
+            parent = kid.path.parent
+            assert [
+                p for p in system.refs.paths() if str(p).startswith(str(parent))
+            ] == []
+        finally:
+            await system.terminate()
+        assert not cell_of(kids[0]).is_alive
+
+
+async def test_a_setup_that_spawns_then_returns_no_type_leaves_nothing_running():
+    kids: list[ActorRef[Ping]] = []
+    with assert_no_leaked_tasks():
+        system = ActorSystem("t")
+        try:
+            with pytest.raises(BehaviorTypeError, match="carries no message type"):
+                system.spawn(
+                    _spawns_then_fails(kids, returning=Behaviors.same()), name="parent"
+                )
+
+            assert system.refs.lookup(kids[0].path) is None
+            assert not cell_of(kids[0]).is_alive
+        finally:
+            await system.terminate()
+
+
+async def test_the_name_of_an_actor_that_failed_to_start_is_free_again():
+    kids: list[ActorRef[Ping]] = []
+    async with ActorSystem("t") as system:
+        with pytest.raises(RuntimeError):
+            system.spawn(_spawns_then_fails(kids), name="parent")
+
+        again = system.spawn(
+            Behaviors.receive_message(_ignore, msg_type=Ping), "parent"
+        )
+
+        assert again.path.name == "parent"
