@@ -77,7 +77,6 @@ from tapio.errors import (
     ActorSystemTerminating,
     BehaviorRegistrationError,
     RefResolutionError,
-    TapioError,
 )
 from tapio.logging import describe_callable
 from tapio.message import Message
@@ -242,9 +241,10 @@ class SpawnFailure:
     is not a name an actor can have."""
 
     FACTORY_FAILED = "factory-failed"
-    """The factory raised while building the behavior. The spawner replies
-    rather than failing, because it is the parent of every actor it has
-    started and one bad request must not stop the rest of them."""
+    """The factory raised while building the behavior, or the behavior failed
+    to start: its deferred construction raised, or it declared no message type.
+    The spawner replies rather than failing, because it is the parent of every
+    actor it has started and one bad request must not stop the rest of them."""
 
     TERMINATING = "terminating"
     """The peer, or the spawner itself, is shutting down."""
@@ -484,6 +484,17 @@ def _answer(
             ),
         )
 
+    if name is not None:
+        # Checked before the spawn, not by catching what the spawn raises. An
+        # invalid name raises `ValueError`, and so can the factory's own
+        # deferred construction, which runs inside the same spawn call.
+        try:
+            ctx.path.child(name)
+        except ValueError as error:
+            return SpawnFailed(
+                factory=key, reason=SpawnFailure.NAME_REFUSED, detail=str(error)
+            )
+
     try:
         behavior = factory.build(args)
     except Exception as error:  # a reply beats stopping the spawner
@@ -502,15 +513,21 @@ def _answer(
         return SpawnFailed(
             factory=key, reason=SpawnFailure.TERMINATING, detail=str(error)
         )
-    except (ActorNameError, ValueError) as error:
+    except ActorNameError as error:
         return SpawnFailed(
             factory=key, reason=SpawnFailure.NAME_REFUSED, detail=str(error)
         )
-    except TapioError as error:
-        # A behavior with no resolvable message type is the case in hand, and
-        # it is the factory's bug rather than the requester's.
+    except Exception as error:  # a reply beats stopping the spawner
+        # The spawn runs the factory's deferred construction, so this is the
+        # factory failing to start: `Behaviors.setup` raising, or a behavior
+        # with no resolvable message type. It is the factory's bug rather than
+        # the requester's. The cell that failed has already been finished, so
+        # nothing it spawned is left under this spawner.
+        ctx.log.exception("the factory for %r raised while starting", key)
         return SpawnFailed(
-            factory=key, reason=SpawnFailure.FACTORY_FAILED, detail=str(error)
+            factory=key,
+            reason=SpawnFailure.FACTORY_FAILED,
+            detail=f"starting {key!r} raised {type(error).__name__}: {error}",
         )
 
     ctx.log.info("started %s from %r", ref.path, key)

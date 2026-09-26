@@ -120,6 +120,35 @@ def spawnable_broken(args: NoArgs) -> Behavior[Crash]:
     raise BoomError("this factory is broken")
 
 
+@remote_behavior("test-setup-fails")
+def spawnable_setup_fails(args: NoArgs) -> Behavior[Crash]:
+    """A factory whose deferred construction spawns a helper and then raises.
+
+    Building the behavior succeeds. The failure comes while the spawner starts
+    it, which is where `Behaviors.setup` does its work.
+    """
+
+    def build(ctx: ActorContext[Crash]) -> Behavior[Crash]:
+        ctx.spawn(spawnable_idler(NoArgs()), "helper")
+        raise BoomError("setup failed after spawning a helper")
+
+    return Behaviors.setup(build)
+
+
+@remote_behavior("test-setup-value-error")
+def spawnable_setup_value_error(args: NoArgs) -> Behavior[Crash]:
+    """A factory whose deferred construction raises a `ValueError`.
+
+    An invalid actor name raises `ValueError` too, so this is the case that
+    tells a bad name from a failing factory.
+    """
+
+    def build(ctx: ActorContext[Crash]) -> Behavior[Crash]:
+        raise ValueError("a dependency was not configured")
+
+    return Behaviors.setup(build)
+
+
 @remote_behavior("test-unoffered")
 def spawnable_unoffered(args: NoArgs) -> Behavior[Crash]:
     """A registered factory that no spawner in these tests offers."""
@@ -354,6 +383,35 @@ async def test_a_factory_that_raises_is_refused_and_the_spawner_survives(
     # request must not take the rest of them down with it.
     after = await ask_to_spawn(ref, "test-worker")
     assert isinstance(after, Spawned)
+
+
+async def test_a_factory_whose_setup_raises_is_refused_and_the_spawner_survives(
+    system: ActorSystem,
+):
+    ref = system.spawn(offering("test-setup-fails", "test-worker"), "spawner")
+
+    reply = await ask_to_spawn(ref, "test-setup-fails")
+
+    assert isinstance(reply, SpawnFailed)
+    assert reply.reason == SpawnFailure.FACTORY_FAILED
+    assert "BoomError" in reply.detail
+    # The helper its setup spawned went with it, rather than staying under
+    # the spawner with nothing to stop it.
+    assert _children_of(system, "spawner") == ()
+    after = await ask_to_spawn(ref, "test-worker")
+    assert isinstance(after, Spawned)
+
+
+async def test_a_value_error_from_setup_is_a_failed_factory_not_a_bad_name(
+    system: ActorSystem,
+):
+    ref = system.spawn(offering("test-setup-value-error"), "spawner")
+
+    reply = await ask_to_spawn(ref, "test-setup-value-error", name="fine")
+
+    assert isinstance(reply, SpawnFailed)
+    assert reply.reason == SpawnFailure.FACTORY_FAILED
+    assert "not configured" in reply.detail
 
 
 async def test_arguments_that_carry_a_ref_are_refused_and_the_spawner_survives(
