@@ -3,14 +3,20 @@
 import asyncio
 import contextlib
 import gc
+import logging
 import socket
 import sys
+import threading
 
 import pytest
 
 from tapio.actor import ActorContext, ActorSystem, Behavior, Behaviors
+from tapio.actor.path import ActorPath
+from tapio.dispatch.dispatcher import Dispatcher
 from tapio.errors import InsecureRemoteConfig, MessageTypeError, RefResolutionError
 from tapio.remote.address import Address
+from tapio.remote.codec import encode
+from tapio.remote.endpoint import PeerOutbox
 from tapio.remote.handle import LinkHandle
 from tapio.remote.transport import FrameLink, LinkFrame, connect
 from tapio.testkit import (
@@ -636,3 +642,79 @@ async def test_a_handshake_cancelled_before_its_first_line_still_closes_its_link
 async def _never_runs() -> None:
     """A handshake that is cancelled before its first line, for the drain."""
     await asyncio.Event().wait()
+
+
+async def test_a_remote_tell_from_a_thread_dials_on_the_loop(
+    alpha: ActorSystem, beta: ActorSystem
+):
+    seen: list[int] = []
+    ticker = beta.spawn(counting(seen), "ticker")
+    ref = await alpha.resolve(uri(beta, ticker), expect=Tick)
+    assert alpha.remote is not None
+    assert alpha.remote.associations == ()
+
+    # Debug mode makes the loop refuse a task created from another thread,
+    # which is otherwise a race that usually goes unnoticed.
+    loop = asyncio.get_running_loop()
+    loop.set_debug(True)
+    errors: list[BaseException] = []
+
+    def send() -> None:
+        try:
+            ref.tell(Tick(n=1))
+        except BaseException as error:
+            errors.append(error)
+
+    try:
+        thread = threading.Thread(target=send)
+        thread.start()
+        await asyncio.to_thread(thread.join)
+    finally:
+        loop.set_debug(False)
+
+    assert errors == []
+    await eventually(lambda: seen == [1])
+
+
+async def test_a_remote_offer_from_another_loop_is_refused_before_dialling(
+    alpha: ActorSystem, beta: ActorSystem
+):
+    seen: list[int] = []
+    ticker = beta.spawn(counting(seen), "ticker")
+    ref = await alpha.resolve(uri(beta, ticker), expect=Tick)
+    assert alpha.remote is not None
+
+    with pytest.raises(RuntimeError, match="must run on the system's loop"):
+        await asyncio.to_thread(asyncio.run, ref.offer(Tick(n=1)))
+
+    assert alpha.remote.associations == ()
+
+
+async def test_a_send_from_a_thread_after_the_loop_closed_does_not_raise(
+    caplog: pytest.LogCaptureFixture,
+):
+    # A background thread holding a RemoteRef while the service shuts down is
+    # the window: the hop onto the system's loop finds it closed and
+    # `call_soon_threadsafe` raises. Every local sender catches that and logs a
+    # dead letter, and this must too. The thread has no supervisor and no ask
+    # to fail, so an exception there is unhandled in a thread nobody watches.
+    gone = asyncio.new_event_loop()
+    gone.close()
+    peer = Address.parse("tapio://peer@127.0.0.1:2551")
+    outbox = PeerOutbox(_OnALoop(Dispatcher(gone)), peer)  # type: ignore[arg-type]
+    recipient = ActorPath.root("peer").child("user").child("ticker", uid=1)
+    frame = encode(Tick(n=1), to=recipient)
+
+    with caplog.at_level(logging.WARNING, logger="tapio.remote"):
+        await asyncio.to_thread(outbox.send, Tick(n=1), frame, recipient)
+
+    assert "dead letter" in caplog.text
+    assert "after the loop closed" in caplog.text
+    assert str(peer) in caplog.text
+
+
+class _OnALoop:
+    """The one part of an endpoint an outbox reads before it hops: the loop."""
+
+    def __init__(self, dispatcher: Dispatcher) -> None:
+        self.dispatcher = dispatcher
