@@ -413,6 +413,8 @@ class ActorCell(Generic[T]):
         self._ctx: ActorContext[T] = _CellContext(self)
         self._ref: LocalActorRef[T] = LocalActorRef(self)
         self._task: asyncio.Task[None] | None = None
+        # Set by the first line of `_run`. See `abort` for why it is needed.
+        self._running = False
         self._terminated: asyncio.Future[None] = runtime.dispatcher.loop.create_future()
         self._alive = True
         self._terminating = False
@@ -497,7 +499,21 @@ class ActorCell(Generic[T]):
         new task. The message type comes from the behavior it produces, and
         the ref can be used as soon as `spawn` returns, so the type has to be
         known by then.
+
+        If starting fails, the error is raised to the caller, but only after
+        this cell has been finished. Deferred construction may already have
+        spawned children, made adapters and started timers, and a cell that
+        never runs has no loop to release them. Without this, they would
+        outlive the failure and every shutdown after it.
         """
+        try:
+            self._start()
+        except BaseException:
+            self._finish()
+            raise
+
+    def _start(self) -> None:
+        """Do the work of `start`, leaving the cleanup after a failure to it."""
         behavior = self._evaluate(self._initial)
         self._install_behavior(behavior)
         if directive_of(behavior) is Directive.STOPPED:
@@ -788,11 +804,9 @@ class ActorCell(Generic[T]):
             mailbox=mailbox,
         )
         self._children[name] = child
-        try:
-            child.start()
-        except BaseException:
-            self._children.pop(name, None)
-            raise
+        # A child that fails to start finishes itself, which takes it back out
+        # of this map.
+        child.start()
         return child.ref
 
     async def stop(self, deadline: float) -> None:
@@ -835,10 +849,20 @@ class ActorCell(Generic[T]):
             )
 
     def abort(self) -> None:
-        """Cancel this actor's task without waiting for it to finish."""
+        """Cancel this actor's task without waiting for it to finish.
+
+        A task cancelled before its first step never runs any of `_run`, so
+        the `finally` that finishes the cell never runs either. That happens
+        to a child spawned during its parent's deferred construction when the
+        construction then fails, since the child's task has not had a turn
+        yet. Such a cell is finished here instead, or it would stay registered
+        and alive with nothing left to stop it.
+        """
         self._terminating = True
         if self._task is not None and not self._task.done():
             self._task.cancel()
+        if self._task is not None and not self._running:
+            self._finish()
 
     async def _stop_children(self, deadline: float) -> None:
         """Stop every child, bottom-up, against the shared deadline.
@@ -852,6 +876,7 @@ class ActorCell(Generic[T]):
 
     async def _run(self) -> None:
         """The receive loop: the whole of what an actor does."""
+        self._running = True
         try:
             while self._alive:
                 envelope = await self._mailbox.get()
