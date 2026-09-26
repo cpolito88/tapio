@@ -7,7 +7,7 @@ cluster had removed.
 
 import asyncio
 
-from tapio import Behavior, Behaviors, Message, Routers, register_message
+from tapio import Behavior, Behaviors, DeadLetter, Message, Routers, register_message
 from tapio.cluster import MemberStatus
 from tapio.testkit import assert_no_leaked_tasks
 from tests.cluster.conftest import QUICK, cluster_of, seeds_of
@@ -120,3 +120,70 @@ async def test_a_group_router_drops_a_removed_member():
             async with asyncio.timeout(10):
                 while not await batch_avoids(gone):
                     pass
+
+
+def stoppable(counts: dict[str, int], name: str) -> Behavior[Job]:
+    """A worker that counts under its own name, and stops on a negative job."""
+
+    async def on_message(message: Job) -> Behavior[Job]:
+        if message.n < 0:
+            return Behaviors.stopped()
+        counts[name] = counts.get(name, 0) + 1
+        return Behaviors.same()
+
+    return Behaviors.receive_message(on_message, msg_type=Job)
+
+
+async def test_a_group_router_finds_a_local_routee_published_after_it():
+    counts: dict[str, int] = {}
+    letters: list[DeadLetter] = []
+    with assert_no_leaked_tasks():
+        async with cluster_of(1, settings=WORKERS) as nodes:
+            (node,) = nodes
+            node.system.dead_letters.subscribe(letters.append)
+            await joined(nodes)
+            router = node.system.spawn(
+                Routers.group(Job, role="worker", path="/user/worker"),
+                name="router",
+            )
+
+            # Wait until the router holds this node as a routee, which shows
+            # as a job dead-lettered at the worker's path rather than at its own.
+            async with asyncio.timeout(5):
+                while not any(d.recipient.endswith("/user/worker") for d in letters):
+                    router.tell(Job())
+                    await asyncio.sleep(0.02)
+
+            # The natural order: the router first, the worker when it is ready.
+            worker_ref = node.system.spawn(stoppable(counts, "first"), name="worker")
+            node.system.refs.register_well_known(worker_ref)
+            for n in range(5):
+                router.tell(Job(n=n))
+
+            await eventually(lambda: counts == {"first": 5})
+
+
+async def test_a_group_router_follows_a_local_routee_to_its_next_incarnation():
+    counts: dict[str, int] = {}
+    with assert_no_leaked_tasks():
+        async with cluster_of(1, settings=WORKERS) as nodes:
+            (node,) = nodes
+            await joined(nodes)
+            first = node.system.spawn(stoppable(counts, "first"), name="worker")
+            node.system.refs.register_well_known(first)
+            router = node.system.spawn(
+                Routers.group(Job, role="worker", path="/user/worker"),
+                name="router",
+            )
+            async with asyncio.timeout(5):
+                while "first" not in counts:
+                    router.tell(Job())
+                    await asyncio.sleep(0.02)
+
+            first.tell(Job(n=-1))
+            await eventually(lambda: node.system.refs.lookup(first.path) is None)
+            second = node.system.spawn(stoppable(counts, "second"), name="worker")
+            node.system.refs.register_well_known(second)
+            router.tell(Job(n=1))
+
+            await eventually(lambda: counts.get("second") == 1)
