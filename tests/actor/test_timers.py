@@ -393,3 +393,46 @@ async def test_a_fixed_rate_timer_caps_the_burst_after_a_long_stall(caplog):
     assert len(seen) < 60
     assert "fell" in caplog.text
     assert "ticks behind and dropped them" in caplog.text
+
+
+class Other(Message):
+    """A message the actors below do not declare."""
+
+
+async def test_a_timer_started_in_the_factory_is_type_checked():
+    seen: list[Tick] = []
+
+    async def record(message: Tick) -> Behavior[Tick]:
+        seen.append(message)
+        return Behaviors.same()
+
+    def with_timers(timers: TimerScheduler[Tick]) -> Behavior[Tick]:
+        timers.start_single("boom", Other(), timedelta(milliseconds=10))  # type: ignore[arg-type]
+        return Behaviors.receive_message(record, msg_type=Tick)
+
+    with assert_no_leaked_tasks():
+        async with ActorSystem("t") as system:
+            # The type is known only once the factory returns, so the timer is
+            # checked then, and the spawn that ran the factory reports it.
+            with pytest.raises(MessageTypeError, match="deferred construction"):
+                system.spawn(Behaviors.with_timers(with_timers), name="timed")
+
+            await asyncio.sleep(0.05)
+            assert seen == []
+
+
+async def test_a_timer_of_the_declared_type_started_in_the_factory_fires():
+    seen: list[str] = []
+
+    async def record(message: Tick) -> Behavior[Tick]:
+        seen.append(message.label)
+        return Behaviors.same()
+
+    def with_timers(timers: TimerScheduler[Tick]) -> Behavior[Tick]:
+        timers.start_single("kick", Tick(label="kick"), timedelta(milliseconds=5))
+        return Behaviors.receive_message(record, msg_type=Tick)
+
+    async with ActorSystem("t") as system:
+        system.spawn(Behaviors.with_timers(with_timers), name="timed")
+
+        await eventually(lambda: seen == ["kick"])

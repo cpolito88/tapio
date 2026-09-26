@@ -98,10 +98,6 @@ a busy one.
 """
 
 
-def _accept_anything(message: Message) -> None:
-    """Stand in for validation on a cell that never resolved a message type."""
-
-
 @dataclass(frozen=True, slots=True)
 class _Supervisor:
     """One `supervise(...).on_failure(...)` layer, as the cell holds it."""
@@ -420,10 +416,12 @@ class ActorCell(Generic[T]):
         self._terminating = False
         self._current: Message | None = None
         # Both are replaced in `start` once the behavior has declared its
-        # message type. A cell that stops during setup never gets one, and
-        # there is no type check to make without it.
+        # message type. Until then, what deferred construction sends to this
+        # actor is set aside and checked as soon as the type is known. A cell
+        # that stops during setup never gets a type, and has nothing to check.
         self._msg_type: MessageType | None = None
-        self._validate: MessageValidator = _accept_anything
+        self._validate: MessageValidator = self._check_later
+        self._unchecked: list[Message] | None = []
 
     @property
     def path(self) -> ActorPath:
@@ -511,6 +509,20 @@ class ActorCell(Generic[T]):
         except BaseException:
             self._finish()
             raise
+        finally:
+            # Nothing is set aside after this point. A cell that never
+            # declared a type is finished, and what reaches it dead-letters.
+            self._unchecked = None
+
+    def _check_later(self, message: Message) -> None:
+        """Set a message aside, to be checked once the message type is known.
+
+        This is the validator while deferred construction runs. A factory can
+        send to its own actor, directly or by starting a timer, before it has
+        returned the behavior that declares what the actor accepts.
+        """
+        if self._unchecked is not None:
+            self._unchecked.append(message)
 
     def _start(self) -> None:
         """Do the work of `start`, leaving the cleanup after a failure to it."""
@@ -538,6 +550,18 @@ class ActorCell(Generic[T]):
             settings=self._runtime.settings,
             target=self._path,
         )
+        # The factory's own sends, checked now that there is something to check
+        # them against. A failure is raised from the spawn, because the code
+        # that sent the message is the factory the spawn ran.
+        for message in self._unchecked or ():
+            try:
+                self._validate(message)
+            except Exception as error:
+                error.add_note(
+                    f"{self._path} was sent it during deferred construction, "
+                    "and checked once its message type was known"
+                )
+                raise
         # Registered here rather than in the constructor, so a cell that never
         # starts is never addressable. Deregistered in `_finish`, so the
         # registry holds exactly the live actors.
