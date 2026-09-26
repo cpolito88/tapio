@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from datetime import timedelta
 from typing import Any
 
@@ -16,8 +17,8 @@ from tapio import (
     TapioSettings,
 )
 from tapio.actor import ActorContext, SupervisorStrategy
-from tapio.testkit import assert_no_leaked_tasks
-from tests.failures import BoomError
+from tapio.testkit import IsolatedTapioSettings, assert_no_leaked_tasks
+from tests.failures import BoomError, well_inside
 from tests.messages import Increment
 
 
@@ -265,3 +266,57 @@ def failing() -> Behavior[Increment]:
         raise BoomError("boom")
 
     return Behaviors.receive_message(on_message)
+
+
+async def test_terminate_awaited_inside_a_handler_does_not_wait_out_the_deadline(
+    caplog: pytest.LogCaptureFixture,
+):
+    # The actor asking for the shutdown is part of the tree being stopped, so
+    # waiting for the tree would wait on itself until the deadline cut it off.
+    timeout = timedelta(seconds=2)
+    with assert_no_leaked_tasks():
+        system = ActorSystem("t", IsolatedTapioSettings(shutdown_timeout=timeout))
+        returned: list[bool] = []
+
+        async def on_message(message: Increment) -> Behavior[Increment]:
+            await system.terminate()
+            returned.append(True)
+            return Behaviors.same()
+
+        ref = system.spawn(
+            Behaviors.receive_message(on_message, msg_type=Increment), "quitter"
+        )
+        started = time.monotonic()
+        ref.tell(Increment())
+
+        await system.when_terminated()
+
+        assert time.monotonic() - started < well_inside(timeout)
+        assert returned == [True]
+        assert "did not stop within the shutdown deadline" not in caplog.text
+
+
+async def test_terminate_awaited_in_a_task_an_actor_started_still_waits():
+    # Only the actor's own task returns early. Any other task that awaits the
+    # shutdown, even one started from inside a handler, waits for all of it.
+    with assert_no_leaked_tasks():
+        system = ActorSystem("t")
+        waited: list[bool] = []
+        tasks: list[asyncio.Task[None]] = []
+
+        async def wait_for_it() -> None:
+            await system.terminate()
+            waited.append(system._terminated.is_set())
+
+        async def on_message(message: Increment) -> Behavior[Increment]:
+            tasks.append(asyncio.create_task(wait_for_it()))
+            return Behaviors.same()
+
+        ref = system.spawn(
+            Behaviors.receive_message(on_message, msg_type=Increment), "starter"
+        )
+        ref.tell(Increment())
+
+        await system.when_terminated()
+        await asyncio.gather(*tasks)
+        assert waited == [True]
