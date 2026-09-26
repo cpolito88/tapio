@@ -89,7 +89,9 @@ class TimerScheduler(Generic[T]):
             key: What to call this timer, for cancelling or replacing it.
             message: What to send. Checked against this actor's declared type
                 now rather than when it fires, so a mistake surfaces in the
-                handler that scheduled it.
+                handler that scheduled it. A timer started while the actor is
+                being built is checked as soon as the factory returns, and
+                the spawn raises.
             delay: How long to wait.
 
         Raises:

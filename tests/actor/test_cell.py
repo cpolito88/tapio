@@ -14,7 +14,7 @@ import pytest
 
 from tapio import ActorSystem, Behavior, Behaviors, Message
 from tapio.actor import ActorContext, ActorRef, Signal
-from tapio.errors import BehaviorTypeError
+from tapio.errors import BehaviorTypeError, MessageTypeError
 from tapio.testkit import assert_no_leaked_tasks
 from tests.failures import eventually
 from tests.internals import cell_of
@@ -242,3 +242,45 @@ async def test_the_name_of_an_actor_that_failed_to_start_is_free_again():
         )
 
         assert again.path.name == "parent"
+
+
+class Other(Message):
+    """A message the actors below do not declare."""
+
+
+async def test_a_self_send_during_setup_is_type_checked():
+    seen: list[int] = []
+
+    async def record(message: Ping) -> Behavior[Ping]:
+        seen.append(message.n)
+        return Behaviors.same()
+
+    def build(ctx: ActorContext[Ping]) -> Behavior[Ping]:
+        ctx.self_ref.tell(Other())  # type: ignore[arg-type]
+        return Behaviors.receive_message(record, msg_type=Ping)
+
+    with assert_no_leaked_tasks():
+        async with ActorSystem("t") as system:
+            with pytest.raises(MessageTypeError, match="deferred construction"):
+                system.spawn(Behaviors.setup(build), name="actor")
+
+            await asyncio.sleep(0.01)
+            assert seen == []
+
+
+async def test_a_self_send_of_the_declared_type_during_setup_arrives():
+    seen: list[int] = []
+
+    async def record(message: Ping) -> Behavior[Ping]:
+        seen.append(message.n)
+        return Behaviors.same()
+
+    def build(ctx: ActorContext[Ping]) -> Behavior[Ping]:
+        # A message to itself from setup, to kick off its first piece of work.
+        ctx.self_ref.tell(Ping(n=1))
+        return Behaviors.receive_message(record, msg_type=Ping)
+
+    async with ActorSystem("t") as system:
+        system.spawn(Behaviors.setup(build), name="actor")
+
+        await eventually(lambda: seen == [1])
