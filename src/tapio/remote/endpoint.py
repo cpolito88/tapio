@@ -44,6 +44,7 @@ from tapio.remote.transport import (
     FrameLink,
     Link,
     bind,
+    close_server,
     listen,
     server_ssl_context,
     verify_bind_security,
@@ -768,9 +769,7 @@ class RemoteEndpoint:
         server = self._server
         self._server = None
         if server is not None:
-            server.close()
-            with contextlib.suppress(OSError, asyncio.CancelledError):
-                await server.wait_closed()
+            await close_server(server, self._listener)
         else:
             self._listener.close()
         # Drained until it stays empty, because draining it refills it: a

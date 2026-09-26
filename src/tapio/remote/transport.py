@@ -45,6 +45,7 @@ __all__ = [
     "WatcheeTerminated",
     "bind",
     "client_ssl_context",
+    "close_server",
     "connect",
     "framed",
     "is_link_frame",
@@ -432,6 +433,47 @@ async def listen(
         The running server.
     """
     return await asyncio.start_server(handler, sock=listener, ssl=ssl_context)
+
+
+async def close_server(server: asyncio.Server, listener: socket.socket) -> None:
+    """Close a server without losing a connection it has already accepted.
+
+    The selector event loop accepts a connection in one step and builds its
+    transport in a task that runs a turn later. If `Server.close` runs in
+    between, that task fails an assertion inside the transport's constructor.
+    asyncio swallows the error and drops the half-built transport with its
+    socket still open. The handler is never called, so the caller never
+    learns the socket exists and cannot close it. The socket stays open until
+    the garbage collector finds it and warns about it, during whatever code
+    happens to be running at that moment. Python 3.11 to 3.14 all behave this
+    way.
+
+    So this stops accepting first, then lets the loop run one turn, and only
+    then closes the server. In that turn every connection already accepted
+    gets its transport and reaches the handler. The handler can then close
+    it like any other connection that arrives during shutdown.
+
+    Args:
+        server: The server to close.
+        listener: The socket it accepts on.
+    """
+    loop = asyncio.get_running_loop()
+    # This removes the loop's accept callback. `Server.close` would remove it
+    # too, but it also marks the server closed, and that mark is what the
+    # pending transport tasks fail on. A proactor loop, on Windows, accepts
+    # without a reader and raises `NotImplementedError` here. The close below
+    # still runs there.
+    with contextlib.suppress(NotImplementedError):
+        loop.remove_reader(listener.fileno())
+    try:
+        # One turn is enough. Every pending transport task was created before
+        # this point, so the loop runs its first step, which builds the
+        # transport, before it resumes this coroutine.
+        await asyncio.sleep(0)
+    finally:
+        server.close()
+    with contextlib.suppress(OSError, asyncio.CancelledError):
+        await server.wait_closed()
 
 
 def verify_bind_security(settings: RemoteSettings) -> None:
