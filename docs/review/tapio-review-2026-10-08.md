@@ -35,110 +35,110 @@ Probes were never added to `tests/`. Each one ran from a scratch directory as `P
 
 ## 3. Findings table
 
-| ID | Severity | Category | Status | File | Title |
-|---|---|---|---|---|---|
-| CORE-1 | Critical | Bug | Confirmed | `src/tapio/actor/cell.py` | Two stoppers on one wedged actor: the second gets the first one's cancellation, `terminate()` raises `CancelledError` and `when_terminated()` hangs for ever |
-| LINK-1 | Critical | Bug | Confirmed | `src/tapio/remote/association.py` | A message in hand when a close lands is dropped without a dead letter |
-| LINK-2 | Critical | Bug | Confirmed | `src/tapio/remote/endpoint.py` | The losing side of a dial race loses its first frames silently, and can tear down the association |
-| LINK-3 | Critical | Bug | Confirmed | `src/tapio/remote/association.py` | Every consequence of a verdict waits on a socket close that has no deadline |
-| CLUS-1 | Critical | Bug | Confirmed | `src/tapio/cluster/management.py` | An empty token satisfies the beyond-loopback rule and lets anyone in |
-| CORE-2 | High | Bug | Confirmed | `src/tapio/actor/cell.py` | A stop during a restart backoff delivers `PostStop` to the incarnation that already got `PreRestart` |
-| CORE-3 | High | Bug | Confirmed | `src/tapio/actor/timers.py` | A timer tick queued before a restart reaches the new incarnation, which the docs say cannot happen |
-| CORE-4 | High | Bug | Confirmed | `src/tapio/actor/cell.py` | A restarted actor's new incarnation gets `Terminated` for the old incarnation's children |
-| CORE-5 | High | Bug | Confirmed | `src/tapio/actor/path.py` | A user-chosen name starting with `$` collides with `spawn_anonymous` and orphans a live child past `terminate()` |
-| CORE-6 | High | Bug | Confirmed | `src/tapio/actor/restarts.py` | Without `max_restarts`, the backoff exponent never decays and `window` is silently ignored |
-| WIRE-1 | High | Bug | Confirmed | `src/tapio/remote/handshake.py` | A non-ASCII proof crashes the handshake task and the socket is never closed |
-| WIRE-2 | High | Bug | Confirmed | `src/tapio/remote/transport.py` | Deeply nested JSON raises `RecursionError` past every handler, before and after the handshake |
-| WIRE-3 | High | Bug | Confirmed | `src/tapio/remote/transport.py` | `close_server` waits for every accepted connection, so a peer mid-handshake holds `terminate` |
-| WIRE-4 | High | Bug | Confirmed | `src/tapio/remote/transport.py` | `FrameLink.close` waits forever on a peer that stopped reading, and swallows the caller's cancellation |
-| WIRE-5 | High | Bug | Confirmed | `src/tapio/remote/transport.py` | IPv6 remoting cannot work: bracketed hosts cannot be dialled, unbracketed ones cannot be written down |
-| LINK-4 | High | Bug | Confirmed, part suspected | `src/tapio/remote/association.py` | Link frames dropped under load break death watch: a watcher can wait forever |
-| LINK-5 | High | Bug | Confirmed | `src/tapio/remote/association.py` | One inbound frame that raises outside the expected list kills the reader and ends in a false quarantine |
-| LINK-7 | High | Bug | Confirmed | `src/tapio/remote/association.py` | `offer` does not wait while a link is coming up: it dead-letters as buffer-full |
-| LINK-8 | High | Bug | Confirmed | `src/tapio/actor/cell.py` | A ref from before a peer restarted reaches the new incarnation's actor |
-| LINK-9 | High | Bug | Confirmed | `src/tapio/remote/association.py` | A dialler never checks which system answered, so frames are delivered to the wrong system |
-| MEMB-1 | High | Bug | Confirmed | `src/tapio/cluster/downing.py` | Downing strategies count members the two sides can disagree about, so both sides of a split can win |
-| MEMB-2 | High | Bug | Confirmed, part suspected | `src/tapio/cluster/gossip.py` | A restarted node brings back its downed predecessor's unreachability claims |
-| MEMB-3 | High | Bug | Confirmed | `src/tapio/cluster/reachability.py` | Reachability records are never pruned, so one healed split in a ~300-node cluster makes gossip too large to send |
-| CLUS-2 | High | Bug | Confirmed | `src/tapio/cluster/daemon.py` | A singleton host that restarts at the same address is never replaced: no node runs the singleton again |
-| CLUS-3 | High | Bug | Confirmed | `src/tapio/cluster/daemon.py` | A manager that subscribes after the cluster formed runs a second instance while it learns who is oldest |
-| CLUS-4 | High | Bug | Confirmed, part suspected | `src/tapio/cluster/singleton.py` | A leave asked for on another node starts the successor before the host lets go; the docs promise it cannot |
-| CLUS-5 | High | Bug | Confirmed | `src/tapio/cluster/singleton.py` | A host downed by a strategy keeps running its instance while the majority starts another |
-| CLUS-6 | High | Bug | Confirmed, part suspected | `src/tapio/cluster/daemon.py` | A downing strategy that raises (a lease backend that cannot be reached) stops the daemon on every node |
-| CLUS-7 | High | Bug | Confirmed | `src/tapio/cluster/daemon.py` | A node that learns of its own downing as `removed` is never told it was downed |
-| PERI-1 | High | Bug | Confirmed | `src/tapio/dispatch/tasks.py` | The shutdown deadline is not a bound: a cancelled handler's async cleanup runs as long as it likes |
-| PERI-2 | High | Bug | Confirmed | `src/tapio/remote/endpoint.py` | `remote.reconnect` returns success on a link the peer refuses, so the documented repair silently does nothing |
-| PERI-3 | High | Bug | Confirmed | `src/tapio/cluster/cluster.py` | `terminate_on_down=True` is ignored unless a downing strategy is set, so an operator-downed node never shuts down |
-| PERI-4 | High | Docs | Confirmed | `docs/lifecycle.md` | `docs/lifecycle.md` says `PostStop` runs on a restart's teardown; `PreRestart` says it does not |
-| PERI-5 | High | Docs | Confirmed | `src/tapio/actor/router.py` | The `Routers.group` snippet calls `ctx.spawn` without the required name |
-| PERI-6 | High | Docs | Confirmed | `src/tapio/testkit/behavior.py` | The `BehaviorTestKit` module example builds `Spawned("worker")`, which raises |
-| PERI-7 | High | Docs | Confirmed | `docs/remoting.md` | The frame shown in `docs/remoting.md` is rejected by the decoder |
-| PERI-8 | High | Bug | Confirmed | `src/tapio/actor/router.py` | One `Routers.pool(...)` value spawned twice shares one rotation, and half of each pool never gets work |
-| CORE-7 | Medium | Quality | Confirmed | `src/tapio/actor/ref.py` | `ActorRef[T]` is invariant, so the type checker rejects a safe substitution and pushes users to `cast` |
-| WIRE-6 | Medium | Bug | Confirmed | `src/tapio/remote/handshake.py` | The dialler signs any nonce before it checks the listener, and the proof binds nothing else |
-| WIRE-7 | Medium | Bug | Confirmed | `src/tapio/remote/transport.py` | Unauthenticated peers can make the listener buffer `max_frame_bytes` each, with no limit on how many |
-| WIRE-8 | Medium | Bug | Confirmed | `src/tapio/remote/transport.py` | A TLS listener ignores `handshake_timeout`: the TLS handshake gets asyncio's 60 seconds |
-| WIRE-9 | Medium | Docs | Confirmed | `src/tapio/remote/codec.py` | "Strict validation" off the wire is lax validation |
-| WIRE-10 | Medium | Quality | Confirmed | `tests/remote/test_transport.py` | No test ever opens a TLS link |
-| LINK-10 | Medium | Bug | Confirmed | `src/tapio/remote/spawner.py` | A spawner stops, with every worker it started, when an arguments validator raises anything but `ValueError` |
-| LINK-11 | Medium | Bug | Confirmed | `src/tapio/remote/association.py` | A frame being flushed by `_open` vanishes when the reader is cancelled |
-| LINK-12 | Medium | Bug | Confirmed, part suspected | `src/tapio/actor/watch.py` | Releasing a stale `_PeerWatcher` removes the live one that replaced it |
-| LINK-13 | Medium | Bug | Confirmed | `src/tapio/actor/cell.py` | Dead letters from the association's own mailbox: internal messages, wrong recipient, no peer |
-| LINK-14 | Medium | Docs | Confirmed | `docs/unreachable.md` | Docs: "only silence quarantines", and the timings that make a dial look like silence |
-| MEMB-4 | Medium | Quality | Confirmed | `src/tapio/cluster/gossip.py` | `leader` and `converged` are O(members x records) and run several times per daemon message |
-| MEMB-5 | Medium | Bug | Suspected | `src/tapio/cluster/downing.py` | LeaseMajority names a side by an address the other side can also use |
-| MEMB-6 | Medium | Bug | Confirmed | `src/tapio/cluster/downing.py` | `Lease.acquire` is unbounded, and the daemon awaits it inside its turn |
-| MEMB-7 | Medium | Docs | Suspected | `docs/clustering.md` | "A partition drops every link across it" only covers links that exist |
-| MEMB-9 | Medium | Docs | Confirmed | `src/tapio/cluster/gossip.py` | The leader rule as documented leaves out the reachability filter, and its fallback is wider than documented |
-| CLUS-8 | Medium | Bug | Confirmed | `src/tapio/cluster/cluster.py` | `join_seed_nodes` reports success for a node that is removed or downed |
-| CLUS-9 | Medium | Bug | Confirmed | `src/tapio/cluster/daemon.py` | A subscriber that is a remote ref breaks every later turn of the daemon |
-| CLUS-10 | Medium | Bug | Confirmed | `src/tapio/cluster/messages.py` | `Leave` is a registered wire message: any peer past the handshake can walk any member out |
-| CLUS-11 | Medium | Bug | Confirmed | `src/tapio/cluster/management.py` | Over TLS the 32-connection cap and the 30 s budget do not cover the handshake |
-| CLUS-12 | Medium | Bug | Confirmed | `src/tapio/cluster/management.py` | A management certificate that cannot be loaded leaves a bound port that never answers, silently |
-| CLUS-13 | Medium | Docs | Confirmed | `src/tapio/cluster/cluster.py` | `when_downed`, `terminate_on_down` and `ClusterDowned` say only a strategy downs a node; an operator does too |
-| PERI-9 | Medium | Docs | Confirmed | `examples/README.md` | `examples/README.md` omits six of the 28 examples and says every tier has landed |
-| PERI-10 | Medium | Docs | Confirmed | `src/tapio/actor/router.py` | `RoundRobin` claims a shrink never hands the last routee more work, and its own test asserts the opposite |
-| PERI-11 | Medium | Bug | Confirmed, part suspected | `src/tapio/actor/adapter.py` | A released `AdapterRef` publishes dead letters on the sender's thread |
-| PERI-12 | Medium | Bug | Confirmed | `src/tapio/actor/adapter.py` | An adapter made in `setup` leaves one registry entry per restart, not one per actor |
-| PERI-13 | Medium | Bug | Confirmed | `src/tapio/dispatch/blocking.py` | The blocking pool finds its threads by name, so a second system with the same name waits on the first one's threads |
-| PERI-14 | Medium | Bug | Confirmed | `src/tapio/settings.py` | Settings accept values that fail later, inside an actor |
-| PERI-15 | Medium | Docs | Confirmed | `src/tapio/errors.py` | "Every error tapio raises derives from `TapioError`" is false; an invalid actor name raises `ValueError` |
-| PERI-16 | Medium | Quality | Confirmed | `src/tapio/actor/__init__.py` | Runtime internals are exported from `tapio.actor` and `tapio.cluster`, and the top level is inconsistent |
-| PERI-17 | Medium | Docs | Confirmed | `src/tapio/dispatch/__init__.py` | `BlockingPool` and `Dispatcher` are public but do not say what a caller must not do |
-| PERI-18 | Medium | Bug | Confirmed, part suspected | `src/tapio/dispatch/tasks.py` | `cancel_and_wait` treats a cancellation from before the call as aimed at this wait |
-| PERI-19 | Medium | Quality | Confirmed | `src/tapio/testkit/behavior.py` | `BehaviorTestKit` reads `TAPIO_*` from the environment by default |
-| PERI-20 | Medium | Docs | Confirmed | `docs/index.md` | "Every code block is a snippet include from `examples/`" is false, and the broken blocks are the ones that are not |
-| PERI-21 | Medium | Docs | Confirmed | `README.md` | README contradicts itself on validation cost, and names overflow strategies by values the setting rejects |
-| PERI-22 | Medium | Quality | Confirmed | `tests/conftest.py` | The suite's `system` fixture does not assert the leak invariant that AGENTS.md says every system-starting test asserts |
-| PERI-23 | Medium | Quality | Confirmed | `tests/actor/test_system.py` | Tests use `asyncio.sleep` as synchronisation where an `eventually` or a probe is available |
-| CORE-8 | Low | Bug | Confirmed | `src/tapio/actor/cell.py` | The shutdown-deadline warning always says "handling no message" |
-| CORE-9 | Low | Docs | Confirmed | `src/tapio/actor/system.py` | `ActorSystem.resolve` skips the `expect` check for a local address, contrary to its `Raises` section |
-| WIRE-11 | Low | Bug | Confirmed | `src/tapio/remote/codec.py` | The version check accepts `true` and `1.0` |
-| WIRE-12 | Low | Bug | Confirmed | `src/tapio/remote/address.py` | Uid and port parsing accept non-ASCII digits and signs |
-| WIRE-13 | Low | Quality | Confirmed | `src/tapio/remote/registry.py` | Registering one class under a second key silently changes the key it is sent under |
-| WIRE-14 | Low | Quality | Confirmed | `src/tapio/remote/codec.py` | `decode` parses every payload three times and rounds numbers through `float` |
-| WIRE-15 | Low | Docs | Confirmed | `as listed` | Smaller docstring and docs inaccuracies |
-| LINK-15 | Low | Quality | Confirmed | `` | Low findings |
-| MEMB-8 | Low | Quality | Confirmed | `src/tapio/cluster/gossip.py` | The merge laws hold only for canonical values, and nothing enforces that a value is canonical |
-| MEMB-10 | Low | Docs | Confirmed | `docs/clustering.md` | The docs say only the leader downs a member, but every node does |
-| MEMB-11 | Low | Docs | Confirmed | `docs/clustering.md` | "Every member is watched by exactly that many others" is false for small clusters |
-| MEMB-12 | Low | Quality | Confirmed | `src/tapio/settings.py` | `ClusterSettings` accepts timings that cannot work |
-| CLUS-14 | Low | Bug | Suspected | `src/tapio/cluster/daemon.py` | The first subscriber misses events produced later in the turn that subscribed it |
-| CLUS-15 | Low | Docs | Confirmed | `src/tapio/cluster/daemon.py` | The replay leaves out members that are leaving, contradicting "no window in which a late subscriber has missed something" |
-| CLUS-16 | Low | Bug | Confirmed | `src/tapio/cluster/router.py` | The group router adds joining and leaving members when they become reachable again |
-| CLUS-17 | Low | Bug | Confirmed | `src/tapio/cluster/cluster.py` | `timeout=timedelta(0)` silently means "the default" |
-| CLUS-18 | Low | Quality | Confirmed | `src/tapio/cluster/daemon.py` | The first seed is recognised by comparing raw address strings |
-| CLUS-19 | Low | Docs | Confirmed | `as listed` | Smaller docs inaccuracies |
-| CLUS-20 | Low | Quality | Confirmed | `src/tapio/cluster/cli.py` | CLI: `--client-key` without `--client-cert` is ignored, and the token only travels on the command line |
-| PERI-24 | Low | Quality | Confirmed | `tests/examples/test_suite.py` | The examples completeness check compares against a hand-kept set, not the tests |
-| PERI-25 | Low | Docs | Confirmed | `src/tapio/logging.py` | `describe_callable` says a lambda falls back to `repr`; it does not |
-| PERI-26 | Low | Docs | Confirmed | `docs/blocking.md` | `docs/blocking.md` misdescribes the thread check and omits that a wedged call blocks interpreter exit |
-| PERI-27 | Low | Quality | Confirmed | `src/tapio/testkit/probe.py` | `TestProbe.expect_terminated` takes whichever signal is next, and loses it on a mismatch |
-| PERI-28 | Low | Docs | Confirmed | `src/tapio/testkit/remote.py` | `LinkFaults.delay` throttles rather than delays, `drop` replaces, and a second `link_faults` orphans the first |
-| PERI-29 | Low | Quality | Confirmed | `src/tapio/testkit/leaks.py` | `assert_no_leaked_tasks` reports the leak instead of the block's own failure |
-| PERI-30 | Low | Docs | Confirmed | `CONTRIBUTING.md` | `CONTRIBUTING.md` does not carry the commit and PR rules it is said to summarise |
-| PERI-31 | Low | Docs | Confirmed | `various` | Smaller doc inaccuracies |
-| PERI-32 | Low | Quality | Confirmed | `tests/cluster/test_{member,reachability,clock,gossip}.py` | Property tests cover the merge laws; the leader and downing decisions have none |
+| ID | Severity | Category | Status | File | Title | Issue |
+|---|---|---|---|---|---|---|
+| CORE-1 | Critical | Bug | Confirmed | `src/tapio/actor/cell.py` | Two stoppers on one wedged actor: the second gets the first one's cancellation, `terminate()` raises `CancelledError` and `when_terminated()` hangs for ever | #177 |
+| LINK-1 | Critical | Bug | Confirmed | `src/tapio/remote/association.py` | A message in hand when a close lands is dropped without a dead letter | #178 |
+| LINK-2 | Critical | Bug | Confirmed | `src/tapio/remote/endpoint.py` | The losing side of a dial race loses its first frames silently, and can tear down the association | #179 |
+| LINK-3 | Critical | Bug | Confirmed | `src/tapio/remote/association.py` | Every consequence of a verdict waits on a socket close that has no deadline | #180 |
+| CLUS-1 | Critical | Bug | Confirmed | `src/tapio/cluster/management.py` | An empty token satisfies the beyond-loopback rule and lets anyone in | #181 |
+| CORE-2 | High | Bug | Confirmed | `src/tapio/actor/cell.py` | A stop during a restart backoff delivers `PostStop` to the incarnation that already got `PreRestart` | #182 |
+| CORE-3 | High | Bug | Confirmed | `src/tapio/actor/timers.py` | A timer tick queued before a restart reaches the new incarnation, which the docs say cannot happen | #183 |
+| CORE-4 | High | Bug | Confirmed | `src/tapio/actor/cell.py` | A restarted actor's new incarnation gets `Terminated` for the old incarnation's children | #184 |
+| CORE-5 | High | Bug | Confirmed | `src/tapio/actor/path.py` | A user-chosen name starting with `$` collides with `spawn_anonymous` and orphans a live child past `terminate()` | #185 |
+| CORE-6 | High | Bug | Confirmed | `src/tapio/actor/restarts.py` | Without `max_restarts`, the backoff exponent never decays and `window` is silently ignored | #186 |
+| WIRE-1 | High | Bug | Confirmed | `src/tapio/remote/handshake.py` | A non-ASCII proof crashes the handshake task and the socket is never closed | #187 |
+| WIRE-2 | High | Bug | Confirmed | `src/tapio/remote/transport.py` | Deeply nested JSON raises `RecursionError` past every handler, before and after the handshake | #188 |
+| WIRE-3 | High | Bug | Confirmed | `src/tapio/remote/transport.py` | `close_server` waits for every accepted connection, so a peer mid-handshake holds `terminate` | #189 |
+| WIRE-4 | High | Bug | Confirmed | `src/tapio/remote/transport.py` | `FrameLink.close` waits forever on a peer that stopped reading, and swallows the caller's cancellation | #190 |
+| WIRE-5 | High | Bug | Confirmed | `src/tapio/remote/transport.py` | IPv6 remoting cannot work: bracketed hosts cannot be dialled, unbracketed ones cannot be written down | #191 |
+| LINK-4 | High | Bug | Confirmed, part suspected | `src/tapio/remote/association.py` | Link frames dropped under load break death watch: a watcher can wait forever | #192 |
+| LINK-5 | High | Bug | Confirmed | `src/tapio/remote/association.py` | One inbound frame that raises outside the expected list kills the reader and ends in a false quarantine | #193 |
+| LINK-7 | High | Bug | Confirmed | `src/tapio/remote/association.py` | `offer` does not wait while a link is coming up: it dead-letters as buffer-full | #194 |
+| LINK-8 | High | Bug | Confirmed | `src/tapio/actor/cell.py` | A ref from before a peer restarted reaches the new incarnation's actor | #195 |
+| LINK-9 | High | Bug | Confirmed | `src/tapio/remote/association.py` | A dialler never checks which system answered, so frames are delivered to the wrong system | #196 |
+| MEMB-1 | High | Bug | Confirmed | `src/tapio/cluster/downing.py` | Downing strategies count members the two sides can disagree about, so both sides of a split can win | #197 |
+| MEMB-2 | High | Bug | Confirmed, part suspected | `src/tapio/cluster/gossip.py` | A restarted node brings back its downed predecessor's unreachability claims | #198 |
+| MEMB-3 | High | Bug | Confirmed | `src/tapio/cluster/reachability.py` | Reachability records are never pruned, so one healed split in a ~300-node cluster makes gossip too large to send | #199 |
+| CLUS-2 | High | Bug | Confirmed | `src/tapio/cluster/daemon.py` | A singleton host that restarts at the same address is never replaced: no node runs the singleton again | #200 |
+| CLUS-3 | High | Bug | Confirmed | `src/tapio/cluster/daemon.py` | A manager that subscribes after the cluster formed runs a second instance while it learns who is oldest | #201 |
+| CLUS-4 | High | Bug | Confirmed, part suspected | `src/tapio/cluster/singleton.py` | A leave asked for on another node starts the successor before the host lets go; the docs promise it cannot | #202 |
+| CLUS-5 | High | Bug | Confirmed | `src/tapio/cluster/singleton.py` | A host downed by a strategy keeps running its instance while the majority starts another | #203 |
+| CLUS-6 | High | Bug | Confirmed, part suspected | `src/tapio/cluster/daemon.py` | A downing strategy that raises (a lease backend that cannot be reached) stops the daemon on every node | #204 |
+| CLUS-7 | High | Bug | Confirmed | `src/tapio/cluster/daemon.py` | A node that learns of its own downing as `removed` is never told it was downed | #205 |
+| PERI-1 | High | Bug | Confirmed | `src/tapio/dispatch/tasks.py` | The shutdown deadline is not a bound: a cancelled handler's async cleanup runs as long as it likes | #206 |
+| PERI-2 | High | Bug | Confirmed | `src/tapio/remote/endpoint.py` | `remote.reconnect` returns success on a link the peer refuses, so the documented repair silently does nothing | #207 |
+| PERI-3 | High | Bug | Confirmed | `src/tapio/cluster/cluster.py` | `terminate_on_down=True` is ignored unless a downing strategy is set, so an operator-downed node never shuts down | #208 |
+| PERI-4 | High | Docs | Confirmed | `docs/lifecycle.md` | `docs/lifecycle.md` says `PostStop` runs on a restart's teardown; `PreRestart` says it does not | #209 |
+| PERI-5 | High | Docs | Confirmed | `src/tapio/actor/router.py` | The `Routers.group` snippet calls `ctx.spawn` without the required name | #210 |
+| PERI-6 | High | Docs | Confirmed | `src/tapio/testkit/behavior.py` | The `BehaviorTestKit` module example builds `Spawned("worker")`, which raises | #211 |
+| PERI-7 | High | Docs | Confirmed | `docs/remoting.md` | The frame shown in `docs/remoting.md` is rejected by the decoder | #212 |
+| PERI-8 | High | Bug | Confirmed | `src/tapio/actor/router.py` | One `Routers.pool(...)` value spawned twice shares one rotation, and half of each pool never gets work | #213 |
+| CORE-7 | Medium | Quality | Confirmed | `src/tapio/actor/ref.py` | `ActorRef[T]` is invariant, so the type checker rejects a safe substitution and pushes users to `cast` | #214 |
+| WIRE-6 | Medium | Bug | Confirmed | `src/tapio/remote/handshake.py` | The dialler signs any nonce before it checks the listener, and the proof binds nothing else | #215 |
+| WIRE-7 | Medium | Bug | Confirmed | `src/tapio/remote/transport.py` | Unauthenticated peers can make the listener buffer `max_frame_bytes` each, with no limit on how many | #216 |
+| WIRE-8 | Medium | Bug | Confirmed | `src/tapio/remote/transport.py` | A TLS listener ignores `handshake_timeout`: the TLS handshake gets asyncio's 60 seconds | #216 |
+| WIRE-9 | Medium | Docs | Confirmed | `src/tapio/remote/codec.py` | "Strict validation" off the wire is lax validation | #236 |
+| WIRE-10 | Medium | Quality | Confirmed | `tests/remote/test_transport.py` | No test ever opens a TLS link | #239 |
+| LINK-10 | Medium | Bug | Confirmed | `src/tapio/remote/spawner.py` | A spawner stops, with every worker it started, when an arguments validator raises anything but `ValueError` | #217 |
+| LINK-11 | Medium | Bug | Confirmed | `src/tapio/remote/association.py` | A frame being flushed by `_open` vanishes when the reader is cancelled | #218 |
+| LINK-12 | Medium | Bug | Confirmed, part suspected | `src/tapio/actor/watch.py` | Releasing a stale `_PeerWatcher` removes the live one that replaced it | #219 |
+| LINK-13 | Medium | Bug | Confirmed | `src/tapio/actor/cell.py` | Dead letters from the association's own mailbox: internal messages, wrong recipient, no peer | #220 |
+| LINK-14 | Medium | Docs | Confirmed | `docs/unreachable.md` | Docs: "only silence quarantines", and the timings that make a dial look like silence | #236 |
+| MEMB-4 | Medium | Quality | Confirmed | `src/tapio/cluster/gossip.py` | `leader` and `converged` are O(members x records) and run several times per daemon message | #221 |
+| MEMB-5 | Medium | Bug | Suspected | `src/tapio/cluster/downing.py` | LeaseMajority names a side by an address the other side can also use | #222 |
+| MEMB-6 | Medium | Bug | Confirmed | `src/tapio/cluster/downing.py` | `Lease.acquire` is unbounded, and the daemon awaits it inside its turn | #223 |
+| MEMB-7 | Medium | Docs | Suspected | `docs/clustering.md` | "A partition drops every link across it" only covers links that exist | #237 |
+| MEMB-9 | Medium | Docs | Confirmed | `src/tapio/cluster/gossip.py` | The leader rule as documented leaves out the reachability filter, and its fallback is wider than documented | #237 |
+| CLUS-8 | Medium | Bug | Confirmed | `src/tapio/cluster/cluster.py` | `join_seed_nodes` reports success for a node that is removed or downed | #224 |
+| CLUS-9 | Medium | Bug | Confirmed | `src/tapio/cluster/daemon.py` | A subscriber that is a remote ref breaks every later turn of the daemon | #225 |
+| CLUS-10 | Medium | Bug | Confirmed | `src/tapio/cluster/messages.py` | `Leave` is a registered wire message: any peer past the handshake can walk any member out | #226 |
+| CLUS-11 | Medium | Bug | Confirmed | `src/tapio/cluster/management.py` | Over TLS the 32-connection cap and the 30 s budget do not cover the handshake | #227 |
+| CLUS-12 | Medium | Bug | Confirmed | `src/tapio/cluster/management.py` | A management certificate that cannot be loaded leaves a bound port that never answers, silently | #228 |
+| CLUS-13 | Medium | Docs | Confirmed | `src/tapio/cluster/cluster.py` | `when_downed`, `terminate_on_down` and `ClusterDowned` say only a strategy downs a node; an operator does too | #237 |
+| PERI-9 | Medium | Docs | Confirmed | `examples/README.md` | `examples/README.md` omits six of the 28 examples and says every tier has landed | #238 |
+| PERI-10 | Medium | Docs | Confirmed | `src/tapio/actor/router.py` | `RoundRobin` claims a shrink never hands the last routee more work, and its own test asserts the opposite | #238 |
+| PERI-11 | Medium | Bug | Confirmed, part suspected | `src/tapio/actor/adapter.py` | A released `AdapterRef` publishes dead letters on the sender's thread | #229 |
+| PERI-12 | Medium | Bug | Confirmed | `src/tapio/actor/adapter.py` | An adapter made in `setup` leaves one registry entry per restart, not one per actor | #229 |
+| PERI-13 | Medium | Bug | Confirmed | `src/tapio/dispatch/blocking.py` | The blocking pool finds its threads by name, so a second system with the same name waits on the first one's threads | #230 |
+| PERI-14 | Medium | Bug | Confirmed | `src/tapio/settings.py` | Settings accept values that fail later, inside an actor | #231 |
+| PERI-15 | Medium | Docs | Confirmed | `src/tapio/errors.py` | "Every error tapio raises derives from `TapioError`" is false; an invalid actor name raises `ValueError` | #238 |
+| PERI-16 | Medium | Quality | Confirmed | `src/tapio/actor/__init__.py` | Runtime internals are exported from `tapio.actor` and `tapio.cluster`, and the top level is inconsistent | #232 |
+| PERI-17 | Medium | Docs | Confirmed | `src/tapio/dispatch/__init__.py` | `BlockingPool` and `Dispatcher` are public but do not say what a caller must not do | #238 |
+| PERI-18 | Medium | Bug | Confirmed, part suspected | `src/tapio/dispatch/tasks.py` | `cancel_and_wait` treats a cancellation from before the call as aimed at this wait | #233 |
+| PERI-19 | Medium | Quality | Confirmed | `src/tapio/testkit/behavior.py` | `BehaviorTestKit` reads `TAPIO_*` from the environment by default | #234 |
+| PERI-20 | Medium | Docs | Confirmed | `docs/index.md` | "Every code block is a snippet include from `examples/`" is false, and the broken blocks are the ones that are not | #238 |
+| PERI-21 | Medium | Docs | Confirmed | `README.md` | README contradicts itself on validation cost, and names overflow strategies by values the setting rejects | #238 |
+| PERI-22 | Medium | Quality | Confirmed | `tests/conftest.py` | The suite's `system` fixture does not assert the leak invariant that AGENTS.md says every system-starting test asserts | #239 |
+| PERI-23 | Medium | Quality | Confirmed | `tests/actor/test_system.py` | Tests use `asyncio.sleep` as synchronisation where an `eventually` or a probe is available | #239 |
+| CORE-8 | Low | Bug | Confirmed | `src/tapio/actor/cell.py` | The shutdown-deadline warning always says "handling no message" | none (Low) |
+| CORE-9 | Low | Docs | Confirmed | `src/tapio/actor/system.py` | `ActorSystem.resolve` skips the `expect` check for a local address, contrary to its `Raises` section | none (Low) |
+| WIRE-11 | Low | Bug | Confirmed | `src/tapio/remote/codec.py` | The version check accepts `true` and `1.0` | none (Low) |
+| WIRE-12 | Low | Bug | Confirmed | `src/tapio/remote/address.py` | Uid and port parsing accept non-ASCII digits and signs | none (Low) |
+| WIRE-13 | Low | Quality | Confirmed | `src/tapio/remote/registry.py` | Registering one class under a second key silently changes the key it is sent under | none (Low) |
+| WIRE-14 | Low | Quality | Confirmed | `src/tapio/remote/codec.py` | `decode` parses every payload three times and rounds numbers through `float` | none (Low) |
+| WIRE-15 | Low | Docs | Confirmed | `as listed` | Smaller docstring and docs inaccuracies | none (Low) |
+| LINK-15 | Low | Quality | Confirmed | `` | Low findings | none (Low) |
+| MEMB-8 | Low | Quality | Confirmed | `src/tapio/cluster/gossip.py` | The merge laws hold only for canonical values, and nothing enforces that a value is canonical | none (Low) |
+| MEMB-10 | Low | Docs | Confirmed | `docs/clustering.md` | The docs say only the leader downs a member, but every node does | none (Low) |
+| MEMB-11 | Low | Docs | Confirmed | `docs/clustering.md` | "Every member is watched by exactly that many others" is false for small clusters | none (Low) |
+| MEMB-12 | Low | Quality | Confirmed | `src/tapio/settings.py` | `ClusterSettings` accepts timings that cannot work | none (Low) |
+| CLUS-14 | Low | Bug | Suspected | `src/tapio/cluster/daemon.py` | The first subscriber misses events produced later in the turn that subscribed it | none (Low) |
+| CLUS-15 | Low | Docs | Confirmed | `src/tapio/cluster/daemon.py` | The replay leaves out members that are leaving, contradicting "no window in which a late subscriber has missed something" | none (Low) |
+| CLUS-16 | Low | Bug | Confirmed | `src/tapio/cluster/router.py` | The group router adds joining and leaving members when they become reachable again | none (Low) |
+| CLUS-17 | Low | Bug | Confirmed | `src/tapio/cluster/cluster.py` | `timeout=timedelta(0)` silently means "the default" | none (Low) |
+| CLUS-18 | Low | Quality | Confirmed | `src/tapio/cluster/daemon.py` | The first seed is recognised by comparing raw address strings | none (Low) |
+| CLUS-19 | Low | Docs | Confirmed | `as listed` | Smaller docs inaccuracies | none (Low) |
+| CLUS-20 | Low | Quality | Confirmed | `src/tapio/cluster/cli.py` | CLI: `--client-key` without `--client-cert` is ignored, and the token only travels on the command line | none (Low) |
+| PERI-24 | Low | Quality | Confirmed | `tests/examples/test_suite.py` | The examples completeness check compares against a hand-kept set, not the tests | none (Low) |
+| PERI-25 | Low | Docs | Confirmed | `src/tapio/logging.py` | `describe_callable` says a lambda falls back to `repr`; it does not | none (Low) |
+| PERI-26 | Low | Docs | Confirmed | `docs/blocking.md` | `docs/blocking.md` misdescribes the thread check and omits that a wedged call blocks interpreter exit | none (Low) |
+| PERI-27 | Low | Quality | Confirmed | `src/tapio/testkit/probe.py` | `TestProbe.expect_terminated` takes whichever signal is next, and loses it on a mismatch | none (Low) |
+| PERI-28 | Low | Docs | Confirmed | `src/tapio/testkit/remote.py` | `LinkFaults.delay` throttles rather than delays, `drop` replaces, and a second `link_faults` orphans the first | none (Low) |
+| PERI-29 | Low | Quality | Confirmed | `src/tapio/testkit/leaks.py` | `assert_no_leaked_tasks` reports the leak instead of the block's own failure | none (Low) |
+| PERI-30 | Low | Docs | Confirmed | `CONTRIBUTING.md` | `CONTRIBUTING.md` does not carry the commit and PR rules it is said to summarise | none (Low) |
+| PERI-31 | Low | Docs | Confirmed | `various` | Smaller doc inaccuracies | none (Low) |
+| PERI-32 | Low | Quality | Confirmed | `tests/cluster/test_{member,reachability,clock,gossip}.py` | Property tests cover the merge laws; the leader and downing decisions have none | none (Low) |
 
 ## 4. Findings in full
 
@@ -151,6 +151,7 @@ Ordered by severity, then by subsystem from the core outward.
 **Category:** Bug
 **Status:** Confirmed (probe fails today; proposed fix verified by monkeypatch, 545 actor and remote tests still pass)
 **Location:** `src/tapio/actor/cell.py:879-898`, surfacing at `src/tapio/actor/system.py:699`
+**Issue:** #177
 
 **What's wrong.** `ActorCell.stop` waits for the actor's task through `asyncio.shield`:
 
@@ -243,6 +244,7 @@ async def test_terminate_finishes_when_a_restart_cancels_a_wedged_child():
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/remote/association.py:644-654`
+**Issue:** #178
 
 **What's wrong**
 
@@ -302,6 +304,7 @@ Output on `main`: `assert [2, 3, 4, 5] == [1, 2, 3, 4, 5]`. Tick 1 is neither de
 **Category:** Bug
 **Status:** Confirmed (with the losing side's accept delayed by 100 ms, which is ordinary network jitter)
 **Location:** `src/tapio/remote/endpoint.py:385-388`, `src/tapio/remote/association.py:935-964`, `src/tapio/remote/handshake.py:166-180`
+**Issue:** #179
 
 **What's wrong** When both ends dial, the acceptor whose own dial wins finishes `accept` (which has already written `welcome`) and then closes the inbound link without reading it:
 
@@ -338,6 +341,7 @@ Tick 1 is lost silently, ticks 2 to 5 are dead-lettered, and a false `PeerUnreac
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/remote/association.py:1066-1094`, `src/tapio/remote/handle.py:118-128`, `src/tapio/remote/transport.py:323-332`
+**Issue:** #180
 **Related:** the unbounded close it waits on is WIRE-4.
 
 **What's wrong**
@@ -400,6 +404,7 @@ Output on `main`: `AssertionError: ([], Association('tapio://stuck@127.0.0.1:367
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/cluster/management.py:111-115`, `management.py:353-368`, `src/tapio/settings.py:279`
+**Issue:** #181
 
 **What's wrong.** The bind guard only checks that a token exists, and the comparison accepts an empty presented value:
 
@@ -442,6 +447,7 @@ After the fix, the construction itself should raise, so the test becomes `with p
 **Category:** Bug
 **Status:** Confirmed (probe fails today)
 **Location:** `src/tapio/actor/cell.py:1111`, `1119-1130`, `1160-1168`
+**Issue:** #182
 
 **What's wrong.** `_restart` delivers `PreRestart` to `self._signalling`, the failed incarnation's behavior. It clears `_signalling` only after the backoff (line 1130). If a `PostStop` arrives during `_backoff`, it is run through `_run_lifecycle_hook`, which delivers it to the same `_signalling`:
 
@@ -507,6 +513,7 @@ async def test_stop_during_backoff_does_not_deliver_poststop_after_prerestart():
 **Category:** Bug
 **Status:** Confirmed (probe fails today)
 **Location:** `src/tapio/actor/timers.py:9-11`, `202-211`, `296-305`; `src/tapio/actor/behavior.py:647-650`; `src/tapio/actor/cell.py:1115`
+**Issue:** #183
 
 **What's wrong.** A restart calls `self._timers.cancel_all()`, which cancels the timer tasks. A tick that already fired is a message on the user lane, and the mailbox survives a restart by design, so the replacement incarnation handles it. `cancel` documents this ("A tick already on the mailbox is not retracted"), but three places promise more:
 
@@ -588,6 +595,7 @@ async def test_tick_from_failed_incarnation_does_not_reach_replacement():
 **Category:** Bug
 **Status:** Confirmed (probe fails today)
 **Location:** `src/tapio/actor/cell.py:1117` (`_restart` stops children), `1385-1389` (`notify_terminated`), `1376-1383`
+**Issue:** #184
 
 **What's wrong.** A restart stops the children with `_stop_children`. Each child's `_finish` runs `DeathWatch.release`, which calls the parent's `notify_terminated`. The parent is still alive, so a `Terminated` goes on its system lane. After the restart that signal is delivered to the new behavior, through `_signalling`. The new incarnation never watched the old child. It does not even know the child existed.
 
@@ -649,6 +657,7 @@ async def test_new_incarnation_not_told_about_children_of_the_old_one():
 **Category:** Bug
 **Status:** Confirmed (probe fails today; reported as a lead by the periphery pass)
 **Location:** `src/tapio/actor/path.py:13-16`, `src/tapio/actor/cell.py:649-681`, `855`
+**Issue:** #185
 
 **What's wrong.** `_ELEMENT_RE` allows a leading `$`, and its comment says it is "reserved for generated names (spawn_anonymous)", but `spawn` never refuses one. `spawn_anonymous` builds `f"${next(self._anonymous)}"` without checking `_children`, and `_spawn_child` overwrites the map entry:
 
@@ -693,6 +702,7 @@ async def test_named_dollar_child_is_not_orphaned_by_spawn_anonymous():
 **Category:** Bug
 **Status:** Confirmed (probe fails today)
 **Location:** `src/tapio/actor/restarts.py:489-495`
+**Issue:** #186
 
 **What's wrong.** `RestartLog.record` returns early for an unlimited strategy, before the window is consulted:
 
@@ -746,6 +756,7 @@ def test_unlimited_restart_backoff_count_ages_out_of_the_window():
 **Category:** Bug
 **Status:** Confirmed (probe fails today)
 **Location:** `src/tapio/remote/handshake.py:375-394`, caught set at `src/tapio/remote/endpoint.py:336`
+**Issue:** #187
 
 **What's wrong.** `_check_proof` compares two `str` values with `hmac.compare_digest`:
 
@@ -790,6 +801,7 @@ async def test_non_ascii_proof_is_refused_and_closed(guarded):  # secret="shh", 
 **Category:** Bug
 **Status:** Confirmed (three probes fail today)
 **Location:** `src/tapio/remote/transport.py:199-202` (`link_body`), `src/tapio/remote/codec.py:228-231` (`decode`)
+**Issue:** #188
 **Also found by:** the link pass, as its LINK-6 (the pre-handshake half, with the same probe result). Merged here.
 
 **What's wrong.** Both parsers catch only `ValueError`:
@@ -837,6 +849,7 @@ async def test_receive_frame_never_raises_on_deep_nesting():
 **Category:** Bug
 **Status:** Confirmed (probes fail today)
 **Location:** `src/tapio/remote/transport.py:438-476`, called from `endpoint.py:738` before the `_held` drain
+**Issue:** #189
 
 **What's wrong.**
 
@@ -881,6 +894,7 @@ async def test_terminate_is_not_held_by_a_peer_mid_handshake():
 **Category:** Bug
 **Status:** Confirmed (probes fail today)
 **Location:** `src/tapio/remote/transport.py:323-332`
+**Issue:** #190
 
 **What's wrong.**
 
@@ -922,6 +936,7 @@ Losing unflushed frames is consistent with at-most-once. I rejected a plain `abo
 **Category:** Bug
 **Status:** Confirmed (unit probes fail today; this sandbox has no IPv6, so no two-node probe)
 **Location:** `src/tapio/remote/transport.py:369`, `src/tapio/remote/address.py:65-79`, `src/tapio/actor/system.py:89`
+**Issue:** #191
 
 **What's wrong.** `bind()` and `is_loopback()` both accept `"::1"` and `"[::1]"`. The canonical host defaults to `bind_host` unchanged.
 
@@ -971,6 +986,7 @@ After the fix, the first test should instead expect `Address(host="::1")` to rai
 **Category:** Bug
 **Status:** Confirmed (the `Watch` shed path); Suspected by reading (the `WatcheeTerminated` and `Unwatch` drop paths)
 **Location:** `src/tapio/remote/association.py:759-782`, `417-448`, `606-631`, `1054-1064`
+**Issue:** #192
 
 **What's wrong** `watch()` guards one way a `Watch` frame can be lost: `_write_link` failing because the mailbox is full. It does not guard the other way. While `_link is None` (dialling, or after `adopt`), the actor moves frames from the mailbox into `_pending`, and `_hold` sheds anything past `outbound_capacity`:
 
@@ -1008,6 +1024,7 @@ Alternative: give link frames a lane of their own that is never shed, such as an
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/remote/association.py:846-878`, `976-1011`; trigger in `src/tapio/remote/codec.py:327-341`
+**Issue:** #193
 **Related:** the `RecursionError` trigger is WIRE-2.
 
 **What's wrong** `_run` catches `CancelledError`, `FrameTooLargeError`, `MessageDecodingError`, `EOFError`, `OSError`, `TapioError` and `TimeoutError`. Anything else that escapes `_read` ends the reader task silently. That covers a user model whose validator raises `TypeError` or `KeyError` during `receive_frame` (which only catches `ValidationError` and `RefResolutionError`, despite "it never raises"). It also covers a `RecursionError` from `json.loads` on a deeply nested link frame in `_on_link_frame` (which catches `ValidationError`, `ValueError` and `MessageDecodingError`). Once the reader is dead, the association still has a link and keeps writing, but nothing reads. The detector hears silence, and after `unreachable_after` the peer is quarantined and every watcher is told `Terminated`. Every frame the peer sent after the bad one is lost.
@@ -1035,6 +1052,7 @@ In `_on_link_frame`, add `RecursionError` to the ignored set. In `receive_frame`
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/remote/association.py:398-415`, `688-701`, `759-782`; contradicts `docs/remoting.md:71-78` and `RemoteRef.offer` (`ref.py:201-206`)
+**Issue:** #194
 
 **What's wrong** `offer` waits only for room in the actor's mailbox. While `_link is None`, the actor empties the mailbox into `_pending` straight away, and `_hold` sheds past `outbound_capacity` with `OUTBOUND_BUFFER_FULL`. The mailbox therefore never stays full, `offer` never waits, and the frames it queued are dead-lettered. The same happens in every `adopt` window. A side effect is that the real bound during a dial is twice `outbound_capacity`, split across two buffers.
 
@@ -1052,6 +1070,7 @@ In `_on_link_frame`, add `RecursionError` to the ignored set. In `receive_frame`
 **Also touches:** Bug (and Docs)
 **Status:** Confirmed
 **Location:** `src/tapio/actor/cell.py:218-225` (`next_uid` counts from 1), `src/tapio/remote/endpoint.py:549-563`, `docs/unreachable.md:91-95`, `endpoint.py:667-668`
+**Issue:** #195
 
 **What's wrong** The docs say: "Refs held across a quarantine are not reusable. Their uid belongs to a session that is over ... a restarted peer [is] a different peer rather than an impostor at the same address: a system mints a new uid per incarnation, and an association is bound to the uid it handshook with." In the code:
 - A `RemoteRef` is bound to the peer's address through `PeerOutbox` and carries only the actor's path uid. The system uid is not part of it.
@@ -1077,6 +1096,7 @@ I rejected adding the system uid to each frame: it changes the wire format to ge
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/remote/association.py:921-933`
+**Issue:** #196
 
 **What's wrong** `_dial` handshakes and then uses only `identity.uid`. `identity.address` is logged and otherwise ignored. A ref to `tapio://gamma@host:p` with beta listening on `host:p` opens an association keyed by gamma, and every frame on it is delivered by beta to beta's actors. The frame's `to` carries no system name, and `receive_frame` resolves it in the receiving system.
 
@@ -1102,6 +1122,7 @@ Comparing the system name alone would be a smaller check. I rejected it because 
 **Category:** Bug
 **Status:** Confirmed (pure functions, by probe)
 **Location:** `src/tapio/cluster/downing.py:93-108` (`_sides`), `:203-215` (KeepMajority), `:325-340` (KeepOldest)
+**Issue:** #197
 
 **What's wrong.** The safety argument (`downing.py:11-20`, `docs/clustering.md:204-215`) is that the two sides feed the strategy mirror-image views. `_sides` splits `state.alive`, which is every member that is not Down or Removed:
 
@@ -1158,6 +1179,7 @@ async def test_a_joiner_known_on_one_side_does_not_let_both_sides_win():
 **Category:** Bug
 **Status:** Confirmed for the state (probe). The daemon consequence (a healthy member downed) is Suspected.
 **Location:** `src/tapio/cluster/gossip.py:141-159`, `src/tapio/cluster/reachability.py:55-73`
+**Issue:** #198
 
 **What's wrong.** Claims made by a downed observer are meant to "stop counting, because the observer that made it is gone" (`gossip.py:144-148`). The filter works on addresses:
 
@@ -1207,6 +1229,7 @@ The daemon-level version starts 3 nodes plus 4 more with `monitored_peers=1` and
 **Category:** Bug
 **Status:** Confirmed (frame refused, by probe). The assumption is that most pairs across the split had a link, which random gossip produces within minutes.
 **Location:** `src/tapio/cluster/reachability.py:26-32`, `src/tapio/cluster/gossip.py:338-344`, `src/tapio/cluster/daemon.py:616-622`
+**Issue:** #199
 
 **What's wrong.** Each pair (observer, observed) ever written stays forever. That is deliberate, because deletion is not a join. The transport path writes one record per far member a node had a link to (`_link_changed`, for any alive member, not only ring peers). A half-and-half split therefore leaves about (n/2)^2 records per side, and n^2/2 once the views merge. Members' tombstones and vector-clock entries are not pruned either.
 
@@ -1237,6 +1260,7 @@ Rejected alternative: raise `max_frame_bytes`. The merge, validate and leader co
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/cluster/daemon.py:1082-1123` (`_digest`, `_emit`), `src/tapio/cluster/singleton.py:150-152, 194-204`
+**Issue:** #200
 
 **What's wrong.** Events are diffed over `Gossip.primaries()`, which keeps one member per address and prefers the live incarnation. When a member restarts at the same address, `_admit` marks the old incarnation `Down` and adds the new one as `Joining`. From then on the primary at that address is the new incarnation. The old one's later move to `Removed` is never in the digest, so `MemberRemoved(old)` is never emitted. The singleton manager keys `_hosts` by `member.key` (address and uid), so the old incarnation stays in `_hosts` for ever. If it was the oldest, every surviving manager computes it as the host. Its address is the restarted node's address, so none of the survivors starts the instance. The restarted node's manager is fresh, and its replay covers only `alive` members, so it computes a different oldest member and does not start either.
 
@@ -1276,6 +1300,7 @@ Rejected alternative: emitting a `MemberRemoved` for the old incarnation at admi
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/cluster/daemon.py:1288-1294` (`_replay`), `src/tapio/cluster/singleton.py:205, 208-222`
+**Issue:** #201
 
 **What's wrong.** The replay sends one `MemberUp` per up member in `self._state.alive` order, which is address order. The manager handles each one as its own turn and calls `_reconcile` after each. If this node's address sorts before the oldest member's, the first `MemberUp` it handles is its own. At that moment it is the only host it knows, so it spawns the keeper. One message later it hears the real oldest and hands off.
 
@@ -1306,6 +1331,7 @@ E   assert 2 == 1   (probe.max_seen)
 **Category:** Bug
 **Status:** Confirmed (operator leave). Suspected (slow instance stop).
 **Location:** `src/tapio/cluster/singleton.py:197-202, 215-221`, `docs/clustering.md:124-126, 337-343`, `singleton.py:16-28`, `events.py:60-66`
+**Issue:** #202
 
 **What's wrong.** Both the successor and the predecessor release on `MemberLeaving`. The design relies on the leaving host hearing `MemberLeaving` first because "the leaving host drives its own transition". That is only true for `Cluster.leave()` called on the host itself. A `Leave` handled anywhere else, either `POST /leave` on the management port of another node (the documented operator path) or a `Leave` frame from a peer (CLUS-10), marks the host `Leaving` on that node first. If that node is the next oldest, its own manager drops the host from `_hosts` and spawns the instance in the same turn. The real host learns one gossip round later.
 
@@ -1344,6 +1370,7 @@ E   assert 2 == 1
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/cluster/singleton.py:59-63, 187-205`, `src/tapio/cluster/cluster.py:66, 200-201`
+**Issue:** #203
 
 **What's wrong.** The manager subscribes only to `MemberUp`, `MemberLeaving` and `MemberRemoved`. A node on the losing side of a split moves itself to `Down` and stays there: its own view never converges, so it never removes itself. Its manager never hears an event about itself, so its keeper keeps running. `terminate_on_down` defaults to `False`, so nothing else stops the instance either. On the majority side, the old host is downed and removed, and a successor starts.
 
@@ -1372,6 +1399,7 @@ E   AssertionError: {'tapio://node1@127.0.0.1:46255', 'tapio://node2@127.0.0.1:3
 **Category:** Bug
 **Status:** Confirmed (raises). Suspected (hangs).
 **Location:** `src/tapio/cluster/daemon.py:475-477, 1011`
+**Issue:** #204
 
 **What's wrong.**
 
@@ -1412,6 +1440,7 @@ ERROR tapio://node1/system/cluster#2: stopping after a failure in Tick
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/cluster/daemon.py:1049-1073` (`_announce_if_downed`), `daemon.py:1140-1146`, `daemon.py:529-539`
+**Issue:** #205
 
 **What's wrong.** `_announce_if_downed` fires only on `me.status is MemberStatus.DOWN`, and `SelfDown` is emitted only on a move into `DOWN`. The other members stop gossiping to a downed member, since it is not `alive`. It learns its fate only when one of them answers its own gossip, and by then the leader may already have removed it. The node then goes straight from `up` to `removed`. It publishes no `ClusterDowned`, `when_downed` never returns, `terminate_on_down` never fires, and `SelfDown` is not delivered. The daemon then stops itself on `REMOVED` (line 539), so the node is a zombie: the process runs, but it has no daemon and no signal.
 
@@ -1443,6 +1472,7 @@ Set `_left_gracefully` when the node's own status is first seen in `_LEAVING_STA
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/dispatch/tasks.py:14-42`, called from `src/tapio/actor/cell.py:884-891`
+**Issue:** #206
 **Related:** fix together with CORE-1, which replaces the shield in the same function.
 
 **What's wrong**
@@ -1526,6 +1556,7 @@ E       AssertionError: shutdown_timeout=0.1s, terminate took 1.10s
 **Also touches:** Bug (cross-subsystem: remote) and Docs (testkit)
 **Status:** Confirmed
 **Location:** `src/tapio/remote/endpoint.py:655-690`, `src/tapio/remote/association.py:589-604`; docs at `src/tapio/testkit/remote.py:14-22`, `:82-90`, `:297-305`, `docs/testing.md:266-268`, `docs/unreachable.md:73-75`
+**Issue:** #207
 **Related:** the link pass reached the same conclusion from the dial-race side (LINK-15 item 6, LINK-2).
 
 **What's wrong**
@@ -1581,6 +1612,7 @@ The probe version showed `reconnect` returning, `beta quarantined after alpha re
 **Also touches:** Bug and Docs (cross-subsystem: cluster)
 **Status:** Confirmed
 **Location:** `src/tapio/cluster/cluster.py:131-132`, docstring `:83-90`; `src/tapio/cluster/messages.py:186-193`; `docs/clustering.md:412-419`
+**Issue:** #208
 
 **What's wrong**
 
@@ -1627,6 +1659,7 @@ E                   TimeoutError
 **Category:** Docs
 **Status:** Confirmed
 **Location:** `docs/lifecycle.md:61-70`; `src/tapio/actor/signals.py:41-49`
+**Issue:** #209
 
 **What's wrong**
 `lifecycle.md:68-70`: "`PostStop` is where a resource an actor opened is closed. It runs for a stop, a restart's teardown and a shutdown alike, so there is one place to write it rather than three." `PreRestart`'s docstring: "`PostStop` does not follow, because a restart is not a stop." The tests agree with the docstring (`tests/actor/test_supervision.py:229` asserts `"PostStop" not in seen` after restarts). The code bug where PostStop follows PreRestart during a backoff is CORE-2; this finding is about the page.
@@ -1649,6 +1682,7 @@ Docs-only. The existing `tests/actor/test_supervision.py:229` already pins the c
 **Category:** Docs
 **Status:** Confirmed
 **Location:** `src/tapio/actor/router.py:219-221`; `docs/clustering.md:357-359`
+**Issue:** #210
 
 **What's wrong**
 
@@ -1687,6 +1721,7 @@ E       assert <class 'inspect._empty'> is not <class 'inspect._empty'>
 **Category:** Docs
 **Status:** Confirmed
 **Location:** `src/tapio/testkit/behavior.py:9-16`
+**Issue:** #211
 
 **What's wrong**
 
@@ -1720,6 +1755,7 @@ E       TypeError: Spawned.__init__() missing 3 required positional arguments: '
 **Category:** Docs
 **Status:** Confirmed
 **Location:** `docs/remoting.md:116-123`; `src/tapio/remote/codec.py:400-439`
+**Issue:** #212
 
 **What's wrong**
 The documented frame addresses `"/user/checkout/session-7#f3a1c8"`. The uid is a decimal int: `format_target` writes `#{path.uid}` and `parse_target` does `int(fragment or 0)`, so `f3a1c8` raises and the whole frame becomes `MessageDecodingError: malformed frame`. The other fields (`v`, `to`, `from`, `t`, `p`) match `encode`.
@@ -1750,6 +1786,7 @@ E   tapio.errors.MessageDecodingError: malformed frame: invalid literal for int(
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/actor/router.py:194-207`; same shape in `src/tapio/cluster/router.py:97-98` (Suspected there, see below)
+**Issue:** #213
 
 **What's wrong**
 
@@ -1805,6 +1842,7 @@ E           AssertionError: {'a/routee-1': [0, 1, 2, 3], 'b/routee-2': [0, 1, 2,
 **Category:** Quality
 **Status:** Confirmed (mypy)
 **Location:** `src/tapio/actor/ref.py:20-24`
+**Issue:** #214
 
 **What's wrong.** `T = TypeVar("T", bound=Message)` is invariant. A ref that accepts `A | B` can be used wherever a ref that accepts `A` is wanted, because everything you can tell the second you can tell the first. That is contravariance, and it is Pekko's `ActorRef[-T]`. mypy `--strict` on a scratch module:
 
@@ -1842,6 +1880,7 @@ def bad(only_a: ActorRef[A]) -> None:
 **Category:** Bug
 **Status:** Confirmed (probe fails today)
 **Location:** `src/tapio/remote/handshake.py:340-358`, `366-372`
+**Issue:** #215
 
 **What's wrong.** Both proofs are `HMAC(secret, nonce)`. They do not bind the role, the other nonce, or the identity that travels next to them. The dialler answers the listener's challenge before it has verified anything about the listener:
 
@@ -1873,6 +1912,7 @@ The client proves over the transcript with its own address. The server proves ov
 **Category:** Bug
 **Status:** Confirmed (probe fails today)
 **Location:** `src/tapio/remote/transport.py:301-321` (`read_link` uses the message cap), `endpoint.py:275-282` (no limit on pending handshakes)
+**Issue:** #216
 
 **What's wrong.** The client-hello is read with `read_frame`, so its cap is `max_frame_bytes` (4 MiB by default). A legitimate hello is under 512 bytes. `StreamReader.readexactly` resumes reading while it waits, so the buffer grows to the declared length. Eight connections that proved nothing hold 33,554,424 bytes in the probe. Nothing caps concurrent handshakes.
 
@@ -1889,6 +1929,7 @@ The client proves over the transcript with its own address. The server proves ov
 **Category:** Bug
 **Status:** Confirmed (probe fails today)
 **Location:** `src/tapio/remote/transport.py:419-435`
+**Issue:** #216
 
 **What's wrong.** `listen()` calls `asyncio.start_server(handler, sock=listener, ssl=ssl_context)` with no `ssl_handshake_timeout`, so the default of 60 s applies. The endpoint's handler, and with it `handshake_timeout`, only starts once TLS has completed. The dialler side is fine, since `_dial` wraps `connect` in `asyncio.timeout`.
 
@@ -1905,6 +1946,7 @@ The client proves over the transcript with its own address. The server proves ov
 **Category:** Docs
 **Status:** Confirmed (probe fails today)
 **Location:** `src/tapio/remote/codec.py:30-33`, `docs/security.md` ("Strict validation as the decode")
+**Issue:** #236
 
 **What's wrong.** `codec.py` says "a message off the wire is validated by construction, strictly, with no way to skip it". `security.md` says "a field that is the wrong type or missing is a decoding failure". `Message.model_config` has no `strict=True`, and `receive_frame` calls `model_validate_json(frame.payload)` without `strict=True`. A frame with `"p": {"n": "5"}` for `n: int` is delivered as `Tick(n=5)`.
 
@@ -1921,6 +1963,7 @@ The client proves over the transcript with its own address. The server proves ov
 **Category:** Quality
 **Status:** Confirmed
 **Location:** `tests/remote/test_transport.py:200-206` (the only remoting TLS test)
+**Issue:** #239
 
 **What's wrong.** The suite's only remoting TLS test checks that a missing certificate file raises. Nothing establishes a TLS link, checks that a server with `cafile` refuses a client without a certificate, or checks that the dialler refuses a hostname mismatch. `make check` would not notice a regression in any of those.
 
@@ -1937,6 +1980,7 @@ The client proves over the transcript with its own address. The server proves ov
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/remote/spawner.py:448-473`
+**Issue:** #217
 
 **What's wrong** `factory.arguments` is guarded by `except ValidationError` and `except RefResolutionError`. Pydantic wraps only `ValueError` and `AssertionError` from a validator into `ValidationError`. A `TypeError` or `KeyError` from an arguments model's validator escapes `on_spawn`, so the spawner fails. The default strategy is stop, and its children (every worker it started) stop with it. The input that triggers it comes from the peer.
 
@@ -1961,6 +2005,7 @@ The client proves over the transcript with its own address. The server proves ov
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/remote/association.py:944-950`
+**Issue:** #218
 
 **What's wrong**
 
@@ -2000,6 +2045,7 @@ The frame is taken off `_pending` before the await. A `CancelledError` there lea
 **Category:** Bug
 **Status:** Confirmed (mechanism); Suspected (end-to-end interleaving)
 **Location:** `src/tapio/actor/watch.py:152-169`, `src/tapio/remote/association.py:1131-1133`
+**Issue:** #219
 
 **What's wrong** A cell's watcher map is keyed by `(address, path)`, and `remove_watcher` pops by key without checking that the stored watcher is the one being removed. Two associations for one peer exist at once while the old one finishes stopping. Suppose the peer's watcher re-watches the same actor through the new association, which replaces the old proxy under the same key. When the old association's `_end_watches` then calls `proxy.release()`, it removes the new proxy. The new association still believes the watch is registered, but the cell will never tell it, so the watcher on the peer waits forever. `_release` yields in `_close_sockets` before `_end_watches`, and under LINK-3 it can wait there indefinitely, which makes the window wide.
 
@@ -2023,6 +2069,7 @@ The same identity check applies to `stop_watching`'s caller in `cell.unwatch`.
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/actor/cell.py:1445-1476` as reached from `association.py:133-140`; `src/tapio/actor/timers.py:296-305`
+**Issue:** #220
 
 **What's wrong** When the association actor stops, the cell drains its mailbox through `ActorCell._dead_letter`. That unwraps `Outbound` (a `Carrier`), but it names the association actor as the recipient (`tapio://alpha/system/remote/beta-127.0.0.1-37077-1#2`), gives the reason `recipient-terminated`, and sets no `peer`. It also publishes `Close`, `Beat` and `LinkOut`, which are internal messages, as user dead letters. While the outbound buffer is full, each heartbeat tick also publishes a `Beat` as `mailbox-full` through `deliver_offloop`.
 
@@ -2039,6 +2086,7 @@ The same identity check applies to `stop_watching`'s caller in `cell.unwatch`.
 **Category:** Docs
 **Status:** Confirmed by reading
 **Location:** `docs/unreachable.md:30-34`, `src/tapio/remote/association.py:688-733, 784-822`, `src/tapio/settings.py:97-121`
+**Issue:** #236
 
 **What's wrong** `unreachable.md` says "Only silence quarantines". Two other paths reach `_declare_unreachable` and quarantine:
 - A write that does not drain within `unreachable_after` (`_write` and `_beat` `TimeoutError`). The peer may be heartbeating at that moment.
@@ -2058,6 +2106,7 @@ Also add a model validator to `RemoteSettings` that rejects `handshake_timeout >
 **Also touches:** Quality (performance with a correctness consequence)
 **Status:** Confirmed (timings by probe)
 **Location:** `src/tapio/cluster/gossip.py:161-203`, `src/tapio/cluster/reachability.py:95-120`
+**Issue:** #221
 
 **What's wrong.** Both properties call `reachability.is_reachable(address, observers)` once per member, and each call scans every record. `_live_observers()` is rebuilt per call too. The daemon evaluates `leader` in `_lead`, then `converged`, then `leader` and `unreachable` twice more in `_digest` before and after any turn with subscribers (`daemon.py:488, 944-946, 1087, 1138`). It does this for every message, heartbeats included.
 
@@ -2104,6 +2153,7 @@ def test_leader_and_convergence_are_linear_in_the_records():
 **Category:** Bug
 **Status:** Suspected. The function is confirmed by probe. Whether a stale view lasts `down_after` depends on MEMB-7.
 **Location:** `src/tapio/cluster/downing.py:465-481`
+**Issue:** #222
 
 **What's wrong.**
 ```python
@@ -2130,6 +2180,7 @@ async def test_a_stale_view_cannot_take_the_lease_under_the_other_sides_name():
 **Category:** Bug
 **Status:** Confirmed that there is no bound (probe). The stall follows from the one-consumer mailbox.
 **Location:** `src/tapio/cluster/downing.py:381-392, 479`; `src/tapio/cluster/daemon.py:1011`
+**Issue:** #223
 
 **What's wrong.** The `Lease` protocol says nothing about timeouts or exceptions. `LeaseMajority.decide` awaits `acquire` with no bound, and `_down` awaits `decide` inside the message handler. The daemon docstring says "a peer's heartbeat is answered on the turns either side of it" (`daemon.py:985-988`). That is true, but no heartbeat is answered *during* the wait.
 
@@ -2161,6 +2212,7 @@ async def test_a_hanging_lease_downs_this_side_in_bounded_time():
 **Also touches:** Docs / Bug risk
 **Status:** Suspected. The ring-only asymmetry is confirmed by probe.
 **Location:** `docs/clustering.md:204-215`, `src/tapio/cluster/daemon.py:592-599`
+**Issue:** #237
 
 **What's wrong.** The docs correctly say that the probe ring alone does not give mirror images. `test_ring_alone_does_not_give_mirror_images` shows 9 nodes with `monitored_peers=2` where both sides keep themselves. The docs then rely on the transport: "a partition drops every link across it". A pair with no association produces no `PeerUnreachable`. A member is invisible to the far side if it is off every far-side ring and has no link to any far-side node. A freshly joined node is the typical case, since it has links only to the seeds and its ring.
 
@@ -2175,6 +2227,7 @@ async def test_a_hanging_lease_downs_this_side_in_bounded_time():
 **Category:** Docs
 **Status:** Confirmed (probe)
 **Location:** `src/tapio/cluster/gossip.py:161-184`, `docs/clustering.md:103-107`
+**Issue:** #237
 
 **What's wrong.** Both texts say "the first member in address order whose status is up or leaving", with a fallback "before anybody is up". The code also drops unreachable members. It falls back whenever no *reachable* Up or Leaving member exists, so a `Joining` or `Exiting` member can be leader while Up members exist (`test_leader_falls_back_to_a_joining_member_while_up_members_exist`, `test_leader_may_be_an_exiting_member`). A `LeaderChanged` subscriber then sees a Joining node named leader.
 
@@ -2187,6 +2240,7 @@ async def test_a_hanging_lease_downs_this_side_in_bounded_time():
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/cluster/cluster.py:498, 589-601`
+**Issue:** #224
 
 **What's wrong.** `_until(MemberStatus.UP, ...)` returns once `member.rank >= rank_of(UP)`. `DOWN` and `REMOVED` rank above `UP`. After `leave()`, or after the node was downed, calling `join_seed_nodes` again returns the `REMOVED` member at once. The daemon has stopped, so the `Seeds` message dead-letters.
 
@@ -2211,6 +2265,7 @@ Also check `self_member` before sending `Seeds`.
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/cluster/daemon.py:1182-1203` (`_tell`), `daemon.py:1205-1233` (`_subscribe`), `cluster.py:411-441`
+**Issue:** #225
 
 **What's wrong.** `Cluster.subscribe` accepts any `ActorRef`, and watching a remote ref succeeds. Events are not registered on the wire (by design, events.py:16-18), so `RemoteActorRef.tell(MemberUp(...))` raises `MessageEncodingError`. `_tell` catches only `MessageTypeError` and `MailboxFullError`. The error leaves `_receive`, and supervision resumes the daemon. The subscriber is kept, though, so every later turn that has an event raises at the same point. The rest of each such turn is skipped: subscribers after it in the dict, `_changed.set()` (which `join_seed_nodes` and `leave` wait on), and the stop on `REMOVED`.
 
@@ -2238,6 +2293,7 @@ Also say "local actors only" in the `Cluster.subscribe` docstring.
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/cluster/messages.py:111-122`, `daemon.py:512-513, 897-910`
+**Issue:** #226
 
 **What's wrong.** `Leave` is a `@register_message()` `WireMessage`. The daemon is a well-known name, so any system that completes a handshake can resolve `/system/cluster` on any member and send `Leave(address=<anyone>)`. The daemon applies it without checking who sent it. No code in the repository sends `Leave` across a link: `Cluster.leave` and management both `tell` the local daemon. `Down`, the equivalent operator action, is deliberately local (messages.py:180-184).
 
@@ -2254,6 +2310,7 @@ Also say "local actors only" in the `Cluster.subscribe` docstring.
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/cluster/management.py:232-238, 245-278`, `docs/security.md` ("The cap keeps the cost of a flood fixed"), `settings.py:259-262`
+**Issue:** #227
 
 **What's wrong.** With `ssl=context`, `asyncio.start_server` performs the TLS handshake before it calls `_on_connection`. A connection that opens TCP and never sends a ClientHello therefore never reaches the cap check and never enters `_connections`. It is held by asyncio until `ssl_handshake_timeout` (60 s by default), and nothing in this module owns it. A client can open as many as the file-descriptor limit allows. The remoting listener shares that limit, because it runs in the same process.
 
@@ -2283,6 +2340,7 @@ Rejected alternative: lowering `ssl_handshake_timeout` only. That still leaves t
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/cluster/management.py:224-238, 433-438`
+**Issue:** #228
 
 **What's wrong.** `server_ssl_context(self._tls)` runs inside the `_serve` task, not at construction. A missing or bad `certfile` raises `OSError` in that task. Nobody awaits the task until `_close`, which suppresses `OSError` (`ssl.SSLError` is a subclass). The socket stays bound and listening, so the kernel accepts connections that nobody ever reads. No log line is produced.
 
@@ -2299,6 +2357,7 @@ Rejected alternative: lowering `ssl_handshake_timeout` only. That still leaves t
 **Category:** Docs
 **Status:** Confirmed
 **Location:** `src/tapio/cluster/cluster.py:83-90, 508-527`, `messages.py:220-230`, `daemon.py:1063-1071`
+**Issue:** #237
 **Related:** PERI-3 is the code half of this (the flag is ignored without a strategy). Fix the two together.
 
 **What's wrong.** `when_downed`: "It never returns when downing is switched off, since nothing then downs this node". `terminate_on_down`: "It has no effect without a `downing` strategy, since nothing then downs this node". Both are false. `POST /down` on any node (or `Down` from any node's management port) downs this node with no strategy configured. In a 3-node run with `downing=None`, the target's `downed` event was set. With no strategy, `terminate_on_down=True` is silently ignored (cluster.py:200), so an operator down leaves the process running. The `ClusterDowned.detail` text always says "was on the losing side of a split", including for an operator down.
@@ -2316,6 +2375,7 @@ Rejected alternative: lowering `ssl_handshake_timeout` only. That still leaves t
 **Category:** Docs
 **Status:** Confirmed
 **Location:** `examples/README.md:21-73`
+**Issue:** #238
 
 **What's wrong**
 Not listed: `blocking_offload`, `cluster_join`, `cluster_management`, `cluster_singleton`, `rolling_restart`, `split_brain`. Each exists in `examples/tapio_examples/` and is asserted in `tests/examples/test_suite.py`. The page also claims every example "finishes in under 2 seconds"; `split_brain` takes 3.54 s and `rolling_restart` 1.08 s in the examples suite (`--durations`).
@@ -2345,6 +2405,7 @@ Fails today with the six names.
 **Also touches:** Docs and Quality
 **Status:** Confirmed
 **Location:** `src/tapio/actor/router.py:67-85`; `tests/actor/test_router.py:211-226`
+**Issue:** #238
 
 **What's wrong**
 Docstring: "removing a dead routee shifts the rotation instead of restarting it. An actor that has just received work does not receive more straight away because the pool shrank." With `[r1, r2, r3]` after three sends (`r3` got the last), removing `r2` gives `routees[3 % 2] = r3`, which is the actor that just received work. `test_the_rotation_survives_the_pool_shrinking` asserts `strategy.select(two, ...) is two[1]` (that is `r3`) under a docstring repeating the false claim.
@@ -2375,6 +2436,7 @@ E       AssertionError: assert ActorRef('tapio://t/user/r3') is not ActorRef('ta
 **Category:** Bug
 **Status:** Confirmed (dead letters), Suspected (`release` itself)
 **Location:** `src/tapio/actor/adapter.py:164-188`, `:224-230`, `:258-261`
+**Issue:** #229
 
 **What's wrong**
 `AdapterRef`'s docstring: "it is safe to use from any thread". The live path hops to the loop with `call_soon_threadsafe`. The released path does not:
@@ -2433,6 +2495,7 @@ E           AssertionError: ['foreign-sender']
 **Also touches:** Bug and Docs
 **Status:** Confirmed
 **Location:** `src/tapio/actor/adapter.py:117-122`, `:276-290`; `src/tapio/actor/cell.py:693-697`
+**Issue:** #229
 
 **What's wrong**
 `message_adapter`'s docstring: "An adapter per protocol, made in `setup`, costs one registry entry for the life of the actor and is what most actors want." Adapters are bound to the actor, not the incarnation, and `setup` re-runs on every restart, so every restart registers a new `$adapter-N` and keeps the old one. The old adapters also keep translating with the closure of the incarnation that made them.
@@ -2462,6 +2525,7 @@ E           assert 6 == 1
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/dispatch/blocking.py:70-75`, `:102-113`, `:170-179`
+**Issue:** #230
 
 **What's wrong**
 
@@ -2520,6 +2584,7 @@ E       AssertionError: WARNING  tapio.blocking:blocking.py:164 1 blocking call(
 **Category:** Bug
 **Status:** Confirmed
 **Location:** `src/tapio/settings.py:323`, `:336-361`
+**Issue:** #231
 
 **What's wrong**
 `blocking_pool_size: int = 16` has no bound. `0` is accepted, and the first `ctx.run_blocking` raises `ValueError("max_workers must be greater than 0")` from `ThreadPoolExecutor` inside whichever actor blocked first, where supervision treats it as that actor's failure. `default_mailbox_capacity=0` is accepted and every later spawn raises from `MailboxConfig.__post_init__`. Negative `shutdown_timeout`, `ask_timeout`, `dead_letter_log_first` and `dead_letter_summary_interval` are accepted too. `ClusterSettings` already uses `Annotated[int, Field(ge=1)]`, so the pattern exists.
@@ -2558,6 +2623,7 @@ Both fail today with `Failed: DID NOT RAISE ValidationError`.
 **Also touches:** Docs and Bug
 **Status:** Confirmed
 **Location:** `src/tapio/errors.py:1-11`, `:61-66`; `src/tapio/actor/path.py:33-48`
+**Issue:** #238
 
 **What's wrong**
 The module docstring promises one `except TapioError` catches the library. `system.spawn(b, "bad name")` raises a bare `ValueError` from `ActorPath.__post_init__`, not `ActorNameError` ("A child could not be given the name it asked for"). So do `ActorSystem("bad name")`, `Routers.pool(0, ...)`, `MailboxConfig(capacity=0)`, `AdapterRef.offer` off-loop (`RuntimeError`) and `BlockingPool.submit` after shutdown (`RuntimeError`).
@@ -2590,6 +2656,7 @@ E               ValueError: invalid actor name 'bad name': names must start with
 **Category:** Quality
 **Status:** Confirmed
 **Location:** `src/tapio/actor/__init__.py:44-90`; `src/tapio/cluster/__init__.py:151-188`; `src/tapio/__init__.py:196-260`
+**Issue:** #232
 
 **What's wrong**
 - `tapio.actor.__all__` exports `ActorCell`, `LocalActorRef`, `Mailbox`, `Envelope`, `DeadLetterOffice`, `DeadLetterRef`, `PeerResolver`, `Watcher`, `Directive`, `ReceivingBehavior`, `SetupBehavior`, `Supervise`, `SuperviseBehavior`, `WithStashBehavior`, `WithTimersBehavior`, `UnstashBehavior`. No example imports any of them. Only tests use `LocalActorRef`, to reach `ref.cell`.
@@ -2613,6 +2680,7 @@ Trim `tapio.actor.__all__` to the user surface (refs, paths, behaviors, context,
 **Category:** Docs
 **Status:** Confirmed
 **Location:** `src/tapio/dispatch/__init__.py:10`; `src/tapio/dispatch/blocking.py:57-58`, `:115-147`; `src/tapio/dispatch/dispatcher.py:20-50`
+**Issue:** #238
 
 **What's wrong**
 Both are in `tapio.dispatch.__all__` and reachable as `system.blocking` and `system.dispatcher` (the cluster uses `system.dispatcher.spawn_task`). `BlockingPool` is documented as "The threads one system runs blocking calls on." `submit` does not say it must be called on the loop thread (it lazily creates the executor and calls `loop.run_in_executor`, neither thread-safe), nor that `shutdown` belongs to the system and calling it early refuses every later `run_blocking`. `Dispatcher.spawn_task` is "Start a named task on this system's loop" with no word that the task is owned by nobody: no cell cancels it in a termination sequence, which is the AGENTS.md invariant ("If you add a task, say which cell owns it").
@@ -2633,6 +2701,7 @@ Docs-only.
 **Category:** Bug
 **Status:** Confirmed (helper), Suspected (reachable from today's call sites)
 **Location:** `src/tapio/dispatch/tasks.py:35-38`
+**Issue:** #233
 
 **What's wrong**
 
@@ -2695,6 +2764,7 @@ E       AssertionError: assert ['re-raised'] == ['returned']
 **Category:** Quality
 **Status:** Confirmed
 **Location:** `src/tapio/testkit/behavior.py:261-282`
+**Issue:** #234
 
 **What's wrong**
 `self._settings = settings if settings is not None else TapioSettings()`. `tapio.testkit.settings` exists, by its own module docstring, because "a developer with `TAPIO_VALIDATE_ON_TELL=0` exported runs a different suite from everyone else and nothing says so". The `actor_system` fixture uses `IsolatedTapioSettings()`; the kit, in the same package, does not. tapio's own suite hides this with a session-wide autouse fixture that deletes `TAPIO_*` (`tests/conftest.py:99`), which a user's suite does not have.
@@ -2721,6 +2791,7 @@ def test_the_kit_ignores_the_environment(monkeypatch):
 **Category:** Docs
 **Status:** Confirmed
 **Location:** `docs/index.md:31-32`; `mkdocs.yml:25`; `docs/getting-started.md:4-5`
+**Issue:** #238
 
 **What's wrong**
 `index.md`: "Every code block on this site is a snippet include from `examples/`, so nothing documented here is unexecuted." `mkdocs.yml`: "Docs never copy-paste code". `docs/clustering.md` has seven inline Python blocks (`join_seed_nodes`, `Cluster(system, ClusterSettings(...))`, `cluster.subscribe`, the group router, two `ManagementSettings` blocks), `docs/remoting.md` an inline frame, and `docs/testing.md` includes from `tests/docs/`, not `examples/`. PERI-5 and PERI-7 are both in blocks this claim says cannot exist.
@@ -2741,6 +2812,7 @@ A docs lint in `tests/docs/`: parse every `docs/*.md` and fail on a fenced `pyth
 **Category:** Docs
 **Status:** Confirmed
 **Location:** `README.md:173-186`, `:213-218`
+**Issue:** #238
 
 **What's wrong**
 Design notes: "about 30% more per message for a one-field message, and about 3x for a ten-field one". The table below: 1.4x and 2.4x. And: "Bounded mailboxes take an overflow strategy (`fail`, `drop_new`, `drop_oldest`)". The enum values are `"fail"`, `"drop-new"`, `"drop-oldest"`, so `TAPIO_DEFAULT_MAILBOX_OVERFLOW=drop_new` fails validation at startup.
@@ -2769,6 +2841,7 @@ E       Input should be 'fail', 'drop-new' or 'drop-oldest' [type=enum, input_va
 **Also touches:** Quality (tests)
 **Status:** Confirmed (gap), no current leak
 **Location:** `tests/conftest.py:155-162`
+**Issue:** #239
 
 **What's wrong**
 AGENTS.md: "Anything that starts a system wraps itself in `tapio.testkit.assert_no_leaked_tasks()`." The plugin's `actor_system` does (`testkit/plugin.py:213`). The suite's own `system` fixture only terminates. About 161 test functions take `system: ActorSystem`, so none of them checks for leaked tasks or threads.
@@ -2805,6 +2878,7 @@ A test in `tests/test_conftest.py` that uses `system`, creates an orphan `asynci
 **Also touches:** Quality (tests)
 **Status:** Confirmed
 **Location:** `tests/actor/test_system.py:90`, `:134-137`; `tests/actor/test_delivery.py:110`, `:133`; `tests/actor/test_dead_letters.py:212`, `:237`, `:288`, `:387`
+**Issue:** #239
 
 **What's wrong**
 Each waits a fixed 10 to 50 ms and then asserts something the runtime does asynchronously. Examples:
@@ -2834,6 +2908,7 @@ Run the listed tests under CPU contention (`stress-ng --cpu 0` or `pytest -n 16`
 **Category:** Bug
 **Status:** Confirmed (log line in the CORE-1 probe)
 **Location:** `src/tapio/actor/cell.py:891-898`
+**Issue:** none: Low findings get no issue
 
 **What's wrong.** The warning reads `self._current` after `cancel_and_wait` has returned. By then the cancellation has run `_on_message`'s `finally`, which resets `_current` to `None`. The probe logs `kid#2: did not stop within the shutdown deadline while handling no message; cancelled` for an actor stuck in `Wedge`.
 
@@ -2850,6 +2925,7 @@ Run the listed tests under CPU contention (`stress-ng --cpu 0` or `pytest -n 16`
 **Category:** Docs
 **Status:** Confirmed (by reading)
 **Location:** `src/tapio/actor/system.py:477-482`
+**Issue:** none: Low findings get no issue
 
 **What's wrong.** The local branch returns before `normalize_msg_type(expect, ...)` runs:
 
@@ -2877,6 +2953,7 @@ The docstring says it raises `MessageTypeError` "If `expect` is not a `Message` 
 **Category:** Bug
 **Status:** Confirmed (probe fails today)
 **Location:** `src/tapio/remote/codec.py:235-240`
+**Issue:** none: Low findings get no issue
 
 **What's wrong.** `version != PROTOCOL_VERSION` uses Python equality, so `{"v": true}` and `{"v": 1.0}` pass. `Frame.version` is typed `int` but holds `True`.
 
@@ -2891,6 +2968,7 @@ The docstring says it raises `MessageTypeError` "If `expect` is not a `Message` 
 **Category:** Bug
 **Status:** Confirmed (probe fails today)
 **Location:** `src/tapio/remote/address.py:37-42`, `src/tapio/remote/codec.py:437-439`
+**Issue:** none: Low findings get no issue
 
 **What's wrong.** `\d` in a `str` regex matches any Unicode decimal digit, and `int()` converts them, so `tapio://s@h:1/user/x#٣` parses as uid 3. `parse_target` uses `int(fragment or 0)`, which also accepts `+3`, ` 3` and `1_0`. One ref therefore has many string forms.
 
@@ -2905,6 +2983,7 @@ The docstring says it raises `MessageTypeError` "If `expect` is not a `Message` 
 **Category:** Quality
 **Status:** Confirmed (by reading)
 **Location:** `src/tapio/remote/registry.py:203-213`
+**Issue:** none: Low findings get no issue
 
 **What's wrong.** The duplicate check is per key only. `register_message("new")` applied to a class already registered as `"old"` overwrites `_BY_TYPE[cls]`, so every later `encode` writes `"new"`, and a peer on the previous release dead-letters it. Decorators apply bottom-up, so which key wins depends on the order they are stacked in. The module docstring promises that "a duplicate key raises at import rather than winning", but a duplicate *type* does win.
 
@@ -2927,6 +3006,7 @@ def test_a_second_key_for_one_type_is_refused():
 **Category:** Quality
 **Status:** Confirmed (by reading)
 **Location:** `src/tapio/remote/codec.py:229`, `256`, `328`
+**Issue:** none: Low findings get no issue
 
 **What's wrong.** `json.loads` parses the whole body, `json.dumps(payload)` re-serializes the payload, and `model_validate_json` parses it again. The splice in `encode` exists ("parsing it just to serialize it again would double the cost of every send") to avoid exactly this on the way out. The detour also means a model validates text that the peer did not send. Numbers pass through Python `float`, so `1.10` arrives as `1.1`, and a `Decimal` field written as a JSON number loses precision.
 
@@ -2941,6 +3021,7 @@ def test_a_second_key_for_one_type_is_refused():
 **Category:** Docs
 **Status:** Confirmed
 **Location:** as listed
+**Issue:** none: Low findings get no issue
 
 - `docs/remoting.md`, frame example: see PERI-7.
 - `docs/security.md`, "an HMAC of a server-supplied nonce with the shared secret": both sides prove, each over the other side's nonce. Replace with "an HMAC of each side's nonce, computed by the other side with the shared secret".
@@ -2956,6 +3037,7 @@ def test_a_second_key_for_one_type_is_refused():
 **Category:** Quality
 **Also touches:** Quality / Docs
 **Status:** Confirmed by reading
+**Issue:** none: Low findings get no issue
 
 1. `cell.watch` (`cell.py:796-797`) calls `target.add_watcher(self)` before `self._watch.watching(target)`. `PeerOutbox.watch` and `Association.watch` can answer synchronously (no association, or `_write_link` failed), and `notify_terminated` then calls `stop_watching` before the entry exists, which leaves a stale `_watching` entry. Swap the two lines. `Association.watch`'s `_closing` branch (lines 425-430) is unreachable through `PeerOutbox`, since `outbound()` never returns a closing association.
 2. `_open` with `_closing` set closes the link and returns, and `_run` then calls `_read` on the closed link. That logs a spurious "link to ... ended" warning (`association.py:951-953`, `859-860`). Return a flag, or raise, so `_run` stops.
@@ -2972,6 +3054,7 @@ def test_a_second_key_for_one_type_is_refused():
 **Category:** Quality
 **Status:** Confirmed (probe)
 **Location:** `src/tapio/cluster/gossip.py:50, 299-309`; `src/tapio/cluster/reachability.py:87, 95-151`
+**Issue:** none: Low findings get no issue
 
 **What's wrong.** `Gossip.members` and `Reachability.records` accept duplicate keys in any order, from the constructor or from a frame. `merge` deduplicates and sorts, so `x.merge(x) != x` for such a value. `test_idempotent_on_wire_input` fails on two copies of the same member. The suite's strategies deduplicate before building, so they never test this.
 
@@ -2988,6 +3071,7 @@ Separately, `Reachability.unreachable` and `is_reachable(observers=None)` are pu
 **Category:** Docs
 **Status:** Confirmed
 **Location:** `docs/clustering.md:43`, `src/tapio/settings.py:228-229`
+**Issue:** none: Low findings get no issue
 
 **What's wrong.** The status table says `down` is set by "the leader", and `down_after` says "before the leader downs anybody". `_down` runs on every node (`daemon.py:971-981`), and an operator downs through any node (`_down_member`).
 **Proposed fix (docs):** table cell "a downing strategy on every node, or an operator through any node". `down_after`: "before any node applies its strategy".
@@ -2999,6 +3083,7 @@ Separately, `Reachability.unreachable` and `is_reachable(observers=None)` are pu
 **Category:** Docs
 **Status:** Confirmed
 **Location:** `docs/clustering.md:168`, `src/tapio/settings.py:174-176`, `src/tapio/cluster/monitor.py:9-10`
+**Issue:** none: Low findings get no issue
 
 **What's wrong.** `monitored_by` returns at most n-1 peers, so with n <= `monitored_peers` each member is watched by n-1 others.
 **Proposed fix:** "watched by that many others, or by every other member when the cluster is smaller than that".
@@ -3010,6 +3095,7 @@ Separately, `Reachability.unreachable` and `is_reachable(observers=None)` are pu
 **Category:** Quality
 **Status:** Confirmed (probe `test_settings.py`)
 **Location:** `src/tapio/settings.py:149-240`
+**Issue:** none: Low findings get no issue
 
 **What's wrong.** A zero or negative `gossip_interval`, `heartbeat_interval`, `unreachable_after` or `down_after` is accepted. A negative `down_after` downs on the first unreachable observation. The documented relation "set `unreachable_after` well above `heartbeat_interval`" is not checked either.
 **Proposed fix:** `Annotated[timedelta, Field(gt=timedelta(0))]` on every interval, plus a `model_validator` that rejects `unreachable_after <= heartbeat_interval`.
@@ -3021,6 +3107,7 @@ Separately, `Reachability.unreachable` and `is_reachable(observers=None)` are pu
 **Category:** Bug
 **Status:** Suspected
 **Location:** `src/tapio/cluster/daemon.py:488, 492-493, 519-524`
+**Issue:** none: Low findings get no issue
 
 **What's wrong.** `before = self._digest() if self._subscribers else None` is taken before the `Subscribe` is handled. For the first subscriber it is `None`, so `_emit` is skipped. If `_lead` or the time-based `_down` changes the state later in that same turn, the subscriber's replay was taken before that change, and no diff is sent. The obvious case is `down_after` expiring on the subscribe turn, which loses `SelfDown`. Another is a single-node cluster whose leader takes the next leave step on that turn.
 
@@ -3035,6 +3122,7 @@ Separately, `Reachability.unreachable` and `is_reachable(observers=None)` are pu
 **Category:** Docs
 **Status:** Confirmed (by reading)
 **Location:** `src/tapio/cluster/daemon.py:1288-1305`, `docs/clustering.md:286-290`
+**Issue:** none: Low findings get no issue
 
 **What's wrong.** `_replay` sends `MemberUp` only for `UP` members. A member in `leaving` or `exiting` is in no replayed event, and `MemberLeaving` is never replayed. A late subscriber cannot tell "leaving" from "never existed" until the removal.
 
@@ -3047,6 +3135,7 @@ Separately, `Reachability.unreachable` and `is_reachable(observers=None)` are pu
 **Category:** Bug
 **Status:** Confirmed (by reading)
 **Location:** `src/tapio/cluster/router.py:160-161`, `daemon.py:1128-1137`
+**Issue:** none: Low findings get no issue
 
 **What's wrong.** `ReachableMember` is emitted for any member that is not `down` or `removed`, which includes `joining`, `leaving` and `exiting`. The router `_offer`s on it regardless of status, so a `joining` member that flapped gets work before `MemberUp`. That contradicts "A member that joins is added" (on up). A member that is leaving gets added back after it went unreachable.
 
@@ -3059,6 +3148,7 @@ Separately, `Reachability.unreachable` and `is_reachable(observers=None)` are pu
 **Category:** Bug
 **Status:** Confirmed (by reading)
 **Location:** `src/tapio/cluster/cluster.py:496, 558`
+**Issue:** none: Low findings get no issue
 
 **What's wrong.** `(timeout or self._settings.join_timeout)` treats the falsy `timedelta(0)` as omitted. **Proposed fix.** `timeout if timeout is not None else ...`.
 
@@ -3069,6 +3159,7 @@ Separately, `Reachability.unreachable` and `is_reachable(observers=None)` are pu
 **Category:** Quality
 **Status:** Confirmed (by reading)
 **Location:** `src/tapio/cluster/daemon.py:789, 812`, `member.py:27-56`
+**Issue:** none: Low findings get no issue
 
 **What's wrong.** `AddressStr` validates but does not normalise. A first seed listed as `localhost` while its canonical host is `127.0.0.1`, or written with different IPv6 spelling, never forms the cluster. It also dials itself as if it were another seed. The `join_seed_nodes` timeout message does not mention this cause.
 
@@ -3081,6 +3172,7 @@ Separately, `Reachability.unreachable` and `is_reachable(observers=None)` are pu
 **Category:** Docs
 **Status:** Confirmed
 **Location:** as listed
+**Issue:** none: Low findings get no issue
 
 - `docs/clustering.md:43`: the statuses table says `down` is "set by the leader". `_down` runs on every node (daemon.py:972-983), and an operator can down a member from any node.
 - `settings.py:261`, `docs/security.md`: "gives each request thirty seconds to arrive and be answered". Reading has 30 s and writing has another 30 s (management.py:296, 314), and `wait_closed()` is unbounded (line 321). Suggested wording: "thirty seconds to arrive, and thirty more to be written".
@@ -3093,6 +3185,7 @@ Separately, `Reachability.unreachable` and `is_reachable(observers=None)` are pu
 **Category:** Quality
 **Status:** Confirmed (by reading)
 **Location:** `src/tapio/cluster/cli.py:87-90, 113-127, 244-245`
+**Issue:** none: Low findings get no issue
 
 **What's wrong.** `--client-key` alone neither enables TLS nor errors. `--token` has no `envvar`, so the operator's secret is visible in `ps` output and in shell history. The CLI's routes and status codes do match the server (`GET /status` gives 200, `POST /leave|/down` gives 202, errors carry `{"error": ...}`).
 
@@ -3106,6 +3199,7 @@ Separately, `Reachability.unreachable` and `is_reachable(observers=None)` are pu
 **Also touches:** Quality (tests)
 **Status:** Confirmed
 **Location:** `tests/examples/test_suite.py:42-71`, `:538-541`
+**Issue:** none: Low findings get no issue
 
 **What's wrong**
 `test_every_example_is_asserted` checks `modules == ASSERTED`, where `ASSERTED` is a literal set. Adding a module name to the set with no `test_<name>` function passes. `test_blocking_offload` starts a thread pool but only checks for leaked tasks, not threads.
@@ -3131,6 +3225,7 @@ Add `"ghost"` to `ASSERTED` and a `ghost.py` example with no test. Today the sui
 **Category:** Docs
 **Status:** Confirmed
 **Location:** `src/tapio/logging.py:65-83`
+**Issue:** none: Low findings get no issue
 
 **What's wrong**
 "Anything without one, a lambda included, falls back to `repr`." A lambda has `__qualname__` (`f.<locals>.<lambda>`), so it is named by that.
@@ -3148,6 +3243,7 @@ Add `"ghost"` to `ASSERTED` and a `ghost.py` example with no test. Today the sui
 **Category:** Docs
 **Status:** Confirmed
 **Location:** `docs/blocking.md:74-78`, `:45-50`; `src/tapio/dispatch/blocking.py:29-34`
+**Issue:** none: Low findings get no issue
 
 **What's wrong**
 "`assert_no_leaked_threads()` is the companion, and `system.blocking.threads` is what it reads". It reads `threading.enumerate()` (`testkit/leaks.py:129-133`). And "past the deadline it logs what is still running and gives up on it": `ThreadPoolExecutor` workers are joined at interpreter exit, so a wedged call with no timeout also stops the process from exiting.
@@ -3162,6 +3258,7 @@ Add `"ghost"` to `ASSERTED` and a `ghost.py` example with no test. Today the sui
 **Category:** Quality
 **Status:** Confirmed by reading
 **Location:** `src/tapio/testkit/probe.py:234-257`, `:323-325`
+**Issue:** none: Low findings get no issue
 
 **What's wrong**
 All signals go into one FIFO. With two watched actors stopping in either order, `expect_terminated(a)` fails when `b`'s signal is first, and that signal is consumed, so a following `expect_terminated(b)` times out.
@@ -3176,6 +3273,7 @@ Search the queue for a matching `Terminated` within the timeout and keep the res
 **Category:** Docs
 **Status:** Confirmed by reading
 **Location:** `src/tapio/testkit/remote.py:96-139`, `:209-233`
+**Issue:** none: Low findings get no issue
 
 **What's wrong**
 `allow_write` sleeps inside the association's writer, so with `delay(0.05)` ten frames take 0.5 s: it is a bandwidth cap, not a latency. `drop(n)` sets the count rather than adding. `link_faults(system)` called twice installs a new filter, and the first returned `LinkFaults` silently controls nothing.
@@ -3190,6 +3288,7 @@ Document the three: "Every frame waits its turn, so this also limits throughput 
 **Category:** Quality
 **Status:** Confirmed by reading
 **Location:** `src/tapio/testkit/leaks.py:30-43`
+**Issue:** none: Low findings get no issue
 
 **What's wrong**
 The check runs in `finally` and raises `AssertionError` even when the block itself raised. A failing test that also leaves its actors' tasks running (because it never reached its cleanup) is reported as a leak, with the real failure demoted to `__context__`.
@@ -3212,6 +3311,7 @@ Run the check only on a clean exit, or raise with the original as the primary er
 **Category:** Docs
 **Status:** Confirmed
 **Location:** `CONTRIBUTING.md:48-80`; `AGENTS.md` "Commit messages and pull requests"
+**Issue:** none: Low findings get no issue
 
 **What's wrong**
 AGENTS.md says CONTRIBUTING "summarises the commit and pull request rules below, so a change to those needs the same change there". Missing from CONTRIBUTING: end the PR body with the `Co-Authored-By` trailer; do not pass `--body-file` to `gh pr merge`; `BREAKING CHANGE:` moves the minor while 0.x.
@@ -3226,6 +3326,7 @@ Add three bullets under "Commits and versions" and "Pull requests" with those ru
 **Category:** Docs
 **Status:** Confirmed
 **Location:** various
+**Issue:** none: Low findings get no issue
 
 - `docs/supervision.md:65`: "`SupervisorStrategy.backoff` waits, and waits longer each time" reads as a constructor. It is a field; the call is `SupervisorStrategy.restart(backoff=Backoff(...))`.
 - `docs/getting-started.md:11-13`: "the `tapio-cluster` operator command is a separate extra ... does not install it". The script is always installed (`pyproject.toml:50-51`); only `typer` is the extra, and without it the command exits with an install hint.
@@ -3240,6 +3341,7 @@ Add three bullets under "Commits and versions" and "Pull requests" with those ru
 **Also touches:** Quality (tests), gap note only
 **Status:** Confirmed
 **Location:** `tests/cluster/test_{member,reachability,clock,gossip}.py`, `tests/cluster/strategies.py`
+**Issue:** none: Low findings get no issue
 
 **What's wrong**
 Commutativity, associativity and idempotence are property-tested for `Member`, `Reachability`, `VectorClock` and `Gossip`, plus an order-independence test. Not property-tested: that `leader_actions` is deterministic and idempotent for a converged view, and that a downing strategy gives the same verdict when fed the two mirror-image views of a partition (`docs/clustering.md:204-215` says safety depends on this). The cluster reviewer is writing merge-law properties; these two are the gaps I would add.
