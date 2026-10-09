@@ -340,7 +340,8 @@ class TapioSettings(BaseSettings):
     """One deadline for the whole tree, not a per-actor timeout.
 
     Shutdown races a single clock, so worst-case shutdown time tracks this
-    value rather than depth times timeout.
+    value rather than depth times timeout. An actor cancelled at the deadline
+    gets one more second, shared by the whole tree, to finish its cleanup.
     """
 
     blocking_pool_size: int = 16

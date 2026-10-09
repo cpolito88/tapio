@@ -184,6 +184,97 @@ async def test_a_wedged_actor_is_cancelled_at_the_deadline(
     assert str(root.path) in caplog.text
 
 
+async def test_terminate_finishes_when_a_restart_cancels_the_same_wedged_child():
+    # Two stoppers on one child: the parent's restart, against its own
+    # deadline, and the system drain, against a later one. The restart cancels
+    # the child first. That cancellation is not the drain's, and it used to end
+    # the drain, so terminate raised CancelledError and when_terminated hung.
+    wedged = asyncio.Event()
+
+    def child() -> Behavior[Increment]:
+        async def on_message(message: Increment) -> Behavior[Increment]:
+            wedged.set()
+            await asyncio.Event().wait()
+            return Behaviors.same()
+
+        return Behaviors.receive_message(on_message)
+
+    def parent(ctx: ActorContext[Increment]) -> Behavior[Increment]:
+        ctx.spawn(child(), "kid").tell(Increment())
+
+        async def on_message(message: Increment) -> Behavior[Increment]:
+            raise BoomError("restart, and stop the wedged child")
+
+        return Behaviors.receive_message(on_message)
+
+    settings = IsolatedTapioSettings(shutdown_timeout=timedelta(milliseconds=300))
+    with assert_no_leaked_tasks():
+        system = ActorSystem("two-stoppers", settings)
+        ref = system.spawn(
+            Behaviors.supervise(Behaviors.setup(parent)).on_failure(
+                SupervisorStrategy.restart()
+            ),
+            name="parent",
+        )
+        await wedged.wait()
+        ref.tell(Increment())
+        # A clock reading, not a synchronisation: the drain's deadline has to
+        # fall after the restart's, so the restart is the one that cancels.
+        await asyncio.sleep(0.1)
+
+        async with asyncio.timeout(3.0):
+            await system.terminate()
+            await system.when_terminated()
+
+
+async def test_a_cancelled_handlers_slow_cleanup_does_not_hold_terminate(
+    caplog: pytest.LogCaptureFixture,
+):
+    # Cancelling a handler runs its `finally`, which can await for as long as
+    # it likes. Shutdown gives that a bounded grace past the deadline and then
+    # stops waiting for it.
+    shutdown_timeout = timedelta(milliseconds=100)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    cleaned_up = asyncio.Event()
+
+    async def on_message(message: Increment) -> Behavior[Increment]:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            try:
+                await release.wait()
+            finally:
+                cleaned_up.set()
+        return Behaviors.same()
+
+    loop = asyncio.get_running_loop()
+    with assert_no_leaked_tasks():
+        system = ActorSystem(
+            "slow-cleanup", IsolatedTapioSettings(shutdown_timeout=shutdown_timeout)
+        )
+        system.spawn(Behaviors.receive_message(on_message), name="worker").tell(
+            Increment()
+        )
+        await entered.wait()
+
+        started = loop.time()
+        with caplog.at_level(logging.WARNING, logger="tapio.actor"):
+            async with asyncio.timeout(5.0):
+                await system.terminate()
+        elapsed = loop.time() - started
+
+        # The abandoned task is still the cell's and still cancelled, so it
+        # ends one way or the other once nothing holds it.
+        release.set()
+        async with asyncio.timeout(2.0):
+            await cleaned_up.wait()
+
+    assert elapsed < shutdown_timeout.total_seconds() + 1.0 + 0.5
+    assert "abandoned" in caplog.text
+
+
 async def test_terminate_is_idempotent_and_reported():
     system = ActorSystem("twice")
     system.spawn(idle(), name="worker")
