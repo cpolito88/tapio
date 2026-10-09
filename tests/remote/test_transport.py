@@ -1,13 +1,17 @@
 """Tests for the link: framing, frame kinds, binding and TLS."""
 
 import asyncio
+import contextlib
 import socket
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from tapio.actor.path import ActorPath
 from tapio.errors import FrameTooLargeError, InsecureRemoteConfig, MessageDecodingError
+from tapio.remote import transport
 from tapio.remote.codec import LENGTH_PREFIX, encode
 from tapio.remote.transport import (
     FrameLink,
@@ -29,6 +33,7 @@ from tapio.testkit import (
     IsolatedRemoteSettings,
     IsolatedTLSSettings,
 )
+from tests.failures import eventually
 from tests.remote.peers import Tick
 
 
@@ -121,6 +126,62 @@ async def test_closing_a_server_closes_a_connection_it_already_accepted(turns: i
         client.close()
 
 
+@contextlib.asynccontextmanager
+async def stalled() -> AsyncIterator[tuple[FrameLink, socket.socket]]:
+    """A link whose write buffer is full, because the peer never reads.
+
+    Yields:
+        The link, and its socket for the test to check.
+    """
+    accepted: asyncio.Queue[asyncio.StreamWriter] = asyncio.Queue()
+
+    def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        accepted.put_nowait(writer)
+
+    listener = bind(remote(bind_port=0))
+    server = await listen(handle, listener, ssl_context=None)
+    reader, writer = await asyncio.open_connection(*listener.getsockname()[:2])
+    peer = await accepted.get()
+    try:
+        link = FrameLink(reader, writer, max_frame_bytes=1024)
+        chunk = framed(b"x" * (1024 * 1024))
+        # The kernel buffers on both ends fill first, then the transport's. A
+        # write that cannot drain is the sign that they have.
+        while True:
+            try:
+                async with asyncio.timeout(0.2):
+                    await link.write_frame(chunk)
+            except TimeoutError:
+                break
+        yield link, writer.get_extra_info("socket")
+    finally:
+        # The peer first: on 3.12 and later a server's close waits for every
+        # connection it accepted.
+        peer.transport.abort()
+        writer.transport.abort()
+        server.close()
+
+
+async def test_closing_a_link_whose_peer_stopped_reading_aborts_it(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(transport, "CLOSE_GRACE", 0.1)
+    async with stalled() as (link, sock):
+        async with asyncio.timeout(2.0):
+            await link.close()
+        await eventually(lambda: sock.fileno() == -1)
+
+
+async def test_a_caller_cancelled_while_a_link_closes_is_cancelled_and_it_aborts():
+    async with stalled() as (link, sock):
+        closing = asyncio.ensure_future(link.close())
+        await asyncio.sleep(0)
+        closing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+        await eventually(lambda: sock.fileno() == -1)
+
+
 def test_a_link_frame_is_recognised_without_being_parsed():
     assert is_link_frame(framed(Heartbeat().model_dump_json().encode()))
 
@@ -192,6 +253,13 @@ def test_a_name_that_is_not_an_address_literal_is_not_assumed_to_be_loopback():
     # open port, so it does not guess.
     with pytest.raises(InsecureRemoteConfig):
         verify_bind_security(remote(bind_host="orders.svc"))
+
+
+def test_an_empty_secret_is_refused_where_it_is_configured():
+    # Anyone can answer the challenge with an HMAC keyed by an empty secret,
+    # so it would pass the bind check and prove nothing.
+    with pytest.raises(ValidationError, match="empty secret"):
+        remote(bind_host="0.0.0.0", secret="")
 
 
 def test_binding_anywhere_with_a_secret_is_allowed():
