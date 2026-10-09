@@ -319,6 +319,46 @@ def stalled_writes(after: int = 0) -> Callable[[FrameLink], Link]:
     return lambda link: _WriteFaultLink(link, after, stall=True)
 
 
+class _HeldCloseLink:
+    """A link whose close waits until the test lets it go.
+
+    A peer that stopped reading holds a real graceful close for as long as the
+    transport allows. This stands in for that, without depending on how large
+    the kernel's buffers are.
+    """
+
+    __slots__ = ("_gate", "_link")
+
+    def __init__(self, link: FrameLink, gate: asyncio.Event) -> None:
+        self._link = link
+        self._gate = gate
+
+    @property
+    def peer(self) -> str:
+        return self._link.peer
+
+    async def read_frame(self) -> bytes:
+        return await self._link.read_frame()
+
+    async def write_frame(self, data: bytes) -> None:
+        await self._link.write_frame(data)
+
+    async def write_link(self, message: LinkFrame) -> None:
+        await self._link.write_link(message)
+
+    async def close(self) -> None:
+        await self._gate.wait()
+        await self._link.close()
+
+    def __repr__(self) -> str:
+        return f"_HeldCloseLink({self._link.peer!r})"
+
+
+def held_closes(gate: asyncio.Event) -> Callable[[FrameLink], Link]:
+    """A link filter whose closes wait until `gate` is set."""
+    return lambda link: _HeldCloseLink(link, gate)
+
+
 @contextlib.asynccontextmanager
 async def silent_peer() -> AsyncIterator[Address]:
     """A peer that accepts a connection and then says nothing at all.

@@ -20,7 +20,7 @@ from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Any, Generic, TypeAlias, TypeVar, cast
+from typing import Any, Final, Generic, TypeAlias, TypeVar, cast
 
 from tapio.actor.adapter import AdaptedMessage, AdapterRef, AdapterRegistry
 from tapio.actor.ask import ask as run_ask
@@ -108,6 +108,17 @@ def running_cell() -> "ActorCell[Any] | None":
         return cell
     return None
 
+
+_CANCEL_GRACE: Final = 1.0
+"""Seconds an actor cancelled at the shutdown deadline has to finish.
+
+Cancelling a handler runs its `finally` blocks and `__aexit__` methods, and
+those can await, for example to close an HTTP client. Shutdown waits this long
+past the deadline for that cleanup, once for the whole tree. A task still
+running after that is abandoned: it stays cancelled and stays the cell's, but
+`terminate` no longer waits for it. Without a bound, a handler that catches
+its cancellation and carries on would hold `terminate` forever.
+"""
 
 _STOP = SupervisorStrategy.stop()
 """What a failure nobody wrote a strategy for gets.
@@ -877,25 +888,39 @@ class ActorCell(Generic[T]):
             return
 
         self._mailbox.put_system(PostStop())
-        # Shielded, and the task rather than the termination future: a caller
-        # that gives up waiting must not cancel the stop it asked for, and the
-        # task is only done once its own cleanup has run.
-        try:
-            async with asyncio.timeout_at(deadline):
-                await asyncio.shield(self._task)
-        except TimeoutError:
-            # Not `suppress(CancelledError)` around the wait: this site resumes
-            # work afterwards, so swallowing a cancellation aimed at this
-            # caller would let the sweep carry on stopping the rest of the tree
-            # after being told to stop.
-            await cancel_and_wait(self._task)
+        now = self._runtime.dispatcher.now
+        # The task rather than the termination future, since the task is only
+        # done once its own cleanup has run. Waited with `asyncio.wait` rather
+        # than a shield. More than one stopper can reach the same cell: a
+        # restart, the actor stopping itself, and the system drain. When one
+        # of them cancels the task at its own deadline, a shield hands that
+        # cancellation to every other waiter as though it were theirs, and the
+        # drain then ends cancelled with the tree half stopped. `asyncio.wait`
+        # never raises the task's outcome into the caller, and a caller that
+        # gives up waiting does not cancel the stop it asked for.
+        done, _ = await asyncio.wait({self._task}, timeout=max(deadline - now(), 0.0))
+        if done:
+            return
+        current = self._current
+        handling = type(current).__name__ if current is not None else "no message"
+        # The grace is measured from the shared deadline too, so a chain of
+        # wedged actors does not get one grace per level.
+        finished = await cancel_and_wait(
+            self._task, timeout=max(deadline + _CANCEL_GRACE - now(), 0.0)
+        )
+        if finished:
             self._log.warning(
                 "did not stop within the shutdown deadline while handling %s; "
                 "cancelled",
-                type(self._current).__name__
-                if self._current is not None
-                else "no message",
+                handling,
             )
+            return
+        self._log.warning(
+            "did not stop within the shutdown deadline while handling %s, and "
+            "was still running %gs after it was cancelled; abandoned",
+            handling,
+            _CANCEL_GRACE,
+        )
 
     def abort(self) -> None:
         """Cancel this actor's task without waiting for it to finish.

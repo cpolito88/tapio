@@ -34,6 +34,7 @@ from tapio.remote.codec import LENGTH_PREFIX, frame_length
 from tapio.settings import RemoteSettings, TLSSettings
 
 __all__ = [
+    "CLOSE_GRACE",
     "LINK_PREFIX",
     "BindSettings",
     "FrameLink",
@@ -64,6 +65,15 @@ ConnectionHandler: TypeAlias = Callable[
 Synchronous on purpose. It runs as the connection is made, which is the one
 moment nothing can cancel, so it is where the endpoint takes ownership of the
 socket before it hands the reader to a task that a shutdown could cancel.
+"""
+
+CLOSE_GRACE: Final = 1.0
+"""Seconds a closing link has to send what is still in its write buffer.
+
+Long enough for the last frames of an ordinary close, such as a heartbeat or a
+watch reply written just before it, to reach a peer that is reading. A peer
+that is not reading will never take them, and the link is aborted when this
+runs out.
 """
 
 LINK_PREFIX: Final = b'{"link":'
@@ -321,15 +331,36 @@ class FrameLink:
         return link_body(data)
 
     async def close(self) -> None:
-        """Close the connection, ignoring how it ends.
+        """Close the connection, ignoring how it ends, within a bounded time.
 
         A link is closed because something already went wrong or because the
         system is going away, and neither is improved by an error raised on the
         way out.
+
+        A graceful close first sends what is already in the write buffer. A
+        peer that stopped reading never takes it, and the close would then
+        wait as long as TCP keeps the connection open, which can be forever.
+        So the graceful close gets `CLOSE_GRACE` seconds, and the connection
+        is aborted after that. The frames still buffered are lost, which is
+        what at-most-once delivery already allows for a link that failed.
+
+        A cancellation of the caller aborts the connection too, and is then
+        raised. The caller may resume work after the close, and it must stop
+        when it was told to.
+
+        Raises:
+            asyncio.CancelledError: If the caller was cancelled while waiting.
+                The connection is aborted first.
         """
         self._writer.close()
-        with contextlib.suppress(OSError, asyncio.CancelledError):
-            await self._writer.wait_closed()
+        try:
+            async with asyncio.timeout(CLOSE_GRACE):
+                await self._writer.wait_closed()
+        except (TimeoutError, OSError):
+            self._writer.transport.abort()
+        except asyncio.CancelledError:
+            self._writer.transport.abort()
+            raise
 
     async def __aenter__(self) -> Self:
         """Return the open link."""

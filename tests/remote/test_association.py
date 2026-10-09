@@ -26,11 +26,14 @@ from tapio.message import Message
 from tapio.remote.address import Address
 from tapio.remote.association import Association, Outbound
 from tapio.remote.codec import LENGTH_PREFIX, encode
+from tapio.remote.failure import PeerUnreachable
 from tapio.remote.handle import LinkHandle
 from tapio.remote.transport import framed, is_link_frame, link_body
 from tapio.testkit import (
     IsolatedRemoteSettings,
     assert_no_leaked_tasks,
+    drop_links,
+    two_nodes,
 )
 from tests.failures import eventually
 from tests.remote.peers import (
@@ -45,11 +48,13 @@ from tests.remote.peers import (
     dial,
     echoing,
     failing_writes,
+    held_closes,
     relaying,
     remoting,
     silent_peer,
     stalled_writes,
     uri,
+    watching,
 )
 
 
@@ -1170,3 +1175,63 @@ async def test_a_heartbeat_parked_on_a_link_a_dial_race_retired_keeps_the_associ
         await beating
 
         assert not association._closing
+
+
+async def test_every_tick_queued_behind_a_close_is_delivered_or_dead_lettered():
+    # The association takes the first tick off its mailbox on the turn after
+    # the close. That tick is in hand, neither queued nor pending, and it used
+    # to vanish with no dead letter.
+    with assert_no_leaked_tasks():
+        async with two_nodes() as nodes:
+            seen: list[int] = []
+            worker = nodes.beta.spawn(counting(seen), "worker")
+            ref = await nodes.alpha.resolve(uri(nodes.beta, worker), expect=Tick)
+            ref.tell(Tick(n=0))
+            await eventually(lambda: seen == [0])
+            letters: list[DeadLetter] = []
+            nodes.alpha.dead_letters.subscribe(letters.append)
+
+            for n in range(1, 6):
+                ref.tell(Tick(n=n))
+            drop_links(nodes.alpha)
+
+            def accounted() -> list[int]:
+                dead = [x.message.n for x in letters if isinstance(x.message, Tick)]
+                return sorted(seen[1:] + dead)
+
+            await eventually(lambda: accounted() == [1, 2, 3, 4, 5])
+
+
+async def test_a_link_slow_to_close_does_not_hold_back_what_the_association_owes(
+    alpha: ActorSystem, beta: ActorSystem
+):
+    # The watchers, the event and the endpoint's table are all settled before
+    # the socket is closed. A peer that stopped reading can hold that close for
+    # as long as the transport allows, and nothing else may wait for it.
+    gate = asyncio.Event()
+    assert alpha.remote is not None
+    alpha.remote.set_link_filter(held_closes(gate))
+    try:
+        seen: list[str] = []
+        unreachable: list[PeerUnreachable] = []
+        alpha.events.subscribe(PeerUnreachable, unreachable.append)
+        ticker = beta.spawn(counting([]), "ticker")
+        remote = await alpha.resolve(uri(beta, ticker), expect=Tick)
+        alpha.spawn(watching(remote, seen), "watcher")
+        assert beta.remote is not None
+        there = beta.remote
+
+        def watch_registered() -> bool:
+            association = there.association_for(alpha.address)
+            return association is not None and bool(association.watched)
+
+        await eventually(watch_registered)
+
+        drop_links(alpha)
+
+        await eventually(lambda: any(s.startswith("terminated") for s in seen))
+        assert [event.peer for event in unreachable] == [str(beta.address)]
+        assert alpha.remote.associations == ()
+        assert not gate.is_set()
+    finally:
+        gate.set()

@@ -694,8 +694,8 @@ class ActorSystem:
         cell = running_cell()
         if cell is not None and cell.runtime is self._runtime:
             return
-        # Shielded for the reason ActorCell.stop is: a caller that gives up
-        # waiting must not cancel the shutdown it asked for.
+        # Shielded, so a caller that gives up waiting does not cancel the
+        # shutdown it asked for.
         await asyncio.shield(draining)
 
     async def when_terminated(self) -> None:

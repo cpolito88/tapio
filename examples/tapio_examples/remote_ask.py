@@ -36,6 +36,7 @@ from tapio import (
 from tapio.actor import ActorContext, ActorRef
 from tapio.errors import AskTargetUnreachable, AskTimeoutError
 from tapio.remote.address import format_ref
+from tapio.remote.failure import PeerUnreachable
 from tapio.testkit import two_nodes
 
 __all__ = ["Answer", "Ask", "main"]
@@ -117,19 +118,28 @@ async def main() -> list[str]:
             # reasonable thing to do.
             lines.append("asker: no answer in time, and the node is still there")
 
-        # Now the network, rather than the actor, is the problem. The oracle
-        # keeps running on its own node throughout.
-        nodes.partition()
-        try:
-            await remote.ask(
-                lambda reply_to: Ask(question="six by seven", reply_to=reply_to),
-                expect=Answer,
-                timeout=timedelta(seconds=30),
-            )
-        except AskTargetUnreachable:
-            # Note the deadline above: thirty seconds, and the ask failed in a
-            # fraction of one. It failed on the peer, not on the clock.
-            lines.append("asker: the answering node is unreachable, so no waiting")
+        # Each node judges the silence on its own clock, so the answering node
+        # can give up on the asker a moment after the asker gave up on it.
+        # Its quarantine is cleared below, and clearing one it has not made
+        # yet would clear nothing. So the example waits for its verdict.
+        answers_gave_up = asyncio.Event()
+        with there.events.subscribe(
+            PeerUnreachable, lambda event: answers_gave_up.set()
+        ):
+            # Now the network, rather than the actor, is the problem. The
+            # oracle keeps running on its own node throughout.
+            nodes.partition()
+            try:
+                await remote.ask(
+                    lambda reply_to: Ask(question="six by seven", reply_to=reply_to),
+                    expect=Answer,
+                    timeout=timedelta(seconds=30),
+                )
+            except AskTargetUnreachable:
+                # Note the deadline above: thirty seconds, and the ask failed
+                # in a fraction of one. It failed on the peer, not on the clock.
+                lines.append("asker: the answering node is unreachable, so no waiting")
+            await answers_gave_up.wait()
 
         nodes.heal()
         there.remote.clear_quarantine(here.address)  # type: ignore[union-attr]

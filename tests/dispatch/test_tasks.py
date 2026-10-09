@@ -54,3 +54,53 @@ async def _returns_after_waiting(task: "asyncio.Task[None]") -> bool:
     """Run `cancel_and_wait` from an uncancelled caller and say it returned."""
     await cancel_and_wait(task)
     return True
+
+
+async def test_cancel_and_wait_returns_to_a_caller_already_handling_a_cancellation():
+    # The caller caught a cancellation earlier and went on into cleanup. Its
+    # `cancelling()` count is still raised, and that must not make the retired
+    # task's own cancellation stop the cleanup.
+    outcome: list[str] = []
+
+    async def caller() -> None:
+        with contextlib.suppress(asyncio.CancelledError):
+            await _pending()
+        try:
+            await cancel_and_wait(asyncio.ensure_future(_pending()))
+        except asyncio.CancelledError:
+            outcome.append("re-raised")
+            return
+        outcome.append("returned")
+
+    task: asyncio.Task[None] = asyncio.ensure_future(caller())
+    await asyncio.sleep(0)
+    task.cancel()
+    await task
+
+    assert outcome == ["returned"]
+
+
+async def test_cancel_and_wait_gives_up_on_a_task_that_outlives_the_timeout():
+    release = asyncio.Event()
+
+    async def stubborn() -> None:
+        try:
+            await _pending()
+        finally:
+            await release.wait()
+
+    task: asyncio.Task[None] = asyncio.ensure_future(stubborn())
+    await asyncio.sleep(0)
+
+    assert await cancel_and_wait(task, timeout=0.05) is False
+    assert not task.done()
+
+    release.set()
+    assert await cancel_and_wait(task, timeout=1.0) is True
+
+
+async def test_cancel_and_wait_reports_a_task_that_finished_in_time():
+    task: asyncio.Task[None] = asyncio.ensure_future(_pending())
+    await asyncio.sleep(0)
+
+    assert await cancel_and_wait(task, timeout=1.0) is True

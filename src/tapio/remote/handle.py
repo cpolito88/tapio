@@ -122,7 +122,12 @@ class LinkHandle:
                 await cancel_and_wait(reader)
         finally:
             link, self._link = self._link, None
-            if link is not None:
-                await link.close()
-            if not self._closed.done():
-                self._closed.set_result(None)
+            try:
+                if link is not None:
+                    await link.close()
+            finally:
+                # Resolved however the link's close ended. It re-raises the
+                # caller's cancellation, and every other waiter on this handle
+                # would otherwise wait for a close that is already over.
+                if not self._closed.done():
+                    self._closed.set_result(None)

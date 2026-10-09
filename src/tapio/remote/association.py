@@ -646,11 +646,18 @@ class Association:
     ) -> Behavior[AssociationMessage]:
         """Write what is queued, beat when there is nothing to write, or stop."""
         if self._closing and not isinstance(message, Close):
-            # A close was requested but could not be queued, because the
-            # outbound lane was full when `close` ran in the reader task. Stop
-            # on the first turn after it: any further work on a closing
+            # The association was closed while this message waited in the
+            # mailbox. That happens whenever `close` runs with a backlog, and
+            # also when the outbound lane was too full to queue the `Close`
+            # itself. Stop on this turn: any further work on a closing
             # association is moot, and stopping runs `_release`, which closes
             # the socket and dead-letters what never left.
+            if isinstance(message, Outbound):
+                # This one is in hand, so it is neither in the mailbox, which
+                # the cell drains as it stops, nor in `_pending`, which
+                # `_release` dead-letters. Putting it in `_pending` accounts
+                # for it with the other frames that never left.
+                self._pending.append(message)
             return Behaviors.stopped()
         match message:
             case Outbound():
@@ -1064,34 +1071,35 @@ class Association:
         )
 
     async def _release(self) -> None:
-        """Cancel the reader, close the link, and account for what is left.
+        """Account for what is left, then cancel the reader and close the link.
 
         Everything this association was holding ends here, in one place: the
-        socket, the frames that never left, the watches in both directions,
-        and the entry in the endpoint's table.
+        frames that never left, the watches in both directions, the entry in
+        the endpoint's table, and the socket.
+
+        The accounting comes first and the socket last. Nothing in the
+        accounting needs the socket, and closing a socket can take a while: a
+        peer that stopped reading holds a graceful close until the link gives
+        up on it. A peer this system has already given up on must not hold
+        back the `Terminated` its watchers are owed, the dead letters, or the
+        event that says it went out of reach.
         """
         self._closing = True
         self._fail_ready("the association stopped")
-        try:
-            await self._close_sockets()
-        finally:
-            # In a `finally` because the accounting is owed whatever the close
-            # did. A cancellation arriving while the reader is ending used to
-            # skip all of this, leaving the frames undelivered, the watchers
-            # waiting and the association still in the endpoint's table.
-            while self._pending:
-                outbound = self._pending.popleft()
-                if isinstance(outbound, Outbound):
-                    self._dead_letter(
-                        outbound.payload,
-                        outbound.recipient,
-                        DeadLetterReason.LINK_FAILED,
-                        detail=(
-                            f"the association with {self._peer} stopped before it left"
-                        ),
-                    )
-            self._end_watches()
-            self._host.forget(self)
+        while self._pending:
+            outbound = self._pending.popleft()
+            if isinstance(outbound, Outbound):
+                self._dead_letter(
+                    outbound.payload,
+                    outbound.recipient,
+                    DeadLetterReason.LINK_FAILED,
+                    detail=(
+                        f"the association with {self._peer} stopped before it left"
+                    ),
+                )
+        self._end_watches()
+        self._host.forget(self)
+        await self._close_sockets()
 
     async def _close_sockets(self) -> None:
         """Release every socket this association still owes a close on.

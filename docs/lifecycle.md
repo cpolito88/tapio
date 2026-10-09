@@ -99,6 +99,13 @@ worst case tracks `shutdown_timeout` rather than multiplying by depth. An
 actor still inside a handler when the deadline passes is cancelled, and the
 warning names its path so the slow one is identifiable rather than anonymous.
 
+Cancelling a handler runs its `finally` blocks, and those can await. Shutdown
+gives that cleanup one second past the deadline, shared by the whole tree. An
+actor still running after that second is abandoned: it stays cancelled, but
+`terminate` returns without it, and a second warning says so. The worst case
+is therefore `shutdown_timeout` plus one second, however the handlers clean
+up.
+
 After shutdown starts, `spawn` raises `ActorSystemTerminating` and a `tell`
 becomes a dead letter. Neither is silent, and neither leaks a task.
 
