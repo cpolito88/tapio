@@ -403,6 +403,67 @@ async def silent_peer() -> AsyncIterator[Address]:
         await server.wait_closed()
 
 
+@contextlib.asynccontextmanager
+async def superseding_peer() -> AsyncIterator[Address]:
+    """A peer that answers every dial with "my own link wins", and never dials.
+
+    A real peer only says that while its own dial is on the way, so this is
+    the case where that dial never arrives.
+
+    Yields:
+        The address to resolve against.
+    """
+    handlers: set[asyncio.Task[None]] = set()
+
+    async def accept(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        task = asyncio.current_task()
+        if task is not None:
+            handlers.add(task)
+        link = FrameLink(reader, writer, max_frame_bytes=1024 * 1024)
+        try:
+            await link.write_frame(
+                framed(
+                    json.dumps(
+                        {
+                            "link": "server-hello",
+                            "protocol": PROTOCOL_VERSION,
+                            "nonce": "0" * 32,
+                        }
+                    ).encode()
+                )
+            )
+            await link.read_link(2.0)
+            await link.write_frame(
+                framed(
+                    json.dumps(
+                        {
+                            "link": "declined",
+                            "reason": "the link superseding opened wins",
+                            "superseded": True,
+                        }
+                    ).encode()
+                )
+            )
+            await asyncio.Event().wait()
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(accept, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        yield Address(system="superseding", host="127.0.0.1", port=port)
+    finally:
+        for task in handlers:
+            task.cancel()
+        for task in handlers:
+            with contextlib.suppress(asyncio.CancelledError, OSError):
+                await task
+        server.close()
+        await server.wait_closed()
+
+
 class RecordingLink:
     """A link that records only whether it was closed.
 
