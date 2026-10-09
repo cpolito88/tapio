@@ -13,6 +13,7 @@ import socket
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from tapio.actor import ActorSystem
 from tapio.cluster import Cluster, MemberStatus
@@ -313,6 +314,16 @@ def test_binding_beyond_loopback_without_a_token_is_refused():
     beyond = IsolatedManagementSettings(bind_host="0.0.0.0")
     with pytest.raises(InsecureRemoteConfig):
         verify_management_security(beyond)
+
+
+def test_an_empty_token_is_refused_where_it_is_configured():
+    # An empty token would match an empty bearer header, so it would pass the
+    # bind check and still let anyone in.
+    with pytest.raises(ValidationError, match="empty secret"):
+        IsolatedManagementSettings(
+            bind_host="0.0.0.0",
+            token="",  # type: ignore[arg-type]
+        )
 
 
 def test_binding_beyond_loopback_with_a_token_is_allowed():

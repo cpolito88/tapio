@@ -353,6 +353,10 @@ class ClusterManagement:
         token = self._token
         if token is None:  # pragma: no cover - the caller checks first
             return True
+        if not token.get_secret_value():
+            # The settings refuse an empty token. This holds even if one got
+            # past them, because an empty token would match an empty header.
+            return False
         presented = headers.get("authorization", "")
         scheme, _, value = presented.partition(" ")
         if scheme.lower() != "bearer":

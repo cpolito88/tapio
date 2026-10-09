@@ -3,7 +3,7 @@
 from datetime import timedelta
 from typing import Annotated
 
-from pydantic import Field, SecretStr
+from pydantic import AfterValidator, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from tapio.actor.mailbox import MailboxConfig, OverflowStrategy
@@ -15,6 +15,27 @@ __all__ = [
     "TLSSettings",
     "TapioSettings",
 ]
+
+
+def _refuse_empty(secret: SecretStr) -> SecretStr:
+    """Refuse an empty secret, which anyone can present.
+
+    The bind checks ask whether a secret is configured. An empty one counts as
+    configured and proves nothing, so a port that the check meant to keep shut
+    would open to anyone. A deployment template whose variable was never set
+    produces exactly this value.
+    """
+    if not secret.get_secret_value():
+        msg = (
+            "an empty secret proves nothing, since anyone can present an empty "
+            "one. Set a non-empty value, or leave it unset."
+        )
+        raise ValueError(msg)
+    return secret
+
+
+_Secret = Annotated[SecretStr, AfterValidator(_refuse_empty)]
+"""A secret that is not empty, checked where the configuration is written."""
 
 
 class TLSSettings(BaseSettings):
@@ -83,12 +104,13 @@ class RemoteSettings(BaseSettings):
     max_frame_bytes: int = 4 * 1024 * 1024
     """Refuse a frame larger than this, before its body is read."""
 
-    secret: SecretStr | None = None
+    secret: _Secret | None = None
     """The shared secret both ends prove they hold during the handshake.
 
     Required to bind anywhere but loopback: a system that accepts frames naming
     actor paths and message types from any host that can reach the port, with
-    nothing to prove, fails to start rather than serving strangers.
+    nothing to prove, fails to start rather than serving strangers. An empty
+    secret is refused, since anyone can present one.
     """
 
     tls: TLSSettings | None = None
@@ -276,7 +298,7 @@ class ManagementSettings(BaseSettings):
     """The port to answer operators on. `0` takes whatever the OS hands out,
     which is what a test binds so no two of them argue over a number."""
 
-    token: SecretStr | None = None
+    token: _Secret | None = None
     """The bearer token an operator presents, or `None` to ask for nothing.
 
     One of the two ways to prove an operator is one, the other being a client
@@ -285,7 +307,8 @@ class ManagementSettings(BaseSettings):
     nothing to prove, fails to start rather than serving strangers. On loopback
     it is optional, since reaching the port at all already means being on the
     machine. Compared in constant time, and presented as
-    `Authorization: Bearer <token>`.
+    `Authorization: Bearer <token>`. An empty token is refused, since anyone
+    can present one.
     """
 
     tls: TLSSettings | None = None
