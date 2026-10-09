@@ -18,8 +18,13 @@ async with two_nodes() as nodes:
     nodes.partition()      # both directions, both nodes
     ...                    # watchers get Terminated, sends dead-letter
     nodes.heal()           # the packets flow again, and nothing re-associates
+    nodes.beta.remote.clear_quarantine(nodes.alpha.address)  # each side relents
     await nodes.alpha.remote.reconnect(nodes.beta.address)
 ```
+
+A partition quarantines both sides, so the side being dialled has to clear
+its own quarantine first. Otherwise it refuses the dial, and `reconnect`
+raises `HandshakeError` naming the refusal.
 
 The pair runs in one process on loopback ports the OS picks, so a test needs
 no orchestration and no port nobody else is using.
@@ -83,8 +88,8 @@ class LinkFaults:
         """Let frames through again.
 
         Nothing re-associates by itself. A system that gave up on a peer stays
-        given up on until `remote.reconnect` says otherwise, which is what
-        this is for testing.
+        given up on until it relents, with `remote.clear_quarantine` or
+        `remote.reconnect`, which is what this is for testing.
         """
         self._partitioned = False
         self._healed.set()
@@ -297,9 +302,11 @@ class TwoNodes:
     def heal(self) -> None:
         """Let the packets flow again, which on its own repairs nothing.
 
-        A node that gave up on its peer stays given up on. `remote.reconnect`
-        is the repair, and it is explicit because a false alarm has already
-        told watchers that live actors are gone.
+        A node that gave up on its peer stays given up on. The repair is
+        explicit, because a false alarm has already told watchers that live
+        actors are gone. A partition quarantines both nodes, so each relents
+        for itself: one calls `remote.clear_quarantine` and the other
+        `remote.reconnect`.
         """
         self.alpha_faults.heal()
         self.beta_faults.heal()
