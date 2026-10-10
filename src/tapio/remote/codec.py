@@ -3,7 +3,7 @@
 A frame is a 4-byte big-endian length followed by a JSON object:
 
 ```json
-{"v": 1, "to": "/user/checkout/session-7#3",
+{"v": 2, "to": "/user/checkout/session-7#3",
  "from": "tapio://web@10.0.0.9:25520",
  "t": "orders.protocol.Reserve",
  "p": {"sku": "X-1", "qty": 2,
