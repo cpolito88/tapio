@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 import re
 import socket
+import ssl
 from collections.abc import Callable
 from typing import Any, Final, TypeVar
 
@@ -46,7 +47,6 @@ from tapio.remote.transport import (
     bind,
     close_server,
     listen,
-    server_ssl_context,
     verify_bind_security,
     wait_server_closed,
 )
@@ -81,6 +81,7 @@ class RemoteEndpoint:
         uid: int,
         deliver: Callable[[bytes, Address], None],
         listener: socket.socket,
+        ssl_context: ssl.SSLContext | None,
     ) -> None:
         """Wire an endpoint to the system it belongs to.
 
@@ -91,6 +92,10 @@ class RemoteEndpoint:
             uid: This system's incarnation uid.
             deliver: Hands an inbound message frame to the system.
             listener: The socket already bound by `open_listener`.
+            ssl_context: The server context built from `RemoteSettings.tls`,
+                or `None` for plaintext. The system builds it during
+                construction, so a certificate that cannot be loaded fails
+                there instead of leaving a port nobody answers on.
         """
         remote = runtime.settings.remote
         if remote is None:  # pragma: no cover - the system checks before it builds one
@@ -103,6 +108,7 @@ class RemoteEndpoint:
         self._settings = remote
         self._deliver = deliver
         self._listener = listener
+        self._ssl = ssl_context
         self._server: asyncio.Server | None = None
         self._associations: dict[Address, Association] = {}
         self._peers: PeerProvider = StaticPeers()
@@ -238,15 +244,10 @@ class RemoteEndpoint:
 
     async def _serve(self) -> None:
         """Accept on the socket that was bound at construction."""
-        context = (
-            server_ssl_context(self._settings.tls)
-            if self._settings.tls is not None
-            else None
-        )
         self._server = await listen(
             self._accept,
             self._listener,
-            ssl_context=context,
+            ssl_context=self._ssl,
             handshake_timeout=self._settings.handshake_timeout.total_seconds(),
         )
         _log.debug("listening for peers on %s", self._address)

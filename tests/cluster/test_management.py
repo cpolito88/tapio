@@ -9,6 +9,8 @@ checked by watching the member it named actually move.
 import asyncio
 import contextlib
 import socket
+import ssl
+import time
 
 import pytest
 from pydantic import ValidationError
@@ -29,7 +31,9 @@ from tests.cluster.conftest import (
     management_request,
     remoting,
     seeds_of,
+    tls_managed,
 )
+from tests.conftest import TlsCerts
 from tests.failures import eventually
 
 MANAGED = IsolatedManagementSettings(bind_port=0)
@@ -265,6 +269,134 @@ async def test_the_port_refuses_connections_past_its_cap():
                         await writer.wait_closed()
 
 
+async def _tls_status(
+    port: int, certs: TlsCerts, *, client_certificate: bool = True
+) -> int | None:
+    """Ask for the status over TLS, and return the code it answered.
+
+    Returns:
+        The status code, or `None` when the port closed the connection before
+        it answered.
+    """
+    context = ssl.create_default_context(cafile=certs.ca)
+    if client_certificate:
+        context.load_cert_chain(certs.client_cert, certs.client_key)
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port, ssl=context)
+    except OSError:
+        return None
+    try:
+        writer.write(
+            b"GET /status HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+        )
+        await writer.drain()
+        raw = await reader.read()
+    except OSError:
+        return None
+    finally:
+        writer.close()
+        with contextlib.suppress(OSError):
+            await writer.wait_closed()
+    return int(raw.split(b" ")[1]) if raw else None
+
+
+async def _answers_over_tls(
+    port: int, certs: TlsCerts, code: int | None, *, within: float = 5.0
+) -> None:
+    """Wait until a `GET /status` over TLS answers with a code, or is refused."""
+    try:
+        async with asyncio.timeout(within):
+            while await _tls_status(port, certs) != code:
+                pass
+    except TimeoutError:
+        msg = f"the port never answered {code} over TLS within {within}s"
+        raise AssertionError(msg) from None
+
+
+async def test_the_connection_cap_holds_over_tls(mutual_tls_certs: TlsCerts):
+    # Connections that open TCP and never send a TLS hello. When asyncio ran
+    # the handshake, these were never counted and the port kept answering.
+    with assert_no_leaked_tasks():
+        async with cluster_of(1, management=tls_managed(mutual_tls_certs)) as nodes:
+            await _joined(nodes)
+            port = management_port(nodes[0])
+
+            held = [
+                await asyncio.open_connection("127.0.0.1", port)
+                for _ in range(_MAX_CONNECTIONS)
+            ]
+            try:
+                await _answers_over_tls(port, mutual_tls_certs, None)
+
+                _, writer = held.pop()
+                writer.close()
+                await writer.wait_closed()
+
+                await _answers_over_tls(port, mutual_tls_certs, 200)
+            finally:
+                for _, writer in held:
+                    writer.close()
+                    with contextlib.suppress(OSError):
+                        await writer.wait_closed()
+
+
+async def test_failed_tls_handshakes_do_not_hold_connection_slots(
+    mutual_tls_certs: TlsCerts,
+):
+    with assert_no_leaked_tasks():
+        async with cluster_of(1, management=tls_managed(mutual_tls_certs)) as nodes:
+            await _joined(nodes)
+            port = management_port(nodes[0])
+
+            for _ in range(_MAX_CONNECTIONS + 1):
+                refused = await _tls_status(
+                    port, mutual_tls_certs, client_certificate=False
+                )
+                assert refused is None
+
+            await _answers_over_tls(port, mutual_tls_certs, 200)
+
+
+async def test_a_tls_hello_that_never_comes_is_closed_at_the_deadline(
+    monkeypatch, mutual_tls_certs: TlsCerts
+):
+    monkeypatch.setattr("tapio.cluster.management._REQUEST_TIMEOUT", 0.2)
+    with assert_no_leaked_tasks():
+        async with cluster_of(1, management=tls_managed(mutual_tls_certs)) as nodes:
+            await _joined(nodes)
+            port = management_port(nodes[0])
+
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            raw = await asyncio.wait_for(reader.read(), timeout=5.0)
+            writer.close()
+            with contextlib.suppress(OSError):
+                await writer.wait_closed()
+
+    # Closed with no answer: a plaintext 408 means nothing to a TLS client.
+    assert raw == b""
+
+
+async def test_terminate_is_not_held_by_a_client_that_never_starts_tls(
+    mutual_tls_certs: TlsCerts,
+):
+    with assert_no_leaked_tasks():
+        async with cluster_of(1, management=tls_managed(mutual_tls_certs)) as nodes:
+            await _joined(nodes)
+            port = management_port(nodes[0])
+
+            _, writer = await asyncio.open_connection("127.0.0.1", port)
+            try:
+                started = time.monotonic()
+                await nodes[0].system.terminate()
+                took = time.monotonic() - started
+            finally:
+                writer.close()
+                with contextlib.suppress(OSError):
+                    await writer.wait_closed()
+
+    assert took < 1.0, f"terminate waited {took:.2f}s for a client that said nothing"
+
+
 async def test_headers_that_never_end_answer_413():
     with assert_no_leaked_tasks():
         async with cluster_of(1, management=MANAGED) as nodes:
@@ -375,5 +507,29 @@ async def test_a_cluster_that_fails_to_start_releases_its_managementmanagement_p
             # listener nobody refers to any more is closed by its finalizer,
             # and the ResourceWarning that comes with it fails the test. Before
             # this fix the second one fires, naming the port bound above.
+            with contextlib.closing(socket.create_server(("127.0.0.1", port))):
+                pass
+
+
+async def test_a_bad_management_certificate_fails_construction(tmp_path):
+    # A fixed port, for the reason the test above gives: only a fixed port shows
+    # whether the failed construction let go of it.
+    port = _a_freemanagement_port()
+    absent = str(tmp_path / "absent.pem")
+
+    with assert_no_leaked_tasks():
+        async with ActorSystem("bad-certificate", remoting()) as system:
+            with pytest.raises(OSError, match="No such file"):
+                Cluster(
+                    system,
+                    management=IsolatedManagementSettings(
+                        bind_port=port,
+                        tls=IsolatedTLSSettings(certfile=absent),
+                    ),
+                )
+
+            # Nothing was left running: the daemon's name is free, and so is
+            # the port.
+            Cluster(system)
             with contextlib.closing(socket.create_server(("127.0.0.1", port))):
                 pass

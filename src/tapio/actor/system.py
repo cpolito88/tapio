@@ -33,7 +33,7 @@ from tapio.remote.codec import receive_frame
 from tapio.remote.context import use_context
 from tapio.remote.endpoint import RemoteEndpoint, open_listener
 from tapio.remote.registry import RefRegistry
-from tapio.remote.transport import address_host
+from tapio.remote.transport import address_host, server_ssl_context
 from tapio.settings import RemoteSettings, TapioSettings
 from tapio.validation import normalize_msg_type
 
@@ -145,7 +145,8 @@ class ActorSystem:
                 anything else, so a deployment like that fails to start rather
                 than failing to be secure.
             OSError: If the remoting port cannot be bound, usually because
-                something else holds it. Bound here for the same reason.
+                something else holds it, or if its certificate or key cannot
+                be loaded. Both are checked here for the same reason.
         """
         self._settings = settings if settings is not None else TapioSettings()
         self._root = ActorPath.root(name)
@@ -166,6 +167,16 @@ class ActorSystem:
             else None
         )
         try:
+            # Loaded here, before anything runs, for the same reason the port
+            # is bound here. A certificate that cannot be read used to fail
+            # inside the endpoint's accept task, where nobody saw it, and the
+            # port stayed bound with nothing answering on it.
+            remote = self._settings.remote
+            self._server_ssl = (
+                server_ssl_context(remote.tls)
+                if remote is not None and remote.tls is not None
+                else None
+            )
             self._build(name)
         except BaseException:
             # The port is bound by now, and nothing else has a reference to
@@ -249,6 +260,7 @@ class ActorSystem:
             uid=self._uid,
             deliver=lambda frame, peer: self.deliver_frame(frame, peer=peer),
             listener=listener,
+            ssl_context=self._server_ssl,
         )
         ref = self._system.spawn(endpoint.behavior(), "remote")
         endpoint.start(cast("LocalActorRef[Any]", ref).cell)
