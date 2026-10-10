@@ -196,6 +196,15 @@ def test_a_link_frame_that_is_not_an_object_is_refused():
         link_body(framed(b"[1, 2]"))
 
 
+def test_a_deeply_nested_link_frame_is_refused():
+    # Before the handshake, a RecursionError here escaped `accept` from a peer
+    # that had proved nothing.
+    depth = 200_000
+    frame = framed(b'{"link":' + b"[" * depth + b"]" * depth + b"}")
+    with pytest.raises(MessageDecodingError, match="not JSON"):
+        link_body(frame)
+
+
 def test_a_link_frame_that_is_not_json_is_refused():
     with pytest.raises(MessageDecodingError, match="not JSON"):
         link_body(framed(b"{oops"))

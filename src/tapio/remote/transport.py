@@ -208,7 +208,9 @@ def link_body(frame: bytes) -> dict[str, Any]:
     """
     try:
         parsed = json.loads(frame[LENGTH_PREFIX:])
-    except ValueError as error:
+    except (ValueError, RecursionError) as error:
+        # Deep nesting raises RecursionError, which is not a ValueError. Before
+        # the handshake it would escape `accept` from a peer with no secret.
         raise MessageDecodingError(f"link frame is not JSON: {error}") from error
     if not isinstance(parsed, dict):
         msg = f"a link frame is a JSON object, got {type(parsed).__name__}"

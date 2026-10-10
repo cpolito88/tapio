@@ -354,6 +354,39 @@ class _HeldCloseLink:
         return f"_HeldCloseLink({self._link.peer!r})"
 
 
+class _BuggyReadLink:
+    """A link whose reads raise an exception nothing expects."""
+
+    __slots__ = ("_link",)
+
+    def __init__(self, link: FrameLink) -> None:
+        self._link = link
+
+    @property
+    def peer(self) -> str:
+        return self._link.peer
+
+    async def read_frame(self) -> bytes:
+        raise RuntimeError("the reader hit a bug")
+
+    async def write_frame(self, data: bytes) -> None:
+        await self._link.write_frame(data)
+
+    async def write_link(self, message: LinkFrame) -> None:
+        await self._link.write_link(message)
+
+    async def close(self) -> None:
+        await self._link.close()
+
+    def __repr__(self) -> str:
+        return f"_BuggyReadLink({self._link.peer!r})"
+
+
+def buggy_reads() -> Callable[[FrameLink], Link]:
+    """A link filter whose reads raise a `RuntimeError`."""
+    return _BuggyReadLink
+
+
 def held_closes(gate: asyncio.Event) -> Callable[[FrameLink], Link]:
     """A link filter whose closes wait until `gate` is set."""
     return lambda link: _HeldCloseLink(link, gate)
