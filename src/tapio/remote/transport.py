@@ -35,6 +35,7 @@ from tapio.settings import RemoteSettings, TLSSettings
 
 __all__ = [
     "CLOSE_GRACE",
+    "HANDSHAKE_FRAME_BYTES",
     "LINK_PREFIX",
     "BindSettings",
     "FrameLink",
@@ -44,6 +45,7 @@ __all__ = [
     "Unwatch",
     "Watch",
     "WatcheeTerminated",
+    "address_host",
     "bind",
     "client_ssl_context",
     "close_server",
@@ -54,7 +56,9 @@ __all__ = [
     "link_body",
     "listen",
     "server_ssl_context",
+    "socket_host",
     "verify_bind_security",
+    "wait_server_closed",
 ]
 
 ConnectionHandler: TypeAlias = Callable[
@@ -74,6 +78,14 @@ Long enough for the last frames of an ordinary close, such as a heartbeat or a
 watch reply written just before it, to reach a peer that is reading. A peer
 that is not reading will never take them, and the link is aborted when this
 runs out.
+"""
+
+HANDSHAKE_FRAME_BYTES: Final = 4096
+"""The largest frame a link reads while it is being handshaken.
+
+A hello is a few hundred bytes, and the peer has proved nothing yet when it
+sends one. Reading it under `max_frame_bytes`, 4 MiB by default, let each
+unauthenticated connection make the listener buffer that much.
 """
 
 LINK_PREFIX: Final = b'{"link":'
@@ -311,7 +323,10 @@ class FrameLink:
         await self.write_frame(framed(message.model_dump_json().encode()))
 
     async def read_link(self, timeout: float) -> dict[str, Any]:  # noqa: ASYNC109 - the handshake deadline
-        """Read one link frame, refusing anything else.
+        """Read one handshake frame, refusing anything else.
+
+        The frame is capped at `HANDSHAKE_FRAME_BYTES` rather than at the
+        link's own limit, because the peer has not proved anything yet.
 
         Args:
             timeout: Seconds to wait for it.
@@ -320,13 +335,18 @@ class FrameLink:
             The decoded object.
 
         Raises:
+            FrameTooLargeError: If the frame declares more than
+                `HANDSHAKE_FRAME_BYTES`.
             MessageDecodingError: If what arrived was not a link frame.
             TimeoutError: If nothing arrived in time.
             asyncio.IncompleteReadError: If the peer closed first.
             OSError: If the connection failed.
         """
+        limit = min(HANDSHAKE_FRAME_BYTES, self._max_frame_bytes)
         async with asyncio.timeout(timeout):
-            data = await self.read_frame()
+            prefix = await self._reader.readexactly(LENGTH_PREFIX)
+            length = frame_length(prefix, max_frame_bytes=limit)
+            data = prefix + await self._reader.readexactly(length)
         if not is_link_frame(data):
             msg = "expected a link frame before any message frame"
             raise MessageDecodingError(msg)
@@ -388,7 +408,8 @@ async def connect(
     """Dial a peer and return the link to it.
 
     Args:
-        host: The canonical host the peer advertises.
+        host: The canonical host the peer advertises. An IPv6 literal may be
+            written in brackets, as an address writes it.
         port: Its port.
         max_frame_bytes: The inbound frame limit for this link.
         ssl_context: The client context, or `None` for plaintext.
@@ -399,7 +420,12 @@ async def connect(
     Raises:
         OSError: If the connection could not be made.
     """
-    reader, writer = await asyncio.open_connection(host, port, ssl=ssl_context)
+    # The brackets belong to the address, not to the socket: the resolver
+    # reads `[::1]` as a name and fails to find it. Stripped here, the bare
+    # literal is also what TLS checks against the certificate's IP entry.
+    reader, writer = await asyncio.open_connection(
+        socket_host(host), port, ssl=ssl_context
+    )
     return FrameLink(reader, writer, max_frame_bytes=max_frame_bytes)
 
 
@@ -443,7 +469,7 @@ def bind(settings: BindSettings) -> socket.socket:
     # address family from anything else is guessing about someone's network.
     family = socket.AF_INET6 if ":" in settings.bind_host else socket.AF_INET
     listener = socket.create_server(
-        (settings.bind_host.strip("[]"), settings.bind_port), family=family
+        (socket_host(settings.bind_host), settings.bind_port), family=family
     )
     listener.setblocking(False)
     return listener
@@ -454,6 +480,7 @@ async def listen(
     listener: socket.socket,
     *,
     ssl_context: ssl.SSLContext | None,
+    handshake_timeout: float | None = None,
 ) -> asyncio.Server:
     """Start accepting on an already-bound socket.
 
@@ -461,15 +488,31 @@ async def listen(
         handler: Called with the reader and writer of each accepted connection.
         listener: The socket returned by `bind`.
         ssl_context: The server context, or `None` for plaintext.
+        handshake_timeout: Seconds a connection has to finish its TLS
+            handshake, or `None` for asyncio's default of 60. The handler
+            only runs once TLS is done, so a deadline the handler keeps
+            starts too late to cover a peer that never starts TLS.
 
     Returns:
         The running server.
     """
-    return await asyncio.start_server(handler, sock=listener, ssl=ssl_context)
+    return await asyncio.start_server(
+        handler,
+        sock=listener,
+        ssl=ssl_context,
+        ssl_handshake_timeout=handshake_timeout if ssl_context is not None else None,
+    )
 
 
 async def close_server(server: asyncio.Server, listener: socket.socket) -> None:
-    """Close a server without losing a connection it has already accepted.
+    """Stop a server accepting, without losing a connection it already accepted.
+
+    This does not wait for the connections to close. Since Python 3.12,
+    `Server.wait_closed` returns only once every connection the server
+    accepted has closed, and the caller still owns some of them, such as one
+    still being handshaken. Waiting here would let a peer that says nothing
+    hold the caller's shutdown until it gives up. The caller closes what it
+    owns first, then calls `wait_server_closed`.
 
     The selector event loop accepts a connection in one step and builds its
     transport in a task that runs a turn later. If `Server.close` runs in
@@ -505,6 +548,22 @@ async def close_server(server: asyncio.Server, listener: socket.socket) -> None:
         await asyncio.sleep(0)
     finally:
         server.close()
+
+
+async def wait_server_closed(server: asyncio.Server) -> None:
+    """Close what is left of a closed server's connections, and wait for them.
+
+    Called once the caller has closed every connection it owns. What is left
+    is a connection the caller never saw, which is one still in its TLS
+    handshake. Python 3.13 can close those at once. Earlier versions wait for
+    the TLS handshake deadline that `listen` was given.
+
+    Args:
+        server: A server already passed to `close_server`.
+    """
+    close_clients = getattr(server, "close_clients", None)
+    if close_clients is not None:
+        close_clients()
     with contextlib.suppress(OSError, asyncio.CancelledError):
         await server.wait_closed()
 
@@ -549,12 +608,47 @@ def is_loopback(host: str) -> bool:
     if host == "localhost":
         return True
     try:
-        return ipaddress.ip_address(host.strip("[]")).is_loopback
+        return ipaddress.ip_address(socket_host(host)).is_loopback
     except ValueError:
         # A name that is not an address literal. It might resolve to loopback,
         # it might not. Guessing wrong leaves an open port, so it refuses to
         # guess.
         return False
+
+
+def socket_host(host: str) -> str:
+    """Spell a host the way a socket call wants it.
+
+    An address writes an IPv6 literal in brackets, `[::1]`, so the port that
+    follows it is not ambiguous. A socket call wants it bare, and reads the
+    bracketed form as a name to resolve.
+
+    Args:
+        host: A host as an address or a setting writes it.
+
+    Returns:
+        The host without the brackets, or unchanged when it had none.
+    """
+    if host.startswith("[") and host.endswith("]"):
+        return host[1:-1]
+    return host
+
+
+def address_host(host: str) -> str:
+    """Spell a host the way an address writes it.
+
+    The inverse of `socket_host`. A bare IPv6 literal gets brackets, so a
+    setting written as `::1` and one written as `[::1]` give the same address.
+
+    Args:
+        host: A host as a setting or a socket call writes it.
+
+    Returns:
+        The host, bracketed if it is a bare IPv6 literal.
+    """
+    if ":" in host and not host.startswith("["):
+        return f"[{host}]"
+    return host
 
 
 def server_ssl_context(tls: TLSSettings) -> ssl.SSLContext:

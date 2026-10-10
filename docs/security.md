@@ -67,7 +67,9 @@ releases talk to each other as long as neither release changed the wire. What
 they cannot do is disagree about the protocol.
 
 The system uid is minted per system incarnation, and it is what makes a
-restarted peer a *different* peer rather than the same one returning. An
+restarted peer a *different* peer rather than the same one returning. Actor
+uids are random too, so a ref held from before a peer restarted names no actor
+in the new incarnation, even one spawned under the same name. An
 association is bound to the uid it handshook with, so a peer that reconnects
 presenting a new uid means the old one died: the previous association is
 quarantined and its watchers are told, instead of the new connection silently
@@ -93,6 +95,15 @@ the boundary it is:
 - **A frame size cap before allocation.** Frames over `max_frame_bytes`, four
   megabytes by default, are refused without reading them, which is the
   cheapest way to stop a hostile or buggy peer from exhausting memory.
+- **A smaller cap before authentication.** A peer that has not finished the
+  handshake has proved nothing, so a handshake frame over 4096 bytes is
+  refused, whatever `max_frame_bytes` says. A real hello is a few hundred
+  bytes.
+- **A bound on how many peers can be handshaking.** At most
+  `max_pending_handshakes` inbound connections, 128 by default, are
+  handshaking at once. A connection past that is closed as it is accepted.
+  Each one has `handshake_timeout` to finish, and on a TLS listener that
+  deadline covers the TLS handshake too.
 - **Registry-only type resolution.** The `t` field of a frame is a registry
   key, never an import path. Resolving a dotted name from a socket into an
   importable object is remote code execution, and it is how this goes wrong

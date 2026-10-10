@@ -5,27 +5,41 @@ import contextlib
 import gc
 import logging
 import socket
+import ssl
 import sys
 import threading
+import time
+from datetime import timedelta
+from typing import Any
 
 import pytest
 
-from tapio.actor import ActorContext, ActorSystem, Behavior, Behaviors
+from tapio.actor import ActorContext, ActorSystem, Behavior, Behaviors, DeadLetter
 from tapio.actor.path import ActorPath
 from tapio.dispatch.dispatcher import Dispatcher
 from tapio.errors import InsecureRemoteConfig, MessageTypeError, RefResolutionError
 from tapio.remote.address import Address
-from tapio.remote.codec import encode
+from tapio.remote.codec import LENGTH_PREFIX, encode
 from tapio.remote.endpoint import PeerOutbox
 from tapio.remote.handle import LinkHandle
-from tapio.remote.transport import FrameLink, LinkFrame, connect
+from tapio.remote.transport import (
+    HANDSHAKE_FRAME_BYTES,
+    FrameLink,
+    LinkFrame,
+    client_ssl_context,
+    connect,
+)
+from tapio.settings import TapioSettings
 from tapio.testkit import (
     IsolatedRemoteSettings,
     IsolatedTapioSettings,
+    IsolatedTLSSettings,
     assert_no_leaked_tasks,
     drop_links,
 )
+from tests.conftest import TlsCerts
 from tests.failures import eventually
+from tests.internals import endpoint
 from tests.messages import NotAMessage
 from tests.remote.peers import RecordingLink, Tick, counting, remoting, uri
 
@@ -719,3 +733,239 @@ class _OnALoop:
 
     def __init__(self, dispatcher: Dispatcher) -> None:
         self.dispatcher = dispatcher
+
+
+def _tls_remoting(certs: TlsCerts, **overrides: Any) -> TapioSettings:
+    """Remoting on a loopback port, presenting the server certificate."""
+    return remoting(
+        tls=IsolatedTLSSettings(
+            certfile=certs.server_cert, keyfile=certs.server_key, cafile=certs.ca
+        ),
+        **overrides,
+    )
+
+
+def _client_context(certs: TlsCerts) -> ssl.SSLContext:
+    """A client context that presents the client certificate and trusts the CA."""
+    return client_ssl_context(
+        IsolatedTLSSettings(
+            certfile=certs.client_cert, keyfile=certs.client_key, cafile=certs.ca
+        )
+    )
+
+
+async def _answers(port: int) -> bool:
+    """Whether a new connection to the port is greeted with a server-hello."""
+    link = await connect("127.0.0.1", port, max_frame_bytes=1024, ssl_context=None)
+    try:
+        await link.read_link(2.0)
+    except (asyncio.IncompleteReadError, ConnectionError):
+        return False
+    finally:
+        await link.close()
+    return True
+
+
+async def test_terminate_is_not_held_by_a_peer_mid_handshake():
+    with assert_no_leaked_tasks():
+        system = ActorSystem("held", remoting(handshake_timeout=timedelta(seconds=3)))
+        port = system.address.port
+        assert port is not None
+        link = await connect("127.0.0.1", port, max_frame_bytes=1024, ssl_context=None)
+        try:
+            await link.read_link(2.0)
+            started = time.monotonic()
+            await system.terminate()
+            took = time.monotonic() - started
+        finally:
+            await link.close()
+            await system.terminate()
+
+    assert took < 1.0, f"terminate waited {took:.2f}s for a peer that said nothing"
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 13),
+    reason="before 3.13 a server cannot close a connection still in its TLS "
+    "handshake, so shutdown waits for the handshake deadline",
+)
+async def test_terminate_is_not_held_by_a_peer_that_never_starts_tls(
+    mutual_tls_certs: TlsCerts,
+):
+    with assert_no_leaked_tasks():
+        system = ActorSystem(
+            "held",
+            _tls_remoting(mutual_tls_certs, handshake_timeout=timedelta(seconds=3)),
+        )
+        port = system.address.port
+        assert port is not None
+        _, silent = await asyncio.open_connection("127.0.0.1", port)
+        # A second connection that gets as far as the server-hello. The
+        # listener accepts in order, so by then it has accepted the silent
+        # one too, which is waiting for a TLS handshake that never starts.
+        link = await connect(
+            "127.0.0.1",
+            port,
+            max_frame_bytes=1024,
+            ssl_context=_client_context(mutual_tls_certs),
+        )
+        try:
+            await link.read_link(2.0)
+            started = time.monotonic()
+            await system.terminate()
+            took = time.monotonic() - started
+        finally:
+            silent.close()
+            await link.close()
+            await system.terminate()
+
+    assert took < 1.0, f"terminate waited {took:.2f}s for a peer that said nothing"
+
+
+async def test_a_tls_listener_closes_a_silent_peer_at_the_handshake_deadline(
+    mutual_tls_certs: TlsCerts,
+):
+    with assert_no_leaked_tasks():
+        system = ActorSystem(
+            "guarded",
+            _tls_remoting(
+                mutual_tls_certs, handshake_timeout=timedelta(milliseconds=300)
+            ),
+        )
+        port = system.address.port
+        assert port is not None
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        try:
+            with contextlib.suppress(ConnectionError):
+                # Asyncio's own TLS deadline is 60 seconds.
+                assert await asyncio.wait_for(reader.read(), 2.0) == b""
+        finally:
+            writer.close()
+            await system.terminate()
+
+
+async def test_a_hello_larger_than_a_handshake_frame_is_refused_at_once():
+    with assert_no_leaked_tasks():
+        system = ActorSystem(
+            "guarded", remoting(handshake_timeout=timedelta(seconds=30))
+        )
+        port = system.address.port
+        assert port is not None
+        link = await connect("127.0.0.1", port, max_frame_bytes=1024, ssl_context=None)
+        try:
+            await link.read_link(2.0)
+            # Well under `max_frame_bytes`, and far over any real hello. The
+            # body never comes, so before the cap the listener waited for it
+            # until the handshake deadline.
+            limit = endpoint(system).settings.max_frame_bytes
+            assert HANDSHAKE_FRAME_BYTES < 64 * 1024 < limit
+            await link.write_frame((64 * 1024).to_bytes(LENGTH_PREFIX, "big"))
+            with pytest.raises((asyncio.IncompleteReadError, ConnectionError)):
+                await asyncio.wait_for(link.read_frame(), 2.0)
+        finally:
+            await link.close()
+            await system.terminate()
+
+
+async def test_connections_past_the_pending_handshake_cap_are_closed():
+    with assert_no_leaked_tasks():
+        system = ActorSystem("guarded", remoting(max_pending_handshakes=1))
+        port = system.address.port
+        assert port is not None
+        first = await connect("127.0.0.1", port, max_frame_bytes=1024, ssl_context=None)
+        try:
+            await first.read_link(2.0)
+
+            assert not await _answers(port)
+
+            # The slot comes free once the peer holding it gives up.
+            await first.close()
+            await eventually(lambda: endpoint(system).pending_handshakes == 0)
+            assert await _answers(port)
+        finally:
+            await first.close()
+            await system.terminate()
+
+
+async def test_a_bare_ipv6_canonical_host_is_written_in_brackets():
+    settings = remoting(canonical_host="::1")
+    async with ActorSystem("orders", settings) as system:
+        assert system.address.host == "[::1]"
+        assert Address.parse(str(system.address)) == system.address
+
+
+def _ipv6_loopback() -> bool:
+    """Whether this machine can listen on the IPv6 loopback address."""
+    try:
+        socket.create_server(("::1", 0), family=socket.AF_INET6).close()
+    except OSError:
+        return False
+    return True
+
+
+@pytest.mark.skipif(not _ipv6_loopback(), reason="no IPv6 loopback here")
+async def test_two_systems_bound_to_ipv6_loopback_talk():
+    with assert_no_leaked_tasks():
+        one = ActorSystem("alpha", remoting(bind_host="::1"))
+        two = ActorSystem("beta", remoting(bind_host="::1"))
+        try:
+            assert one.address.host == "[::1]"
+            seen: list[int] = []
+            ticker = two.spawn(counting(seen), "ticker")
+            remote = await one.resolve(uri(two, ticker), expect=Tick)
+            remote.tell(Tick(n=1))
+            await eventually(lambda: seen == [1])
+        finally:
+            await one.terminate()
+            await two.terminate()
+
+
+async def test_binding_every_interface_needs_a_canonical_host():
+    with pytest.raises(ValueError, match="canonical_host"):
+        ActorSystem("orders", remoting(bind_host="", secret="shh"))
+
+
+async def test_a_ref_from_before_a_peer_restarted_reaches_nothing():
+    with assert_no_leaked_tasks():
+        alpha = ActorSystem("alpha", remoting())
+        beta = ActorSystem("beta", remoting())
+        port = beta.address.port
+        assert port is not None
+        restarted: ActorSystem | None = None
+        try:
+            before: list[int] = []
+            worker = beta.spawn(counting(before), "worker")
+            held = await alpha.resolve(uri(beta, worker), expect=Tick)
+            held.tell(Tick(n=1))
+            await eventually(lambda: before == [1])
+            await beta.terminate()
+            await eventually(lambda: endpoint(alpha).associations == ())
+
+            # The same deployment on the same port, spawning the same actor
+            # under the same name.
+            restarted = ActorSystem(
+                "beta",
+                IsolatedTapioSettings(remote=IsolatedRemoteSettings(bind_port=port)),
+            )
+            after: list[int] = []
+            successor = restarted.spawn(counting(after), "worker")
+            letters: list[DeadLetter] = []
+            restarted.dead_letters.subscribe(letters.append)
+
+            held.tell(Tick(n=2))
+
+            await eventually(lambda: bool(letters) or bool(after))
+            assert after == []
+            assert isinstance(letters[0].message, Tick)
+            assert letters[0].message.n == 2
+            assert after == []
+
+            # Resolving again reaches the new incarnation.
+            fresh = await alpha.resolve(uri(restarted, successor), expect=Tick)
+            fresh.tell(Tick(n=3))
+            await eventually(lambda: after == [3])
+        finally:
+            await alpha.terminate()
+            await beta.terminate()
+            if restarted is not None:
+                await restarted.terminate()

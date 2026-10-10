@@ -48,6 +48,7 @@ from tapio.remote.transport import (
     listen,
     server_ssl_context,
     verify_bind_security,
+    wait_server_closed,
 )
 from tapio.settings import RemoteSettings
 from tapio.validation import MessageType, MessageValidator, resolve_validator
@@ -116,6 +117,9 @@ class RemoteEndpoint:
         # and the event loop holding only a weak reference to that task
         # cannot lose the socket with it.
         self._held: set[LinkHandle] = set()
+        # The handles in `_held` whose peer is still handshaking, which is
+        # what `max_pending_handshakes` caps.
+        self._handshaking: set[LinkHandle] = set()
         self._names = 0
         self._parent: ActorCell[Any] | None = None
         self._closed = False
@@ -169,6 +173,15 @@ class RemoteEndpoint:
         be able to assert that the link was released.
         """
         return tuple(self._associations)
+
+    @property
+    def pending_handshakes(self) -> int:
+        """How many inbound connections are handshaking right now.
+
+        What `max_pending_handshakes` caps, exposed so a test can see a slot
+        come free when a peer gives up.
+        """
+        return len(self._handshaking)
 
     @property
     def peers(self) -> PeerProvider:
@@ -230,7 +243,12 @@ class RemoteEndpoint:
             if self._settings.tls is not None
             else None
         )
-        self._server = await listen(self._accept, self._listener, ssl_context=context)
+        self._server = await listen(
+            self._accept,
+            self._listener,
+            ssl_context=context,
+            handshake_timeout=self._settings.handshake_timeout.total_seconds(),
+        )
         _log.debug("listening for peers on %s", self._address)
 
     def _accept(
@@ -260,8 +278,8 @@ class RemoteEndpoint:
                 # task, so schedule the socket close and let the loop run it.
                 writer.close()
                 return
-            # Accepted while close() is still draining, which a pending accept
-            # callback can be as `await server.wait_closed()` runs. A bare
+            # Accepted while close() is still draining, which a connection
+            # still in its TLS handshake can be when close() begins. A bare
             # writer.close() only schedules the close, so if the loop is torn
             # down before it runs the transport is collected unclosed. Hand it
             # to close_link_later, whose close close()'s own drain awaits.
@@ -273,8 +291,19 @@ class RemoteEndpoint:
             )
             return
         link = FrameLink(reader, writer, max_frame_bytes=self._settings.max_frame_bytes)
+        if len(self._handshaking) >= self._settings.max_pending_handshakes:
+            # Aborted rather than closed: nothing was written, so there is
+            # nothing to flush, and an abort needs no task to finish it.
+            _log.warning(
+                "refused a connection from %s: %d handshakes are already pending",
+                link.peer,
+                len(self._handshaking),
+            )
+            writer.transport.abort()
+            return
         handle = LinkHandle(link, loop=self.dispatcher.loop)
         self._held.add(handle)
+        self._handshaking.add(handle)
         handle.reads_with(
             self.dispatcher.spawn_task(
                 self._handshake(handle, link), name="tapio-remote-handshake"
@@ -306,14 +335,17 @@ class RemoteEndpoint:
                 _log.debug("closing a connection from %s: shutting down", link.peer)
                 await self._let_go(handle)
                 return
-            identity = await accept(
-                link,
-                address=self._address,
-                uid=self._uid,
-                secret=self._settings.secret,
-                timeout=self._settings.handshake_timeout.total_seconds(),
-                decide=self._decide,
-            )
+            try:
+                identity = await accept(
+                    link,
+                    address=self._address,
+                    uid=self._uid,
+                    secret=self._settings.secret,
+                    timeout=self._settings.handshake_timeout.total_seconds(),
+                    decide=self._decide,
+                )
+            finally:
+                self._handshaking.discard(handle)
             # The association owns the socket from here. Released before
             # `_adopt` runs, so a drain that reaches this handle in between
             # closes nothing the association is already using.
@@ -504,6 +536,7 @@ class RemoteEndpoint:
             await handle.close()
         finally:
             self._held.discard(handle)
+            self._handshaking.discard(handle)
 
     def outbound(self, peer: Address) -> Association | None:
         """Return the association for a peer, dialling if there is none.
@@ -717,8 +750,10 @@ class RemoteEndpoint:
         moment, which is what both sides of a partition do, refuses the dial
         until it has relented too. See `clear_quarantine`.
 
-        Refs held from before are not reusable: their uid belongs to a session
-        that is over. Resolve again after this returns.
+        Refs held from before keep working if the peer is the same
+        incarnation. A peer that restarted gave its actors new random uids,
+        so a ref from before the restart reaches nothing there and its frames
+        become dead letters on the peer. Resolve again to reach it.
 
         Args:
             peer: The peer's canonical address.
@@ -791,23 +826,7 @@ class RemoteEndpoint:
             await close_server(server, self._listener)
         else:
             self._listener.close()
-        # Drained until it stays empty, because draining it refills it: a
-        # handshake that finishes here hands its link to `_adopt`, which has
-        # nowhere to put it now and starts closing it. A single pass would
-        # return with that close still owed, and the task doing it dies with
-        # the dispatcher, leaving the socket open.
-        #
-        # One call per handle, whatever state it is in. A handle whose task
-        # never ran is cancelled and closed here; one whose task is already
-        # closing is waited out rather than cancelled, since cancelling it
-        # would leave the socket it was releasing open. Deciding which is the
-        # handle's job, not this loop's.
-        while self._held:
-            for handle in list(self._held):
-                with contextlib.suppress(
-                    asyncio.CancelledError, HandshakeError, OSError
-                ):
-                    await self._let_go(handle)
+        await self._drain_held()
         # An association whose actor stopped normally took itself out of this
         # table on the way, so whatever is left was adopted after the stop
         # sweep had passed and will get no `PostStop` to close its link. Close
@@ -815,9 +834,41 @@ class RemoteEndpoint:
         for association in list(self._associations.values()):
             with contextlib.suppress(OSError, asyncio.CancelledError):
                 await association.detach()
+        if server is not None:
+            # Only now, with every connection this endpoint owns closed. The
+            # server waits for every connection it accepted, so waiting any
+            # earlier let a peer that said nothing hold `terminate` until its
+            # handshake timed out. What it still waits for is a connection in
+            # its TLS handshake, which never reached `_accept`.
+            await wait_server_closed(server)
+            # A connection that finished its TLS handshake during that wait
+            # reached `_accept`, which handed it to `close_link_later`.
+            await self._drain_held()
         # Everything the drain could wait for has been waited for. A connection
         # accepted from here on is closed on the spot instead.
         self._done = True
+
+    async def _drain_held(self) -> None:
+        """Close every socket this endpoint still owes, until none is left.
+
+        Drained until it stays empty, because draining it refills it: a
+        handshake that finishes here hands its link to `_adopt`, which has
+        nowhere to put it now and starts closing it. A single pass would
+        return with that close still owed, and the task doing it dies with
+        the dispatcher, leaving the socket open.
+
+        One call per handle, whatever state it is in. A handle whose task
+        never ran is cancelled and closed here; one whose task is already
+        closing is waited out rather than cancelled, since cancelling it would
+        leave the socket it was releasing open. Deciding which is the handle's
+        job, not this loop's.
+        """
+        while self._held:
+            for handle in list(self._held):
+                with contextlib.suppress(
+                    asyncio.CancelledError, HandshakeError, OSError
+                ):
+                    await self._let_go(handle)
 
     async def _stop_listening(self) -> None:
         """Stop the accept task, before anything closes the socket under it.

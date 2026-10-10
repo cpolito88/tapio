@@ -488,10 +488,10 @@ async def test_a_write_that_fails_dead_letters_the_message_and_ends_the_link():
             await two.terminate()
 
 
-async def test_a_frame_that_never_flushed_is_put_back_and_accounted_for():
-    # `_open` fails on the very first write, so the frame it had taken off the
-    # queue goes back rather than being lost between the two. The association
-    # then stops and reports it, which is what makes at-most-once auditable.
+async def test_a_frame_that_never_flushed_is_accounted_for():
+    # `_open` fails on the very first write. The frame it had taken off the
+    # queue is reported rather than lost between the two, which is what makes
+    # at-most-once auditable.
     with assert_no_leaked_tasks():
         one = ActorSystem("alpha", remoting())
         two = ActorSystem("beta", remoting())
@@ -1158,6 +1158,48 @@ async def test_a_write_parked_on_a_link_a_dial_race_retired_keeps_the_associatio
         assert host.letters == [(DeadLetterReason.LINK_FAILED, peer)]
         await association._open(winner)
         await association._write(_queued(2))
+        assert winner.written == [_queued(2).frame]
+
+
+class _ParkedLink(_WritingLink):
+    """A link whose writes never drain, and whose close does not wake them."""
+
+    def __init__(self) -> None:
+        """Start open, with no write parked yet."""
+        super().__init__()
+        self.parked = False
+
+    async def write_frame(self, data: bytes) -> None:
+        """Park for good, as a write to a peer that stopped reading does."""
+        self.parked = True
+        await asyncio.Event().wait()
+
+
+async def test_a_frame_being_flushed_when_its_link_is_retired_is_accounted_for():
+    with assert_no_leaked_tasks():
+        host = _RecordingHost()
+        peer = Address.parse("tapio://peer@127.0.0.1:2551")
+        association = _SwapProbe(host=host, peer=peer, initiator=peer)  # type: ignore[arg-type]
+        loser, winner = _ParkedLink(), _WritingLink()
+        association._pending.extend([_queued(1), _queued(2)])
+        association._handle = _held(loser)
+        opening = asyncio.create_task(association._open(loser))
+        association._handle.reads_with(opening)
+        await eventually(lambda: loser.parked)
+
+        # The peer's dial wins while frame 1 is being flushed to the old link,
+        # and retiring that link cancels the flush.
+        association.adopt(winner, uid=7)
+        assert association._handle is not None
+        resuming = association._handle.reader
+        assert resuming is not None
+        await resuming
+        assert opening.cancelled()
+
+        # Frame 1 may have left on the old link, so it is reported and not
+        # sent again. Frame 2 never left, so it goes out on the winner.
+        assert host.letters == [(DeadLetterReason.LINK_FAILED, peer)]
+        await association._open(winner)
         assert winner.written == [_queued(2).frame]
 
 

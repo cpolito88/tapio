@@ -46,6 +46,7 @@ from tapio.remote.transport import (
     close_server,
     is_loopback,
     server_ssl_context,
+    wait_server_closed,
 )
 from tapio.settings import ManagementSettings, TLSSettings
 
@@ -452,6 +453,11 @@ class ClusterManagement:
             with contextlib.suppress(asyncio.CancelledError, OSError):
                 await task
         self._connections.clear()
+        if server is not None:
+            # After the connections above are closed, not before: the server
+            # waits for every connection it accepted, so a request still being
+            # read would otherwise hold the shutdown for its whole deadline.
+            await wait_server_closed(server)
 
     def __repr__(self) -> str:
         """Render the address this endpoint answers for."""

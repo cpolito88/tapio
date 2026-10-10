@@ -6,6 +6,7 @@ them: a new example with no assertion here fails on purpose.
 """
 
 import pkgutil
+import re
 
 import tapio_examples
 from tapio.testkit import assert_no_leaked_tasks
@@ -200,11 +201,11 @@ async def test_escalation():
     assert "worker: parsed 'ok'" in lines
     # And an escalation nobody catches ends the system with the cause intact,
     # carrying the path it climbed.
-    assert lines[-3:] == [
-        "system: terminated by empty input",
-        "system: escalated from tapio://unsupervised/user/worker#1",
-        "system: escalated to tapio://unsupervised/user",
-    ]
+    assert lines[-3] == "system: terminated by empty input"
+    assert re.fullmatch(
+        r"system: escalated from tapio://unsupervised/user/worker#\d+", lines[-2]
+    )
+    assert lines[-1] == "system: escalated to tapio://unsupervised/user"
 
 
 async def test_graceful_shutdown():
@@ -338,7 +339,9 @@ async def test_partition():
     assert home[0] == "home: poked by away, still working"
     assert home[1].startswith("home: gave up on tapio://away@")
     assert home[1].endswith("quarantined")
-    assert home[2] == "home: told that tapio://away/user/steady#2 has stopped"
+    assert re.fullmatch(
+        r"home: told that tapio://away/user/steady#\d+ has stopped", home[2]
+    )
     assert home[3] == "home: poked by home itself, still working"
     assert home[4:] == [
         "home: network repaired, and still no association",
@@ -346,7 +349,9 @@ async def test_partition():
     ]
     assert away[0] == "away: poked by home, still working"
     assert away[1].startswith("away: gave up on tapio://home@")
-    assert away[2] == "away: told that tapio://home/user/steady#2 has stopped"
+    assert re.fullmatch(
+        r"away: told that tapio://home/user/steady#\d+ has stopped", away[2]
+    )
     assert away[3] == "away: poked by away itself, still working"
 
 

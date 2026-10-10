@@ -47,6 +47,12 @@ be secure.
 --8<-- "examples/tapio_examples/two_nodes.py"
 ```
 
+The canonical address is `canonical_host` when it is set and `bind_host`
+otherwise. An IPv6 literal is written in brackets in an address,
+`tapio://orders@[::1]:25520`, as it is in a URL, and either spelling works in
+the settings. `bind_host=""` listens on every interface and names no host a
+peer could dial, so it needs a `canonical_host`.
+
 A ref that crosses a link is written down as its full address, and `resolve`
 turns that string back into a ref. `expect=` is how the caller says what it
 believes is at the other end, and the claim is checked against the actor's
