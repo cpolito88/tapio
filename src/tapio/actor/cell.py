@@ -1508,9 +1508,12 @@ class ActorCell(Generic[T]):
         peer, is reported as what its sender sent. The wrapper is only how it
         travelled, and a subscriber matching on message types should not have
         to know about it. A message the runtime sent itself is dropped, since
-        no sender is owed an account of it.
+        no sender is owed an account of it. That holds inside a wrapper too: a
+        timer tick carries an association's heartbeat as its payload.
         """
         if isinstance(message, RuntimeMessage):
+            return
+        if isinstance(message, Carrier) and isinstance(message.payload, RuntimeMessage):
             return
         if isinstance(message, Carrier):
             message.account(self._runtime.dead_letters, self._path, reason)

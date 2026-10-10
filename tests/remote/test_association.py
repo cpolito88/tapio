@@ -24,7 +24,7 @@ from tapio.dispatch.dispatcher import Dispatcher
 from tapio.errors import MessageEncodingError
 from tapio.message import Message
 from tapio.remote.address import Address
-from tapio.remote.association import Association, Outbound
+from tapio.remote.association import Association, Beat, Outbound
 from tapio.remote.codec import LENGTH_PREFIX, encode
 from tapio.remote.failure import PeerUnreachable
 from tapio.remote.handle import LinkHandle
@@ -1500,3 +1500,44 @@ async def test_frames_left_in_a_stopped_associations_mailbox_name_their_peer():
                 assert letter.recipient == str(worker.path)
                 assert letter.peer == str(nodes.beta.address)
                 assert letter.reason == DeadLetterReason.LINK_FAILED
+
+
+async def test_a_heartbeat_that_meets_a_full_mailbox_is_not_a_dead_letter():
+    # The heartbeat is a timer tick, so it reaches the mailbox inside the
+    # timer's wrapper. A full mailbox used to publish it as a dead letter,
+    # once per tick, naming the association actor and no peer.
+    with assert_no_leaked_tasks():
+        one = ActorSystem(
+            "alpha",
+            remoting(
+                outbound_capacity=2,
+                heartbeat_interval=timedelta(milliseconds=10),
+                unreachable_after=timedelta(seconds=1),
+            ),
+        )
+        two = ActorSystem("beta", remoting())
+        try:
+            assert one.remote is not None
+            one.remote.set_link_filter(stalled_writes(after=1))
+            letters: list[DeadLetter] = []
+            one.dead_letters.subscribe(letters.append)
+            seen: list[int] = []
+            remote = await one.resolve(
+                uri(two, two.spawn(counting(seen), "worker")), expect=Tick
+            )
+            remote.tell(Tick(n=1))
+            await eventually(lambda: seen == [1])
+
+            # The first parks the writer in a stalled write, and the rest fill
+            # the mailbox behind it, where the heartbeat ticks then land.
+            for n in range(2, 6):
+                remote.tell(Tick(n=n))
+            await eventually(lambda: len(letters) >= 1)
+            # Twenty heartbeat intervals with the mailbox full. A sleep, since
+            # what is checked is that nothing arrives.
+            await asyncio.sleep(0.2)
+
+            assert [x for x in letters if isinstance(x.message, Beat)] == []
+        finally:
+            await one.terminate()
+            await two.terminate()
