@@ -7,8 +7,13 @@ handled at a time, a tick queues behind whatever is in front of it, and a tick
 that fires while the actor is busy waits its turn instead of re-entering it.
 
 Each timer is one task, owned by the cell that scheduled it. A cell cancels
-its timers when it stops and when it restarts, so a tick from an incarnation
-that no longer exists can never reach the one that replaced it.
+its timers when it stops and when it restarts. Cancelling a task cannot take
+back a tick that has already fired, though: that tick is a message on the
+mailbox, and the mailbox survives a restart. So every tick carries the
+scheduler's generation, a restart moves the generation on, and the cell drops
+a tick from an earlier generation instead of handing it to the behavior. A
+tick from an incarnation that no longer exists never reaches the one that
+replaced it.
 
 Keys are how a timer is referred to afterwards. Starting a timer under a key
 that is already running replaces it, which makes "restart the idle timeout" a
@@ -20,13 +25,14 @@ from collections.abc import Coroutine
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
+from tapio.actor.dead_letters import Carrier
 from tapio.logging import runtime_logger
 from tapio.message import Message
 
 if TYPE_CHECKING:
     from tapio.actor.cell import ActorCell
 
-__all__ = ["TimerScheduler"]
+__all__ = ["TimerScheduler", "TimerTick"]
 
 T = TypeVar("T", bound=Message)
 
@@ -49,6 +55,23 @@ count ticks, because a tick can always be lost to an overflowing mailbox.
 """
 
 
+class TimerTick(Carrier):
+    """One timer message on its way to the actor that scheduled it.
+
+    Internal and short-lived, like an adapter's wrapper. It exists between the
+    timer task that fired and the cell that unwraps it, and the behavior only
+    ever sees the payload. A dead letter reports the payload too.
+    """
+
+    generation: int
+    """The scheduler's generation when the tick fired.
+
+    The cell compares it with the scheduler's current one. A tick from an
+    earlier generation was scheduled by an incarnation that has since been
+    replaced, so it is dropped.
+    """
+
+
 class TimerScheduler(Generic[T]):
     """The handle `Behaviors.with_timers` gives a behavior.
 
@@ -58,12 +81,23 @@ class TimerScheduler(Generic[T]):
     previous incarnation survives.
     """
 
-    __slots__ = ("_cell", "_tasks")
+    __slots__ = ("_cell", "_generation", "_tasks")
 
     def __init__(self, cell: "ActorCell[T]") -> None:
         """Bind the scheduler to the cell whose timers it owns."""
         self._cell = cell
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._generation = 0
+
+    @property
+    def generation(self) -> int:
+        """How many times every timer has been cancelled at once.
+
+        Each tick carries the value it had when it fired. The cell delivers a
+        tick only while this is unchanged, which is what keeps a tick that was
+        already queued at a restart away from the new incarnation.
+        """
+        return self._generation
 
     @property
     def keys(self) -> tuple[str, ...]:
@@ -190,7 +224,8 @@ class TimerScheduler(Generic[T]):
 
         A tick already on the mailbox is not retracted. By then it is a
         message like any other, and pulling one back out of a queue the actor
-        is reading would be a different guarantee.
+        is reading would be a different guarantee. `cancel_all` is different,
+        because it marks the end of an incarnation.
 
         Args:
             key: The timer to stop.
@@ -202,9 +237,12 @@ class TimerScheduler(Generic[T]):
     def cancel_all(self) -> None:
         """Stop every timer this actor has running.
 
-        Called by the cell on restart and on termination. This is what keeps a
-        tick from an old incarnation from reaching the one that replaced it.
+        Called by the cell on restart and on termination. It also moves the
+        generation on, so a tick that already fired and is waiting on the
+        mailbox is dropped rather than delivered. This is what keeps a tick
+        from an old incarnation from reaching the one that replaced it.
         """
+        self._generation += 1
         for task in list(self._tasks.values()):
             if not task.done():
                 task.cancel()
@@ -302,7 +340,9 @@ class TimerScheduler(Generic[T]):
         meets a full mailbox or a stopped actor becomes a dead letter, not an
         exception in a task nobody is watching.
         """
-        self._cell.deliver_offloop(message)
+        self._cell.deliver_offloop(
+            TimerTick(payload=message, generation=self._generation)
+        )
 
     def __repr__(self) -> str:
         """Render the actor and the timers it currently has running."""

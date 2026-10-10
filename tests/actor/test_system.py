@@ -106,6 +106,15 @@ async def test_anonymous_names_cannot_collide_with_chosen_ones(system: ActorSyst
     assert first.path.name != second.path.name
 
 
+async def test_a_chosen_name_cannot_take_the_generated_prefix(system: ActorSystem):
+    with pytest.raises(ActorNameError, match="reserved"):
+        system.spawn(idle(), name="$1")
+
+    # A child that took "$1" would have been overwritten in the map by this
+    # spawn, left running, and never stopped.
+    assert system.spawn_anonymous(idle()).path.name == "$1"
+
+
 async def test_spawning_after_shutdown_raises_and_leaves_nothing_running():
     with assert_no_leaked_tasks():
         system = ActorSystem("closing")

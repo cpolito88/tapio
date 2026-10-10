@@ -76,7 +76,8 @@ class ActorContext(ABC, Generic[T]):
             A ref to the new child.
 
         Raises:
-            ActorNameError: If a live child already has that name.
+            ActorNameError: If a live child already has that name, or if the
+                name starts with `$`, which is reserved for generated names.
             ActorSystemTerminating: If this actor is already shutting down.
             BehaviorTypeError: If the behavior declares no resolvable message
                 type.

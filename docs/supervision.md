@@ -76,6 +76,12 @@ work that piled up while it was waiting. And a restart window that runs out
 stops the actor for good, which is how a permanently broken dependency stops
 being retried forever.
 
+The delay grows with the restarts inside the strategy's `window`, so failures
+that are a window apart each wait the minimum again. That holds without
+`max_restarts` too. With no window the count runs for the actor's whole life,
+and once the delay reaches `max_backoff` it stays there. An actor meant to
+restart for ever behind a flaky dependency wants a window.
+
 ## Escalation
 
 Sometimes a child's failure means the parent is broken too. `escalate()` says

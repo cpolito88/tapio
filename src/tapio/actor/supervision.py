@@ -148,7 +148,14 @@ class SupervisorStrategy:
     """
 
     window: timedelta | None = None
-    """The span `max_restarts` is counted over, or `None` for all time."""
+    """The span restarts are counted over, or `None` for all time.
+
+    The count is what `max_restarts` is checked against and what the backoff
+    delay grows with. Both read it, so a restart older than the window stops
+    counting against the limit and stops lengthening the wait. That holds
+    without `max_restarts` too: an unlimited strategy with a window and a
+    backoff waits the minimum again once its failures are a window apart.
+    """
 
     backoff: Backoff | None = None
     """How long to wait before each restart, or `None` to restart at once."""
@@ -203,8 +210,10 @@ class SupervisorStrategy:
         Args:
             max_restarts: How many restarts to allow within `window`. The actor
                 is stopped once that is exceeded.
-            window: The span restarts are counted over. Without one, the count
-                runs for the life of the actor.
+            window: The span restarts are counted over, for the limit and for
+                the backoff alike. Without one, the count runs for the life of
+                the actor, so a backoff stays at its ceiling once it has
+                reached it.
             backoff: How long to wait before each restart. Without one the
                 restart is immediate. That is right for a fault that clears
                 instantly, and wrong for anything involving a dependency.
