@@ -526,6 +526,12 @@ bearer token alone travels in a header, so a plaintext bind beyond loopback
 leaks it, while a token over TLS or a client certificate does not. The command
 presents its certificate with `--client-cert` and `--client-key`.
 
+The certificate and key are loaded while the cluster is being constructed. A
+file that is missing or cannot be read makes `Cluster(...)` raise `OSError` and
+release the port, rather than leave a port bound that never answers. Over TLS,
+a connection refused by the cap is closed without a `503`, so the command
+reports that it could not reach the node.
+
 ## Addressing, and the one uid rule this bends
 
 A cluster daemon publishes itself as a well-known name at `/system/cluster`,

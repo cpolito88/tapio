@@ -20,10 +20,13 @@ from tapio.remote.address import Address
 from tapio.settings import ClusterSettings, ManagementSettings, TapioSettings
 from tapio.testkit import (
     IsolatedClusterSettings,
+    IsolatedManagementSettings,
     IsolatedRemoteSettings,
     IsolatedTapioSettings,
+    IsolatedTLSSettings,
 )
 from tapio.testkit.remote import LinkFaults, link_faults
+from tests.conftest import TlsCerts
 
 QUICK = IsolatedClusterSettings(
     gossip_interval=timedelta(milliseconds=20),
@@ -258,6 +261,18 @@ async def replacement_for(
         yield replacement
     finally:
         await replacement.system.terminate()
+
+
+def tls_managed(certs: TlsCerts) -> ManagementSettings:
+    """A management endpoint that speaks mutual TLS with the given certificates."""
+    return IsolatedManagementSettings(
+        bind_port=0,
+        tls=IsolatedTLSSettings(
+            certfile=certs.server_cert,
+            keyfile=certs.server_key,
+            cafile=certs.ca,
+        ),
+    )
 
 
 def management_port(node: Node) -> int:

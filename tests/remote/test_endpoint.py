@@ -589,6 +589,26 @@ def test_a_construction_that_fails_after_the_bind_releases_the_port():
         probe.bind(("127.0.0.1", port))
 
 
+async def test_a_certificate_that_cannot_be_loaded_fails_construction(tmp_path):
+    # Before, the certificate was loaded inside the listener task. The system
+    # was built, the port stayed bound, and nothing ever answered on it.
+    port = _free_port()
+    absent = str(tmp_path / "absent.pem")
+
+    with assert_no_leaked_tasks(), pytest.raises(OSError, match="No such file"):
+        ActorSystem(
+            "bad-certificate",
+            IsolatedTapioSettings(
+                remote=IsolatedRemoteSettings(
+                    bind_port=port, tls=IsolatedTLSSettings(certfile=absent)
+                )
+            ),
+        )
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", port))
+
+
 def _free_port() -> int:
     """A port nothing is listening on, for a bind that is meant to fail later."""
     with socket.socket() as finder:

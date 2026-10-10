@@ -87,6 +87,10 @@ authentication. **Use both for anything crossing a machine boundary.** The
 secret without TLS is only appropriate where the network itself is the
 boundary, such as a container network or a loopback interface.
 
+The certificate and key are loaded while the system is being constructed. A
+file that is missing or cannot be read makes `ActorSystem(...)` raise `OSError`
+and release the port. It does not leave a port bound that never answers.
+
 ## The decoder is the trust boundary
 
 Everything a peer sends arrives at one place, and that place is written like
@@ -148,6 +152,12 @@ sidecar that terminates TLS and authenticates the caller.** It is not written to
 be an internet-facing API. It answers one request per connection. It holds at
 most thirty-two connections at once and refuses the rest with a `503`. It gives
 each request thirty seconds to arrive and be answered.
+
+Over TLS the same limits cover the TLS handshake. The port accepts plain TCP
+and starts TLS on each connection itself, so a connection that never sends a
+hello counts against the cap and is closed at the deadline. A connection
+refused by the cap over TLS is closed with no `503`, because an answer could
+only be sent after a handshake, and the handshake is the cost the cap bounds.
 
 Those limits are there because this port shares an event loop with the cluster
 daemon. A flood that starves the loop delays gossip and heartbeat replies. The

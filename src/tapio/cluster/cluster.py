@@ -18,6 +18,7 @@ construction rather than at the first gossip round that goes nowhere.
 """
 
 import asyncio
+import ssl
 from collections.abc import Sequence
 from datetime import timedelta
 from typing import Any, final
@@ -45,6 +46,7 @@ from tapio.cluster.messages import (
 from tapio.errors import ClusterError
 from tapio.remote.address import Address
 from tapio.remote.endpoint import RemoteEndpoint
+from tapio.remote.transport import server_ssl_context
 from tapio.settings import ClusterSettings, ManagementSettings
 
 __all__ = ["Cluster"]
@@ -100,6 +102,9 @@ class Cluster:
                 no address other nodes could dial.
             InsecureRemoteConfig: If `management` would answer beyond loopback
                 with no token, the same refusal remoting makes about a secret.
+            OSError: If the management port cannot be bound, or its
+                certificate or key cannot be loaded. Both are checked here,
+                so a port that could never answer fails the construction.
         """
         endpoint = system.remote
         if endpoint is None:
@@ -118,19 +123,29 @@ class Cluster:
             open_management_listener(management) if management is not None else None
         )
         try:
+            # Loaded here, before the daemon exists, for the same reason the
+            # port is bound here. A certificate that cannot be read used to
+            # fail inside the management actor's accept task, where nobody
+            # saw it, and the port stayed bound with nothing answering on it.
+            management_ssl = (
+                server_ssl_context(management.tls)
+                if management is not None and management.tls is not None
+                else None
+            )
             self._build(
                 system,
                 endpoint,
                 downing=downing,
                 terminate_on_down=terminate_on_down,
                 management=management,
+                management_ssl=management_ssl,
             )
         except BaseException:
             # The port is bound by now, and nothing else holds a reference to
             # this half-built cluster to close it later. `bind_port` defaults to
             # a fixed 25530, so leaving it open means the next attempt fails to
             # bind and an operator reads "address already in use" instead of the
-            # spawn failure that actually happened.
+            # failure that actually happened.
             if self._management_listener is not None:
                 self._management_listener.close()
             raise
@@ -143,6 +158,7 @@ class Cluster:
         downing: DownStrategy | None,
         terminate_on_down: bool,
         management: ManagementSettings | None,
+        management_ssl: ssl.SSLContext | None,
     ) -> None:
         """Finish construction, with the management port already bound.
 
@@ -159,6 +175,8 @@ class Cluster:
             terminate_on_down: Whether to shut the system down when this node
                 is downed.
             management: The operator surface's settings, when one was asked for.
+            management_ssl: The server context for the management port, when
+                its settings carry certificates.
         """
 
         def relent(address: str) -> None:
@@ -192,7 +210,7 @@ class Cluster:
                 daemon=self._ref,
                 dispatcher=system.dispatcher,
                 token=management.token,
-                tls=management.tls,
+                ssl_context=management_ssl,
                 address=self.address,
             )
             system.spawn_system_actor(self._management.behavior(), MANAGEMENT_NAME)

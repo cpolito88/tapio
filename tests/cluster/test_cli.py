@@ -11,13 +11,8 @@ import asyncio
 from typer.testing import CliRunner, Result
 
 from tapio.cluster.cli import _print_status, app
-from tapio.settings import ManagementSettings
-from tapio.testkit import (
-    IsolatedManagementSettings,
-    IsolatedTLSSettings,
-    assert_no_leaked_tasks,
-)
-from tests.cluster.conftest import Node, cluster_of, seeds_of
+from tapio.testkit import IsolatedManagementSettings, assert_no_leaked_tasks
+from tests.cluster.conftest import Node, cluster_of, seeds_of, tls_managed
 from tests.conftest import TlsCerts
 from tests.failures import eventually
 
@@ -116,21 +111,9 @@ async def test_a_refused_request_exits_one():
     assert "error" in result.stderr
 
 
-def _tls_managed(certs: TlsCerts) -> ManagementSettings:
-    """A management endpoint that speaks mutual TLS with the given certificates."""
-    return IsolatedManagementSettings(
-        bind_port=0,
-        tls=IsolatedTLSSettings(
-            certfile=certs.server_cert,
-            keyfile=certs.server_key,
-            cafile=certs.ca,
-        ),
-    )
-
-
 async def test_status_over_mutual_tls(mutual_tls_certs: TlsCerts):
     with assert_no_leaked_tasks():
-        async with cluster_of(1, management=_tls_managed(mutual_tls_certs)) as nodes:
+        async with cluster_of(1, management=tls_managed(mutual_tls_certs)) as nodes:
             await _joined(nodes)
 
             result = await _run(
@@ -153,7 +136,7 @@ async def test_mutual_tls_refuses_a_client_with_no_certificate(
     mutual_tls_certs: TlsCerts,
 ):
     with assert_no_leaked_tasks():
-        async with cluster_of(1, management=_tls_managed(mutual_tls_certs)) as nodes:
+        async with cluster_of(1, management=tls_managed(mutual_tls_certs)) as nodes:
             await _joined(nodes)
 
             # Trusts the server, but presents no client certificate, so the
