@@ -416,7 +416,7 @@ children. A group router owns none of them. It routes to whatever actor each
 member of a role publishes at an agreed path, and the pool follows membership:
 
 ```python
-proxy = ctx.spawn(Routers.group(Job, role="worker", path="/user/worker"))
+--8<-- "tests/docs/test_clustering_page.py:group-router"
 ```
 
 A member that joins is added, and one that is removed or goes unreachable is
