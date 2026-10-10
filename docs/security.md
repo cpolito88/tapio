@@ -44,6 +44,13 @@ challenge. A listening port answers anything that can reach it, so a first
 frame carrying those four would hand a scanner the deployment's identity and
 the exact release it runs for the cost of one connection.
 
+A dialled system that will not use the link answers with a `declined` frame
+in place of the welcome. It carries the reason and nothing about the system
+that sent it, and it too is written only after the dialler has answered the
+challenge. The two reasons are a refusal, such as a quarantine, and a
+simultaneous dial that the other link wins. Saying so before the welcome is
+what keeps the dialler from writing into a link that is about to be closed.
+
 The dialler still names itself in its answer, so this is not symmetrical. It is
 not the same exposure either: a dialler chose the address it dialled, where a
 listener chose nobody. Closing the other half would need a fourth frame and a

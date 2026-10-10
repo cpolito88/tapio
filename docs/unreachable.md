@@ -74,6 +74,11 @@ recovery, since the next send dials again.
 re-associates. Nothing does that on its own, even after the network is
 repaired, and that is the deliberate part.
 
+A partition usually quarantines both sides, and each side relents for itself.
+The side being dialled calls `system.remote.clear_quarantine(peer_address)`
+first. Otherwise it refuses the dial, and `reconnect` raises `HandshakeError`
+with the reason it gave.
+
 Automatic re-association after a false positive is the dangerous case: the
 watchers here were already told `Terminated` for actors that are alive and
 carrying on. Silently resuming would leave two nodes with contradictory

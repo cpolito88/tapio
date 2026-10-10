@@ -28,6 +28,7 @@ from tapio.remote.association import Association, Outbound
 from tapio.remote.codec import LENGTH_PREFIX, encode
 from tapio.remote.failure import PeerUnreachable
 from tapio.remote.handle import LinkHandle
+from tapio.remote.handshake import accept
 from tapio.remote.transport import framed, is_link_frame, link_body
 from tapio.testkit import (
     IsolatedRemoteSettings,
@@ -53,6 +54,7 @@ from tests.remote.peers import (
     remoting,
     silent_peer,
     stalled_writes,
+    superseding_peer,
     uri,
     watching,
 )
@@ -1235,3 +1237,66 @@ async def test_a_link_slow_to_close_does_not_hold_back_what_the_association_owes
         assert not gate.is_set()
     finally:
         gate.set()
+
+
+async def test_a_dial_race_loses_nothing_whichever_link_is_answered_first(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Both nodes dial at once. The loser's own dial is answered first, because
+    # the loser is slow to accept the winner's. It used to read a welcome,
+    # write its first frames into a link the winner was closing unread, and
+    # then tear the association down. Now the winner says before any welcome
+    # that its own link wins, and the loser waits for that link.
+    with assert_no_leaked_tasks():
+        async with two_nodes() as nodes:
+            winner, loser = sorted(
+                (nodes.alpha, nodes.beta), key=lambda system: str(system.address)
+            )
+
+            async def late_accept(*args: Any, address: Address, **kwargs: Any) -> Any:
+                if address == loser.address:
+                    await asyncio.sleep(0.1)
+                return await accept(*args, address=address, **kwargs)
+
+            monkeypatch.setattr("tapio.remote.endpoint.accept", late_accept)
+            at_winner: list[int] = []
+            at_loser: list[int] = []
+            to_winner = await loser.resolve(
+                uri(winner, winner.spawn(counting(at_winner), "worker")), expect=Tick
+            )
+            to_loser = await winner.resolve(
+                uri(loser, loser.spawn(counting(at_loser), "worker")), expect=Tick
+            )
+            letters: list[DeadLetter] = []
+            gone: list[PeerUnreachable] = []
+            for system in (winner, loser):
+                system.dead_letters.subscribe(letters.append)
+                system.events.subscribe(PeerUnreachable, gone.append)
+
+            for n in range(1, 6):
+                to_winner.tell(Tick(n=n))
+                to_loser.tell(Tick(n=n))
+
+            await eventually(lambda: at_winner == at_loser == [1, 2, 3, 4, 5])
+            assert letters == []
+            assert gone == []
+
+
+async def test_a_dial_superseded_by_a_link_that_never_arrives_is_given_up_on():
+    with assert_no_leaked_tasks():
+        async with superseding_peer() as address:
+            system = ActorSystem(
+                "alpha", remoting(handshake_timeout=timedelta(milliseconds=200))
+            )
+            try:
+                letters: list[DeadLetter] = []
+                system.dead_letters.subscribe(letters.append)
+                remote = await system.resolve(f"{address}/user/worker#1", expect=Tick)
+
+                remote.tell(Tick(n=1))
+
+                await eventually(lambda: bool(letters))
+                assert letters[0].message == Tick(n=1)
+                assert letters[0].reason == DeadLetterReason.LINK_FAILED
+            finally:
+                await system.terminate()

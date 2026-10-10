@@ -37,7 +37,7 @@ from tapio.message import Message
 from tapio.remote.address import Address
 from tapio.remote.association import Association, AssociationMessage
 from tapio.remote.handle import LinkHandle
-from tapio.remote.handshake import accept
+from tapio.remote.handshake import Decline, LinkSupersededError, PeerIdentity, accept
 from tapio.remote.peers import PeerProvider, StaticPeers
 from tapio.remote.ref import RemoteRef
 from tapio.remote.transport import (
@@ -312,6 +312,7 @@ class RemoteEndpoint:
                 uid=self._uid,
                 secret=self._settings.secret,
                 timeout=self._settings.handshake_timeout.total_seconds(),
+                decide=self._decide,
             )
             # The association owns the socket from here. Released before
             # `_adopt` runs, so a drain that reaches this handle in between
@@ -333,6 +334,12 @@ class RemoteEndpoint:
             )
             await link.close()
             return
+        except LinkSupersededError as error:
+            # The ordinary end of a simultaneous dial, not a refusal. The peer
+            # was told to wait for this system's own link.
+            _log.debug("%s", error)
+            await self._let_go(handle)
+            return
         except (OSError, TapioError, TimeoutError, EOFError) as error:
             # Refused before any message frame was read, which is why the
             # handshake comes first. A peer that cannot say who it is, or runs
@@ -341,6 +348,44 @@ class RemoteEndpoint:
             _log.warning("refused a connection from %s: %s", link.peer, error)
             await self._let_go(handle)
             return
+
+    def _decide(self, identity: PeerIdentity) -> Decline | None:
+        """Decide about an inbound link before the peer can write to it.
+
+        The handshake asks this once the peer has proved who it is and before
+        the welcome goes out. Until the welcome arrives the dialler holds its
+        frames, so a link declined here loses nothing. A link closed after the
+        welcome would lose whatever the dialler had already written to it.
+
+        `_adopt` still checks the same things when the handshake finishes,
+        because writing the welcome awaits and the answer can change in
+        between.
+
+        Args:
+            identity: Who dialled in.
+
+        Returns:
+            Why the link is declined, or `None` to welcome it.
+        """
+        peer = identity.address
+        if self._closed:
+            return Decline(reason=f"{self._address} is shutting down")
+        refusal = self._peers.refusal(peer)
+        if refusal is not None:
+            return Decline(reason=refusal)
+        existing = self._live(peer)
+        if (
+            existing is not None
+            and existing.peer_uid in (0, identity.uid)
+            and _wins(existing.initiator, peer)
+        ):
+            # Both ends dialled, and the link this system opened wins. The
+            # peer keeps what it holds and takes that link when it arrives.
+            return Decline(
+                reason=f"the link {existing.initiator} opened wins the dial race",
+                superseded=True,
+            )
+        return None
 
     def _adopt(self, peer: Address, uid: int, link: Link) -> None:
         """Take a handshaken inbound link, resolving a simultaneous dial.

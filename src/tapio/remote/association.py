@@ -61,7 +61,7 @@ from tapio.remote.failure import (
     PeerUnreachable,
 )
 from tapio.remote.handle import LinkHandle
-from tapio.remote.handshake import introduce
+from tapio.remote.handshake import LinkSupersededError, introduce
 from tapio.remote.transport import (
     FrameLink,
     Heartbeat,
@@ -858,7 +858,11 @@ class Association:
         try:
             link = handle.link
             if link is None:
-                link = await self._dial()
+                try:
+                    link = await self._dial()
+                except LinkSupersededError as error:
+                    await self._wait_for_the_peers_link(error)
+                    return
                 # No await between the dial returning and the handle taking
                 # the socket, so there is no window in which the close is
                 # owed by nobody.
@@ -883,6 +887,32 @@ class Association:
         except (OSError, TapioError, TimeoutError) as error:
             _log.warning("link to %s ended: %s", self._peer, error)
             self.close(str(error))
+
+    async def _wait_for_the_peers_link(self, superseded: LinkSupersededError) -> None:
+        """Hold everything queued until the link the peer is dialling arrives.
+
+        Both ends dialled, and the peer's link wins. The peer said so before
+        it welcomed this dial, so nothing was written to the losing link and
+        nothing has to be accounted for. The frames stay in `_pending` and
+        go out, in order, on the peer's link. The endpoint hands that link to
+        `adopt`, which retires this task, so the wait normally ends by being
+        cancelled.
+
+        Raises:
+            HandshakeError: If the peer's link has not arrived within
+                `handshake_timeout`. The caller closes the association, and
+                what it holds is dead-lettered.
+        """
+        _log.debug("%s; waiting for its link", superseded)
+        # The peer just answered a handshake, which is as good as a heartbeat.
+        self._detector.heartbeat(self._host.dispatcher.now())
+        seconds = self._host.settings.handshake_timeout.total_seconds()
+        await asyncio.sleep(seconds)
+        msg = (
+            f"{self._peer} said its own link would replace this one, and it "
+            f"did not arrive within {seconds:g}s"
+        )
+        raise HandshakeError(msg)
 
     def _refused(self, error: Exception) -> None:
         """Account for a frame that was refused before it could be read."""

@@ -49,6 +49,26 @@ async def test_a_peer_that_says_who_it_is_gets_a_welcome(beta: ActorSystem):
         await link.close()
 
 
+async def test_a_refused_peer_is_told_why_before_any_welcome(beta: ActorSystem):
+    # A refusal decided after the welcome reaches the dialler as a link that
+    # closed, after it may already have written to it. Decided before, it is
+    # a frame saying so, and it names nothing about the system that sent it.
+    assert beta.remote is not None
+    beta.remote.quarantine(GHOST, "the test gave up on it")
+    link = await dial(beta, welcome=False)
+    try:
+        answer = await link.read_link(2.0)
+        assert answer == {
+            "link": "declined",
+            "reason": "the test gave up on it",
+            "superseded": False,
+        }
+        assert await closed(link)
+        assert beta.remote.associations == ()
+    finally:
+        await link.close()
+
+
 async def test_the_protocol_must_match(beta: ActorSystem):
     # A wire format that half works is worse than one that refuses.
     link = await dial(beta, protocol=99, welcome=False)
