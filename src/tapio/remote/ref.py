@@ -70,7 +70,7 @@ class Outbox(Protocol):
         ...
 
     async def offer(self, message: Message, frame: bytes, recipient: ActorPath) -> None:
-        """Queue a frame, waiting for room in the outbound buffer."""
+        """Queue a frame, waiting for the link and then for room in the buffer."""
         ...
 
     def watch(self, watchee: ActorPath, watcher: Watcher) -> None:
@@ -203,7 +203,8 @@ class RemoteRef(ActorRef[T]):
 
         This is local backpressure against a socket that is not draining. It
         is not end-to-end backpressure from the receiving actor, which a
-        fire-and-forget wire protocol cannot provide.
+        fire-and-forget wire protocol cannot provide. While the link is being
+        dialled, it waits for the link first.
 
         Args:
             message: The message to deliver.

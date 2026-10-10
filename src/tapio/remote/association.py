@@ -33,7 +33,12 @@ from pydantic import ValidationError
 
 from tapio.actor.behavior import Behavior, Behaviors
 from tapio.actor.context import ActorContext
-from tapio.actor.dead_letters import Carrier, DeadLetterOffice, DeadLetterReason
+from tapio.actor.dead_letters import (
+    Carrier,
+    DeadLetterOffice,
+    DeadLetterReason,
+    RuntimeMessage,
+)
 from tapio.actor.events import EventStream
 from tapio.actor.path import ActorPath
 from tapio.actor.ref import ActorRef
@@ -108,15 +113,46 @@ class Outbound(Carrier):
     recipient: ActorPath
     """Where it was addressed, in the peer's path space."""
 
+    peer: Address
+    """The peer it was going to, which every dead letter about it names."""
 
-class LinkOut(Message):
+    def account(self, office: DeadLetterOffice, holder: ActorPath, reason: str) -> None:
+        """Publish the payload as a frame that never left for its peer.
+
+        Named by where it was going rather than by the association actor
+        that held it. A subscriber filtering on the recipient or the peer
+        would otherwise miss it.
+
+        Args:
+            office: Where dead letters are published.
+            holder: The association actor, which is not where it was going.
+            reason: Why the association says it went nowhere.
+        """
+        if reason == DeadLetterReason.RECIPIENT_TERMINATED:
+            # The association stopped, which is the link failing as far as
+            # the sender is concerned.
+            reason = DeadLetterReason.LINK_FAILED
+        office.publish(
+            self.payload,
+            self.recipient,
+            reason,
+            peer=self.peer,
+            detail=f"the association with {self.peer} stopped before it left",
+        )
+
+
+class LinkOut(RuntimeMessage):
     """One of the transport's own frames, queued behind whatever is in front.
 
     A watch has to arrive after the messages sent before it and before the
     ones sent after, so it travels through the same mailbox as user traffic
-    rather than jumping the queue. A frame that never leaves is dropped: there
-    is no user message to account for, and a peer that cannot be written to is
-    about to be declared unreachable anyway.
+    rather than jumping the queue. A frame that cannot be queued, or is shed
+    while a link comes up, carries no user message to dead-letter. A lost
+    death-watch frame still leaves one end waiting, so
+    `Association._lose_link_frame` settles each kind.
+
+    A runtime message, so one left in the mailbox when the association stops
+    is not reported as a dead letter.
     """
 
     frame: bytes
@@ -125,12 +161,22 @@ class LinkOut(Message):
     kind: str
     """Which link frame it is, for the log line if it has to be dropped."""
 
+    watchee: ActorPath | None = None
+    """For a `Watch`, the actor on the peer being watched."""
 
-class Beat(Message):
+    watcher: ActorPath | None = None
+    """For a `Watch`, the local actor watching it.
+
+    With `watchee`, it says which watcher to answer if the frame is shed
+    before the peer hears it.
+    """
+
+
+class Beat(RuntimeMessage):
     """A tick asking the association to prove the link is still there."""
 
 
-class Close(Message):
+class Close(RuntimeMessage):
     """Ask an association to stop, because its link is over."""
 
     detail: str
@@ -233,6 +279,7 @@ class Association:
         "_host",
         "_initiator",
         "_link",
+        "_linked",
         "_peer",
         "_pending",
         "_quarantined",
@@ -267,6 +314,9 @@ class Association:
         self._peer = peer
         self._initiator = initiator
         self._link: Link | None = None
+        # Set while a link can carry frames, and while the association is
+        # closing, so whoever waits on it wakes either way.
+        self._linked = asyncio.Event()
         self._pending: deque[Outbound | LinkOut] = deque()
         self._ref: ActorRef[AssociationMessage] | None = None
         self._closing = False
@@ -386,7 +436,11 @@ class Association:
             self._dead_letter(message, recipient, reason)
             return
         try:
-            ref.tell(Outbound(payload=message, frame=frame, recipient=recipient))
+            ref.tell(
+                Outbound(
+                    payload=message, frame=frame, recipient=recipient, peer=self._peer
+                )
+            )
         except MailboxFullError as error:
             self._dead_letter(
                 message,
@@ -396,7 +450,10 @@ class Association:
             )
 
     async def offer(self, message: Message, frame: bytes, recipient: ActorPath) -> None:
-        """Queue a frame, waiting for room in the outbound buffer.
+        """Queue a frame, waiting for the link and then for room in the buffer.
+
+        While a link is being dialled, this waits for it. Once there is one,
+        it waits for room in the outbound buffer.
 
         This is local backpressure against a socket that is not draining, and
         nothing more. It is not end-to-end backpressure from the actor on the
@@ -408,11 +465,21 @@ class Association:
             frame: The complete frame.
             recipient: Where it was addressed.
         """
+        # While the link is coming up, the actor moves frames from its mailbox
+        # into a hold buffer that sheds rather than waits. Room in the mailbox
+        # would therefore never run out, and a frame offered then would be
+        # shed. So an offer waits for the link first. A dial and a lost dial
+        # race both end within `handshake_timeout`, and a closing association
+        # wakes this too.
+        while self._link is None and not self._closing:
+            await self._linked.wait()
         ref = self._ref
         if ref is None or self._closing:
             self.send(message, frame, recipient)
             return
-        await ref.offer(Outbound(payload=message, frame=frame, recipient=recipient))
+        await ref.offer(
+            Outbound(payload=message, frame=frame, recipient=recipient, peer=self._peer)
+        )
 
     def watch(self, watchee: ActorPath, watcher: Watcher) -> None:
         """Ask the peer to report when one of its actors stops.
@@ -429,22 +496,15 @@ class Association:
             )
             return
         self._watching_there.setdefault(watchee, {})[watcher.path] = watcher
-        if self._write_link(
+        # A frame that cannot be queued, now or later while a link comes up,
+        # answers this watcher at once. See `_lose_link_frame`.
+        self._write_link(
             Watch(
                 watchee=format_target(watchee),
                 watcher=format_target(watcher.path),
-            )
-        ):
-            return
-        # The frame did not get queued, so the peer will never register this
-        # watch and no `Terminated` is coming from over there. Holding the
-        # entry anyway would leave the watcher waiting on a signal nothing is
-        # left to send, which is the failure death watch exists to prevent, so
-        # it is answered now instead.
-        self._forget_watch(watchee, watcher)
-        watcher.notify_unreachable(
-            self._host.peer_ref(self._peer, watchee),
-            f"the watch on {watchee} could not be sent to {self._peer}",
+            ),
+            watchee=watchee,
+            watcher=watcher.path,
         )
 
     def unwatch(self, watchee: ActorPath, watcher: Watcher) -> None:
@@ -505,6 +565,7 @@ class Association:
         # queued. That is the same rule as a link coming up for the first
         # time, and it is what keeps the order across the swap.
         self._link = None
+        self._linked.clear()
         # The losing handle is moved to `_retiring` before the task that
         # closes it is spawned, so a shutdown that cancels that task before it
         # runs a line still finds a handle that owes a close. It carries the
@@ -547,6 +608,8 @@ class Association:
             return
         self._closing = True
         self._link = None
+        # Wakes an offer waiting for the link, which then sees the close.
+        self._linked.set()
         self._fail_ready(detail)
         ref = self._ref
         if ref is not None:
@@ -580,6 +643,7 @@ class Association:
         if self._closing:
             return
         self._closing = True
+        self._linked.set()
         self._fail_ready("the association stopped")
         try:
             await self._close_sockets()
@@ -603,32 +667,73 @@ class Association:
         """
         await asyncio.wait_for(asyncio.shield(self._ready), timeout)
 
-    def _write_link(self, frame: LinkFrame) -> bool:
+    def _write_link(
+        self,
+        frame: LinkFrame,
+        *,
+        watchee: ActorPath | None = None,
+        watcher: ActorPath | None = None,
+    ) -> None:
         """Queue one of the transport's own frames behind the traffic in front.
 
-        Returns:
-            Whether it was queued. A `False` matters: a watch the peer never
-            hears about is a watch this end must not go on believing in, so
-            the caller has to be able to tell.
+        A frame that cannot be queued is handed to `_lose_link_frame`, which
+        keeps the watches on both ends consistent.
+
+        Args:
+            frame: The link frame.
+            watchee: For a `Watch`, the actor on the peer being watched.
+            watcher: For a `Watch`, the local actor watching it.
         """
         ref = self._ref
         if ref is None:  # pragma: no cover - the endpoint binds before any send
-            return False
-        body = framed(frame.model_dump_json().encode())
-        kind = type(frame).__name__
+            return
+        out = LinkOut(
+            frame=framed(frame.model_dump_json().encode()),
+            kind=type(frame).__name__,
+            watchee=watchee,
+            watcher=watcher,
+        )
         try:
-            ref.tell(LinkOut(frame=body, kind=kind))
+            ref.tell(out)
         except MailboxFullError:
-            # Logged rather than swallowed. There is no user message to
-            # dead-letter, so this line is the only trace a dropped watch
-            # leaves, and it used to leave none at all.
-            _log.warning(
-                "dropped a %s frame for %s: the outbound buffer is full",
-                kind,
-                self._peer,
-            )
-            return False
-        return True
+            self._lose_link_frame(out, "the outbound buffer is full")
+
+    def _lose_link_frame(self, out: LinkOut, why: str) -> None:
+        """Account for a link frame that will never reach the peer.
+
+        A lost death-watch frame leaves one end waiting for a signal the other
+        will never send, which is the failure death watch exists to prevent.
+        So each kind is settled here, by the only means this end has.
+
+        - A `Watch`: the peer never registers the watch, so the local watcher
+          is answered at once, as if the peer had gone.
+        - A `WatcheeTerminated`: a watcher on the peer is waiting for it, and
+          nothing else can reach that watcher. Ending the association tells
+          every watcher on the peer, that one included.
+        - An `Unwatch`: the peer keeps a watch nobody here wants any more. The
+          `WatcheeTerminated` it may send later finds no watcher and is
+          ignored, and the watch ends with the link. That is harmless, so it
+          is only logged.
+
+        Args:
+            out: The frame that was not queued, or was shed.
+            why: Why, for the log and the close.
+        """
+        _log.warning("dropped a %s frame for %s: %s", out.kind, self._peer, why)
+        if out.kind == WatcheeTerminated.__name__:
+            self.close(f"a {out.kind} frame for {self._peer} was lost: {why}")
+            return
+        if out.watchee is None or out.watcher is None:
+            return
+        watcher = self._watching_there.get(out.watchee, {}).get(out.watcher)
+        if watcher is None:
+            # Unwatched, or answered, while the frame waited.
+            return
+        self._forget_watch(out.watchee, watcher)
+        watcher.notify_unreachable(
+            self._host.peer_ref(self._peer, out.watchee),
+            f"the watch on {out.watchee} could not be sent to {self._peer}: {why}",
+        )
 
     def _with_heartbeat(
         self, timers: TimerScheduler[AssociationMessage]
@@ -777,9 +882,7 @@ class Association:
             f"to {self._peer}"
         )
         if isinstance(outbound, LinkOut):
-            _log.warning(
-                "dropped a %s frame for %s: %s", outbound.kind, self._peer, waiting
-            )
+            self._lose_link_frame(outbound, waiting)
             return
         self._dead_letter(
             outbound.payload,
@@ -887,6 +990,13 @@ class Association:
         except (OSError, TapioError, TimeoutError) as error:
             _log.warning("link to %s ended: %s", self._peer, error)
             self.close(str(error))
+        except Exception as error:
+            # Anything else is a bug, here or in what a frame reached. The link
+            # still ends visibly. A reader that died quietly would leave the
+            # association writing to a link nobody reads, until the silence
+            # turned into a false verdict about a peer that was fine.
+            _log.exception("reading the link to %s failed", self._peer)
+            self.close(f"reading the link failed: {type(error).__name__}: {error}")
 
     async def _wait_for_the_peers_link(self, superseded: LinkSupersededError) -> None:
         """Hold everything queued until the link the peer is dialling arrives.
@@ -965,6 +1075,14 @@ class Association:
             except BaseException:
                 await link.close()
                 raise
+        if identity.address != self._peer:
+            # The handshake says who is listening at that host and port, and
+            # this is the check it exists for. A stale configuration or a
+            # reused port would otherwise deliver every frame meant for one
+            # system to another, which resolves the paths in its own tree.
+            await link.close()
+            msg = f"dialled {self._peer} and {identity.address} answered"
+            raise HandshakeError(msg)
         self._uid = identity.uid
         _log.debug("dialled %s, incarnation %d", identity.address, identity.uid)
         return self._host.wrap(link)
@@ -989,6 +1107,7 @@ class Association:
             await link.close()
             return
         self._link = link
+        self._linked.set()
         # A peer that has just handshaken is not a silent one, whatever the
         # clock said while the dial was in flight.
         self._detector.heartbeat(self._host.dispatcher.now())
@@ -1115,6 +1234,7 @@ class Association:
         event that says it went out of reach.
         """
         self._closing = True
+        self._linked.set()
         self._fail_ready("the association stopped")
         while self._pending:
             outbound = self._pending.popleft()

@@ -46,7 +46,6 @@ from tapio.errors import (
     MailboxFullError,
     MessageDecodingError,
     MessageTypeError,
-    RefResolutionError,
 )
 from tapio.message import Message
 from tapio.remote.address import Address
@@ -227,7 +226,10 @@ def decode(data: bytes, *, system: str, max_frame_bytes: int | None = None) -> F
         raise MessageDecodingError(msg)
     try:
         parsed = json.loads(body)
-    except ValueError as error:
+    except (ValueError, RecursionError) as error:
+        # RecursionError is what deep nesting raises, and it is not a
+        # ValueError. A body of opening brackets well under the frame cap is
+        # enough, so it is refused like any other body that is not JSON.
         raise MessageDecodingError(f"frame body is not JSON: {error}") from error
     if not isinstance(parsed, dict):
         msg = f"a frame body is a JSON object, got {type(parsed).__name__}"
@@ -326,7 +328,10 @@ def receive_frame(
     try:
         with use_context(context):
             message = msg_type.model_validate_json(frame.payload)
-    except (ValidationError, RefResolutionError) as error:
+    except Exception as error:
+        # Not only ValidationError. Pydantic passes on whatever a user's
+        # validator raises other than ValueError and AssertionError, and a
+        # TypeError here would end the link's reader instead of one frame.
         _refuse(
             dead_letters,
             context,
@@ -372,6 +377,16 @@ def receive_frame(
             DeadLetterReason.MAILBOX_FULL,
             peer=peer,
             detail=str(error),
+        )
+    except Exception as error:
+        # Delivery validates the message again, and a user's validator can
+        # raise more than ValidationError there too.
+        dead_letters.publish(
+            message,
+            frame.to,
+            DeadLetterReason.MALFORMED_FRAME,
+            peer=peer,
+            detail=f"{type(error).__name__}: {error}",
         )
 
 

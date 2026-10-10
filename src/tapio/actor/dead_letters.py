@@ -31,6 +31,7 @@ __all__ = [
     "DeadLetterOffice",
     "DeadLetterReason",
     "DeadLetterRef",
+    "RuntimeMessage",
     "Subscription",
 ]
 
@@ -73,6 +74,32 @@ class Carrier(Message):
 
     payload: "CarriedMessage"
     """The message its sender actually sent."""
+
+    def account(
+        self, office: "DeadLetterOffice", holder: ActorPath, reason: str
+    ) -> None:
+        """Publish this message as a dead letter, because its holder stopped.
+
+        The default names the actor that was holding it as the recipient. A
+        carrier that knows better, such as a frame queued for a peer, says
+        where the message was really going instead.
+
+        Args:
+            office: Where dead letters are published.
+            holder: The stopped actor whose mailbox still held it.
+            reason: Why the holder says it went nowhere.
+        """
+        office.publish(self.payload, holder, reason)
+
+
+class RuntimeMessage(Message):
+    """A message the runtime sends to one of its own actors.
+
+    A link's heartbeat tick and its request to close are examples. No
+    application code sent one, so nobody is owed an account of it. One left
+    in a stopped actor's mailbox is dropped rather than published as a dead
+    letter, where it would only be noise to a subscriber.
+    """
 
 
 class DeadLetterReason:

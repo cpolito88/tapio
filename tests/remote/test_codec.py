@@ -9,6 +9,7 @@ import asyncio
 from collections.abc import AsyncIterator
 
 import pytest
+from pydantic import field_validator
 
 from tapio import Message
 from tapio.actor import (
@@ -61,6 +62,20 @@ class Reserved(Message):
     """The answer."""
 
     sku: str
+
+
+@register_message()
+class Fussy(Message):
+    """A message whose validator raises something other than a ValueError."""
+
+    n: int
+
+    @field_validator("n")
+    @classmethod
+    def _not_one(cls, n: int) -> int:
+        if n == 1:
+            raise TypeError("one is not allowed")
+        return n
 
 
 @register_message()
@@ -613,3 +628,32 @@ async def test_a_dead_letter_names_the_system_a_bad_frame_came_from(
     assert letters[0].reason == DeadLetterReason.UNKNOWN_MESSAGE_TYPE
     assert isinstance(letters[0].message, UndecodableFrame)
     assert letters[0].message.sender == str(alpha.address)
+
+
+async def test_a_deeply_nested_body_dead_letters(
+    beta: ActorSystem, letters: list[DeadLetter]
+):
+    # Deep nesting raises RecursionError, which is not a ValueError. It used to
+    # escape a call documented never to raise, and end the link's reader.
+    depth = 200_000
+    body = _body(b'"to":"/user/x","t":"k","p":' + b"[" * depth + b"]" * depth)
+
+    beta.deliver_frame(len(body).to_bytes(LENGTH_PREFIX, "big") + body)
+
+    assert len(letters) == 1
+    assert letters[0].reason == DeadLetterReason.MALFORMED_FRAME
+
+
+async def test_a_validator_raising_a_type_error_dead_letters(
+    beta: ActorSystem, letters: list[DeadLetter]
+):
+    # Pydantic passes on what a validator raises unless it is a ValueError or
+    # an AssertionError, so a user's TypeError reached the link's reader.
+    stock = beta.spawn(reserving([]), "stock")
+    frame = tamper(encode(Fussy(n=2), to=stock.path), b'"n":2', b'"n":1')
+
+    beta.deliver_frame(frame)
+
+    assert len(letters) == 1
+    assert letters[0].reason == DeadLetterReason.MALFORMED_FRAME
+    assert "one is not allowed" in (letters[0].detail or "")

@@ -155,6 +155,17 @@ async def test_a_peer_with_no_answer_at_all_is_refused(guarded: ActorSystem):
         await link.close()
 
 
+async def test_a_proof_that_is_not_ascii_is_refused_and_closed(guarded: ActorSystem):
+    # compare_digest on str raises TypeError for a non-ASCII character, which
+    # used to end the handshake task with the socket still open.
+    link = await dial(guarded, proof="\u00e9", welcome=False)
+    try:
+        async with asyncio.timeout(2.0):
+            assert await closed(link)
+    finally:
+        await link.close()
+
+
 async def test_a_refused_peer_gets_nothing_delivered(guarded: ActorSystem):
     # No frames are read after a failed handshake, so writing a message right
     # behind a bad hello is not a way in.

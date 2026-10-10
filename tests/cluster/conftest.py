@@ -5,12 +5,15 @@ gossip. What is scaled down is patience, since a test that waits a second per
 gossip round is a test nobody runs.
 """
 
+import asyncio
+import json
 import shutil
 import subprocess
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import timedelta
+from typing import Any
 
 import pytest
 
@@ -381,3 +384,44 @@ async def replacement_for(
         yield replacement
     finally:
         await replacement.system.terminate()
+
+
+def management_port(node: Node) -> int:
+    """The management port a node bound, read from the address it reports."""
+    address = node.cluster.management_address
+    assert address is not None
+    return int(address.rsplit(":", 1)[1])
+
+
+async def management_request(
+    port: int,
+    method: str,
+    path: str,
+    *,
+    body: dict[str, object] | None = None,
+    token: str | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """Make one HTTP request to a management port and read its JSON answer.
+
+    Done with a raw asyncio connection rather than a blocking client so the
+    request runs on the loop the endpoint answers on, without a thread.
+    """
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    lines = [f"{method} {path} HTTP/1.1", "Host: 127.0.0.1"]
+    if token is not None:
+        lines.append(f"Authorization: Bearer {token}")
+    payload = b""
+    if body is not None:
+        payload = json.dumps(body).encode("utf-8")
+        lines.append("Content-Type: application/json")
+        lines.append(f"Content-Length: {len(payload)}")
+    lines.append("Connection: close")
+    writer.write(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1") + payload)
+    await writer.drain()
+    raw = await reader.read()
+    writer.close()
+    await writer.wait_closed()
+    head, _, tail = raw.partition(b"\r\n\r\n")
+    code = int(head.split(b"\r\n")[0].split(b" ")[1])
+    parsed = json.loads(tail) if tail else {}
+    return code, parsed
