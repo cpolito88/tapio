@@ -272,12 +272,19 @@ class _WriteFaultLink:
     flush alone and breaks the first ordinary send.
     """
 
-    __slots__ = ("_after", "_link", "_stall", "_written")
+    __slots__ = ("_after", "_link", "_parked", "_stall", "_written")
 
-    def __init__(self, link: FrameLink, after: int, stall: bool) -> None:
+    def __init__(
+        self,
+        link: FrameLink,
+        after: int,
+        stall: bool,
+        parked: asyncio.Event | None = None,
+    ) -> None:
         self._link = link
         self._after = after
         self._stall = stall
+        self._parked = parked
         self._written = 0
 
     @property
@@ -293,6 +300,8 @@ class _WriteFaultLink:
                 # Never returns, and never raises. This is a peer holding the
                 # connection open while reading nothing, which is what parks a
                 # real `drain` for good.
+                if self._parked is not None:
+                    self._parked.set()
                 await asyncio.Event().wait()
             raise OSError(107, "Transport endpoint is not connected")
         self._written += 1
@@ -314,9 +323,17 @@ def failing_writes(after: int = 0) -> Callable[[FrameLink], Link]:
     return lambda link: _WriteFaultLink(link, after, stall=False)
 
 
-def stalled_writes(after: int = 0) -> Callable[[FrameLink], Link]:
-    """A link filter whose writes never return once `after` have succeeded."""
-    return lambda link: _WriteFaultLink(link, after, stall=True)
+def stalled_writes(
+    after: int = 0, parked: asyncio.Event | None = None
+) -> Callable[[FrameLink], Link]:
+    """A link filter whose writes never return once `after` have succeeded.
+
+    Args:
+        after: How many writes go through before they stall.
+        parked: Set when a write first stalls, so a test can wait for the
+            association to be parked instead of guessing how long it takes.
+    """
+    return lambda link: _WriteFaultLink(link, after, stall=True, parked=parked)
 
 
 class _HeldCloseLink:

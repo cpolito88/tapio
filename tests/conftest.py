@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
@@ -27,6 +28,7 @@ from tapio.logging import ActorLogAdapter, actor_logger
 from tapio.settings import TapioSettings
 from tapio.testkit import (
     IsolatedTapioSettings,
+    assert_no_leaked_tasks,
 )
 from tapio.validation import MessageType
 from tests.messages import Greeted
@@ -154,23 +156,48 @@ def settings() -> TapioSettings:
 
 @pytest.fixture
 async def system(settings: TapioSettings) -> AsyncIterator[ActorSystem]:
-    """A running system, terminated however the test ends."""
-    running = ActorSystem("test", settings)
-    try:
+    """A running system, terminated however the test ends, and checked for leaks.
+
+    Every task the test left running fails it at teardown, as AGENTS.md asks of
+    anything that starts a system. Threads are not checked here: a test that
+    uses `asyncio.to_thread` leaves the loop's default executor running, which
+    is not the system's to stop. `assert_no_leaked_threads` checks those that
+    are.
+    """
+    async with running_system(settings) as running:
         yield running
-    finally:
-        await running.terminate()
+
+
+@asynccontextmanager
+async def running_system(settings: TapioSettings) -> AsyncIterator[ActorSystem]:
+    """Run a system for the length of a block, and fail if it leaked a task.
+
+    The `system` fixture is this. It is a plain context manager so a test can
+    show that the check fails when a task is left behind.
+    """
+    with assert_no_leaked_tasks():
+        running = ActorSystem("test", settings)
+        try:
+            yield running
+        finally:
+            await running.terminate()
 
 
 @dataclass(frozen=True, slots=True)
 class TlsCerts:
-    """Paths to a CA and the server and client certificates it signed."""
+    """Paths to a CA and the certificates it signed."""
 
     ca: str
     server_cert: str
     server_key: str
     client_cert: str
     client_key: str
+    node_cert: str
+    """Good for both ends of a remoting link: serverAuth and clientAuth."""
+    node_key: str
+    elsewhere_cert: str
+    """Signed by the same CA for `elsewhere.example`, not for loopback."""
+    elsewhere_key: str
 
 
 @pytest.fixture(scope="session")
@@ -214,73 +241,70 @@ def mutual_tls_certs(tmp_path_factory: pytest.TempPathFactory) -> TlsCerts:
         "-addext",
         "keyUsage=critical,keyCertSign,cRLSign",
     )
-    openssl(
-        "req",
-        "-newkey",
-        "rsa:2048",
-        "-keyout",
-        path("server.key"),
-        "-out",
-        path("server.csr"),
-        "-nodes",
-        "-subj",
+
+    def leaf(name: str, subject: str, *extensions: str) -> None:
+        """Issue `{name}.pem` and `{name}.key`, signed by the test CA."""
+        added = [arg for extension in extensions for arg in ("-addext", extension)]
+        openssl(
+            "req",
+            "-newkey",
+            "rsa:2048",
+            "-keyout",
+            path(f"{name}.key"),
+            "-out",
+            path(f"{name}.csr"),
+            "-nodes",
+            "-subj",
+            subject,
+            *added,
+        )
+        openssl(
+            "x509",
+            "-req",
+            "-in",
+            path(f"{name}.csr"),
+            "-CA",
+            path("ca.pem"),
+            "-CAkey",
+            path("ca.key"),
+            "-CAcreateserial",
+            "-out",
+            path(f"{name}.pem"),
+            "-days",
+            "1",
+            "-copy_extensions",
+            "copy",
+        )
+
+    leaf(
+        "server",
         "/CN=127.0.0.1",
-        "-addext",
         "subjectAltName=IP:127.0.0.1",
-        "-addext",
         "keyUsage=critical,digitalSignature,keyEncipherment",
-        "-addext",
         "extendedKeyUsage=serverAuth",
     )
-    openssl(
-        "x509",
-        "-req",
-        "-in",
-        path("server.csr"),
-        "-CA",
-        path("ca.pem"),
-        "-CAkey",
-        path("ca.key"),
-        "-CAcreateserial",
-        "-out",
-        path("server.pem"),
-        "-days",
-        "1",
-        "-copy_extensions",
-        "copy",
-    )
-    openssl(
-        "req",
-        "-newkey",
-        "rsa:2048",
-        "-keyout",
-        path("client.key"),
-        "-out",
-        path("client.csr"),
-        "-nodes",
-        "-subj",
+    leaf(
+        "client",
         "/CN=operator",
-        "-addext",
         "keyUsage=critical,digitalSignature",
-        "-addext",
         "extendedKeyUsage=clientAuth",
     )
-    openssl(
-        "x509",
-        "-req",
-        "-in",
-        path("client.csr"),
-        "-CA",
-        path("ca.pem"),
-        "-CAkey",
-        path("ca.key"),
-        "-CAcreateserial",
-        "-out",
-        path("client.pem"),
-        "-days",
-        "1",
-        "-copy_extensions",
-        "copy",
+    # A remoting node both listens and dials, so its certificate serves both.
+    leaf(
+        "node",
+        "/CN=127.0.0.1",
+        "subjectAltName=IP:127.0.0.1",
+        "keyUsage=critical,digitalSignature,keyEncipherment",
+        "extendedKeyUsage=serverAuth,clientAuth",
+    )
+    # The same CA vouches for it, but for another host, so only a dialler that
+    # checks the hostname refuses it.
+    leaf(
+        "elsewhere",
+        "/CN=elsewhere.example",
+        "subjectAltName=DNS:elsewhere.example",
+        "keyUsage=critical,digitalSignature,keyEncipherment",
+        "extendedKeyUsage=serverAuth,clientAuth",
     )
     return TlsCerts(
         ca=path("ca.pem"),
@@ -288,4 +312,8 @@ def mutual_tls_certs(tmp_path_factory: pytest.TempPathFactory) -> TlsCerts:
         server_key=path("server.key"),
         client_cert=path("client.pem"),
         client_key=path("client.key"),
+        node_cert=path("node.pem"),
+        node_key=path("node.key"),
+        elsewhere_cert=path("elsewhere.pem"),
+        elsewhere_key=path("elsewhere.key"),
     )

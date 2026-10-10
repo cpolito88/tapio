@@ -24,6 +24,7 @@ from tapio.actor.path import ActorPath
 from tapio.errors import MailboxFullError, MessageTypeError
 from tapio.settings import TapioSettings
 from tapio.testkit import assert_no_leaked_tasks
+from tests.failures import eventually
 from tests.messages import Greeted, Ping
 
 
@@ -209,7 +210,7 @@ async def test_messages_still_queued_when_an_actor_stops_are_accounted_for(
         ref.tell(Ping(n=n))
     await asyncio.sleep(0)
     released.set()
-    await asyncio.sleep(0.05)
+    await eventually(lambda: len(seen) == 3)
 
     # The first was handled and the actor then stopped. The rest were queued
     # behind it and must not vanish with the mailbox.
@@ -234,7 +235,7 @@ async def test_a_behavior_can_account_for_a_message_it_could_not_pass_on(
 
     ref = system.spawn(Behaviors.receive(cannot_forward), name="conduit")
     ref.tell(Ping(n=1))
-    await asyncio.sleep(0.05)
+    await eventually(lambda: bool(seen))
 
     # The recipient is the one the conduit tried, not the conduit itself, and
     # the message reaching the office is the object the sender passed.
@@ -285,7 +286,9 @@ async def test_fail_on_the_loop_publishes_no_dead_letter(quick: ActorSystem):
 
     with pytest.raises(MailboxFullError):
         ref.tell(Ping(n=3))
-    await asyncio.sleep(0.05)
+    # On the loop a dead letter is published inside `tell`, so one turn is
+    # enough for anything it might have scheduled as well.
+    await asyncio.sleep(0)
 
     # FAIL discards nothing: it raises in the sender, who still holds the
     # message. Only the off-loop path, with nobody to raise into, dead-letters.
@@ -384,7 +387,7 @@ async def test_a_full_fail_mailbox_dead_letters_across_a_thread_boundary(
     thread = threading.Thread(target=send)
     thread.start()
     thread.join()
-    await asyncio.sleep(0.05)
+    await eventually(lambda: bool(seen))
 
     # Nothing can be raised into a thread that has moved on, so the
     # recipient's backpressure becomes a dead letter instead.

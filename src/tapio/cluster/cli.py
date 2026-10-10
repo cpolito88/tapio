@@ -241,6 +241,9 @@ def _ssl_context(target: _Target) -> ssl.SSLContext:
         does not name the host reached is refused rather than trusted.
     """
     context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=target.cafile)
+    # Pinned rather than left to the Python build's default, which on some
+    # builds is whatever OpenSSL still supports. The node pins the same floor.
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     if target.client_cert is not None:
         context.load_cert_chain(target.client_cert, target.client_key)
     return context
