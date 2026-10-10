@@ -9,10 +9,19 @@ named task.
 
 import asyncio
 
+from tapio import Behavior, Behaviors
 from tapio.cluster import DownAll, KeepMajority, LeaseMajority, LocalLease, MemberStatus
-from tapio.cluster.messages import ClusterDowned
+from tapio.cluster.events import SelfDown
+from tapio.cluster.gossip import Gossip
+from tapio.cluster.messages import ClusterDowned, Down
 from tapio.testkit import assert_no_leaked_tasks
-from tests.cluster.conftest import WATCHFUL, cluster_of, seeds_of, start_node
+from tests.cluster.conftest import (
+    WATCHFUL,
+    cluster_of,
+    daemon_running,
+    seeds_of,
+    start_node,
+)
 from tests.failures import eventually
 
 # Detect a split quickly, then down it quickly, so a test does not wait on the
@@ -173,3 +182,112 @@ async def test_the_shutdown_a_downed_node_starts_carries_a_name():
             await named[0]
         finally:
             await node.system.terminate()
+
+
+def recorder(seen: list[SelfDown]) -> Behavior[SelfDown]:
+    """An actor that writes down every `SelfDown` it is told about."""
+
+    async def on_message(message: SelfDown) -> Behavior[SelfDown]:
+        seen.append(message)
+        return Behaviors.same()
+
+    return Behaviors.receive_message(on_message, msg_type=SelfDown)
+
+
+class FailsAtFirst:
+    """A strategy that raises a few times, then keeps the majority."""
+
+    def __init__(self, failures: int) -> None:
+        """Fail the first `failures` calls."""
+        self.failures = failures
+        self.calls = 0
+
+    async def decide(self, state: Gossip) -> frozenset[str]:
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise RuntimeError("the strategy's backing service is down")
+        return await KeepMajority().decide(state)
+
+
+class Refuses:
+    """A lease whose service cannot be reached from either side."""
+
+    async def acquire(self, owner: str) -> bool:
+        raise ConnectionRefusedError(owner)
+
+
+async def test_a_strategy_that_raises_is_asked_again_and_the_daemon_keeps_running():
+    with assert_no_leaked_tasks():
+        strategy = FailsAtFirst(failures=5)
+        async with cluster_of(3, settings=DECISIVE, downing=strategy) as nodes:
+            first, second, odd = nodes
+            await joined(nodes)
+
+            odd.faults.partition()
+
+            await asyncio.wait_for(odd.cluster.when_downed(), timeout=5.0)
+            assert strategy.calls > strategy.failures
+            assert all(daemon_running(n) for n in nodes)
+            await eventually(
+                lambda: all(len(n.cluster.members) == 2 for n in (first, second)),
+                within=5.0,
+            )
+
+
+async def test_a_lease_that_cannot_be_reached_downs_both_sides():
+    with assert_no_leaked_tasks():
+        strategy = LeaseMajority(lease=Refuses())
+        async with cluster_of(2, settings=DECISIVE, downing=strategy) as nodes:
+            await joined(nodes)
+
+            nodes[0].faults.partition()
+
+            # Neither side can show it holds the lease, so neither stays up.
+            # Each daemon goes on running to say so.
+            await asyncio.gather(
+                *(asyncio.wait_for(n.cluster.when_downed(), timeout=5.0) for n in nodes)
+            )
+            assert all(daemon_running(n) for n in nodes)
+
+
+async def test_a_node_downed_by_an_operator_is_told_so():
+    with assert_no_leaked_tasks():
+        async with cluster_of(2) as nodes:
+            first, second = nodes
+            await joined(nodes)
+            seen: list[SelfDown] = []
+            watcher = second.system.spawn(recorder(seen), name="watcher")
+            second.cluster.subscribe(watcher, SelfDown)
+
+            first.cluster._ref.tell(Down(address=second.address))
+
+            # Nobody gossips to a downed member, so in a cluster of two the
+            # downed node hears of it only once the leader has removed it.
+            await asyncio.wait_for(second.cluster.when_downed(), timeout=5.0)
+            await eventually(lambda: len(seen) == 1, within=2.0)
+            assert seen[0].member.status in (MemberStatus.DOWN, MemberStatus.REMOVED)
+
+
+async def test_a_node_that_leaves_gracefully_is_not_told_it_was_downed():
+    with assert_no_leaked_tasks():
+        async with cluster_of(2) as nodes:
+            second = nodes[1]
+            await joined(nodes)
+
+            await second.cluster.leave()
+
+            assert second.status is MemberStatus.REMOVED
+            assert not second.cluster._daemon.downed.is_set()
+
+
+async def test_an_operator_downed_node_with_terminate_on_down_shuts_down():
+    with assert_no_leaked_tasks():
+        # No strategy: an operator down is the only way this node goes down.
+        async with cluster_of(3, terminate_on_down=True) as nodes:
+            first, _second, third = nodes
+            await joined(nodes)
+
+            first.cluster._ref.tell(Down(address=third.address))
+
+            await asyncio.wait_for(third.system.when_terminated(), timeout=5.0)
+            assert not first.system.is_terminating

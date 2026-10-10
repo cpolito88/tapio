@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from tapio.actor import ActorSystem
+from tapio.actor.path import ActorPath
 from tapio.cluster import Cluster, DownStrategy, Member, MemberStatus
 from tapio.remote.address import Address
 from tapio.settings import ClusterSettings, ManagementSettings, TapioSettings
@@ -127,6 +128,12 @@ class Node:
 def seeds_of(nodes: Sequence[Node]) -> list[str]:
     """The seed list every node in a group is given, in one order."""
     return [node.address for node in nodes]
+
+
+def daemon_running(node: Node) -> bool:
+    """Whether the node's daemon still holds its well-known name."""
+    path = ActorPath.root(node.system.name).child("system").child("cluster")
+    return node.system.refs.lookup(path) is not None
 
 
 @dataclass(frozen=True, slots=True)

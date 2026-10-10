@@ -21,7 +21,7 @@ from tapio.cluster import (
     MemberUp,
 )
 from tapio.testkit import assert_no_leaked_tasks
-from tests.cluster.conftest import Node, cluster_of, seeds_of
+from tests.cluster.conftest import Node, cluster_of, daemon_running, seeds_of
 from tests.failures import eventually
 
 
@@ -50,12 +50,6 @@ def recorder(seen: list[tuple[str, str]]) -> Behavior[ClusterEvent]:
         return Behaviors.same()
 
     return Behaviors.receive_message(on_message, msg_type=ClusterEvent)
-
-
-def daemon_running(node: Node) -> bool:
-    """Whether the node's daemon still holds its well-known name."""
-    path = ActorPath.root(node.system.name).child("system").child("cluster")
-    return node.system.refs.lookup(path) is not None
 
 
 def subscribers(node: Node) -> tuple[ActorPath, ...]:

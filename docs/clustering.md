@@ -216,6 +216,25 @@ across it and not only the watched ones. A strategy's safety therefore depends
 on the split being fully observed this way, which is a property of the
 transport noticing every dropped link, not of the ring.
 
+The two views are mirror images only up to the membership changes that were in
+flight when the split came. A member admitted moments before may be known on
+one side only, and a member the leader has just removed may still be `exiting`
+on the other. The counting strategies allow for that. A side counts itself
+over the `up` and `leaving` members the leader has accepted, and counts the far
+side over every live member, so a change that crossed to one side cannot make both sides the
+winner. A split during a join or a leave can therefore down both sides, which
+is the safe direction. A `down` made on one side only is the case no count
+covers: an operator downing a member while the cluster is split can make the
+two views disagree about who is left.
+
+A node also waits, before it decides, until every member it can still hear has
+seen its current view. A far-side member that nobody on this side observes
+looks reachable from here, but it cannot have seen anything this side has
+gossiped since the split. Waiting for it keeps a node from counting it on this
+side. A strategy that raises is logged and asked again on the next turn, and
+[LeaseMajority][tapio.cluster.downing.LeaseMajority] counts a lease that does
+not answer within its `acquire_timeout`, or that fails, as lost.
+
 A link coming up is not an answer either. It proves a process is accepting
 connections, and what this node is asking is whether the daemon behind it is
 still replying, so the next probe settles that one round later. Reading a
@@ -428,8 +447,12 @@ for a member no strategy will reach: one that is unreachable to everyone, so no
 split fires a
 strategy, or a cluster running with no strategy configured at all. The member
 goes to `down` exactly as a strategy would put it there, and a `down` cannot be
-taken back, so the downed member hears the decision as gossip and shuts itself
-down.
+taken back. The downed member hears the decision as gossip, and
+[when_downed][tapio.cluster.cluster.Cluster.when_downed] returns on it. It shuts
+itself down if it was clustered with `terminate_on_down`, which works with no
+strategy configured. In a small cluster the downed member often hears of its
+downing only after the leader has removed it, since nobody gossips to a downed
+member. That counts as being downed too.
 
 The port can down a member, so it is a serious surface, and it is off unless it
 is configured, like remoting. When it is on it binds loopback by default.
