@@ -136,4 +136,9 @@ class SelfDown(ClusterEvent):
     """
 
     member: Member
-    """This node's own member record, at `down`."""
+    """This node's own member record, at `down`.
+
+    At `removed` when this node heard of its downing only after the leader had
+    removed it. The other members stop gossiping to a downed member, so in a
+    small cluster that is the usual way it hears.
+    """

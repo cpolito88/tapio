@@ -1,8 +1,12 @@
 """The downing strategies, as functions over a view (and, for the lease, a lock)."""
 
+import asyncio
 from collections.abc import Iterable, Sequence
+from datetime import timedelta
 
 import pytest
+from hypothesis import assume, given, settings
+from hypothesis import strategies as st
 
 from tapio.cluster.downing import (
     DownAll,
@@ -293,3 +297,249 @@ async def test_both_sides_of_a_partition_down_the_same_members(
     assert await strategy.decide(seen_from_small) == await strategy.decide(
         seen_from_large
     )
+
+
+def member(
+    address: str,
+    status: MemberStatus,
+    *,
+    up_number: int = 0,
+    roles: Iterable[str] = (),
+) -> Member:
+    """A member at any status, for views where a join or a leave is in flight."""
+    return Member(
+        address=address,
+        uid=1,
+        status=status,
+        up_number=up_number,
+        roles=frozenset(roles),
+    )
+
+
+def kept(verdict: frozenset[str], side: Iterable[str]) -> bool:
+    """Whether a verdict leaves every member of a side standing."""
+    return not verdict & frozenset(side)
+
+
+async def test_a_joiner_known_on_one_side_does_not_let_both_sides_win() -> None:
+    # J was admitted on the {C, D} side just before the split, so the {A, B}
+    # side has never heard of it. Counting J made {C, D} a majority of three
+    # while {A, B} won the two-two tie on the lowest address.
+    core = [
+        up(A, up_number=1),
+        up(B, up_number=2),
+        up(C, up_number=3),
+        up(D, up_number=4),
+    ]
+    side_one = view([*core, member(E, MemberStatus.JOINING)], unreachable=[A, B])
+    side_two = view(core, unreachable=[C, D])
+
+    one = await KeepMajority().decide(side_one)
+    two = await KeepMajority().decide(side_two)
+
+    assert not (kept(one, [C, D, E]) and kept(two, [A, B]))
+
+
+async def test_a_removal_that_crossed_one_side_does_not_let_both_sides_win() -> None:
+    # E was exiting. The {A, B} side's leader removed it, and the split came
+    # before {C, D} heard, so {C, D} still counts E on its own side.
+    core = [
+        up(A, up_number=1),
+        up(B, up_number=2),
+        up(C, up_number=3),
+        up(D, up_number=4),
+    ]
+    exiting = member(E, MemberStatus.EXITING, up_number=5)
+    side_one = view(core, unreachable=[C, D])
+    side_two = view([*core, exiting], unreachable=[A, B])
+
+    one = await KeepMajority().decide(side_one)
+    two = await KeepMajority().decide(side_two)
+
+    assert not (kept(one, [A, B]) and kept(two, [C, D, E]))
+
+
+async def test_keep_oldest_keeps_one_side_when_the_oldest_was_removed_on_one() -> None:
+    # A is the oldest and was leaving. The {B, C} side removed it, so B is the
+    # oldest there. The {A, D, E} side still holds A as exiting.
+    rest = [
+        up(B, up_number=2),
+        up(C, up_number=3),
+        up(D, up_number=4),
+        up(E, up_number=5),
+    ]
+    exiting = member(A, MemberStatus.EXITING, up_number=1)
+    side_one = view(rest, unreachable=[D, E])
+    side_two = view([exiting, *rest], unreachable=[B, C])
+
+    one = await KeepOldest().decide(side_one)
+    two = await KeepOldest().decide(side_two)
+
+    assert not (kept(one, [B, C]) and kept(two, [A, D, E]))
+
+
+# What the leader may do to a member in one step. The leader steps only from
+# a view every member has seen, so it takes at most one step that the far side
+# has not heard of, and all such steps are on the side the leader was on.
+_LEADER_STEP = {
+    MemberStatus.JOINING: MemberStatus.UP,
+    MemberStatus.LEAVING: MemberStatus.EXITING,
+    MemberStatus.EXITING: None,
+}
+_COMMON = [
+    None,
+    MemberStatus.JOINING,
+    MemberStatus.UP,
+    MemberStatus.LEAVING,
+    MemberStatus.EXITING,
+]
+
+
+@st.composite
+def split_views(
+    draw: st.DrawFn,
+) -> tuple[Gossip, Gossip, frozenset[str], frozenset[str]]:
+    """Two views of one split whose memberships differ by changes in flight.
+
+    Each member starts at a status both sides have seen, or unknown to both.
+    Then each side may have heard of changes the other has not: the leader's
+    one step, on the leader's side only, and on either side an admission and a
+    request to leave, which any member can make. A down made on one side only
+    is left out, because no count can cover it.
+
+    Returns:
+        Side one's view, side two's view, and the addresses on each side.
+    """
+    addresses = draw(
+        st.lists(st.sampled_from([A, B, C, D, E]), min_size=2, unique=True)
+    )
+    count = len(addresses)
+    on_side_one = draw(st.lists(st.booleans(), min_size=count, max_size=count))
+    leader_side = draw(st.sampled_from([0, 1]))
+    ranks = draw(st.permutations(range(1, count + 1)))
+
+    views: tuple[list[Member], list[Member]] = ([], [])
+    for address, rank in zip(addresses, ranks, strict=True):
+        common = draw(st.sampled_from(_COMMON))
+        accepted = common is MemberStatus.UP or (
+            common in (MemberStatus.LEAVING, MemberStatus.EXITING)
+            and draw(st.booleans())
+        )
+        db = draw(st.booleans())
+        for side, into in enumerate(views):
+            status = common
+            number = rank if accepted else 0
+            if side == leader_side and status in _LEADER_STEP and draw(st.booleans()):
+                status = _LEADER_STEP[status]
+                if status is MemberStatus.UP:
+                    # Accepted just before the split, so the youngest of all.
+                    number = count + rank
+            if status is None and common is None and draw(st.booleans()):
+                status = MemberStatus.JOINING
+            if status in (MemberStatus.JOINING, MemberStatus.UP) and draw(
+                st.booleans()
+            ):
+                status = MemberStatus.LEAVING
+            if status is not None:
+                into.append(
+                    member(
+                        address,
+                        status,
+                        up_number=number,
+                        roles=["db"] if db else [],
+                    )
+                )
+    side_one = frozenset(
+        a for a, here in zip(addresses, on_side_one, strict=True) if here
+    )
+    side_two = frozenset(addresses) - side_one
+
+    def seen_from(members: list[Member], own: frozenset[str]) -> Gossip | None:
+        held = {m.address for m in members}
+        observers = sorted(own & held)
+        far = sorted(held - own)
+        if not observers or not far:
+            return None
+        records = tuple(
+            ReachabilityRecord(
+                observer=observers[0],
+                observed=address,
+                status=ReachabilityStatus.UNREACHABLE,
+            )
+            for address in far
+        )
+        return Gossip(
+            members=tuple(sorted(members, key=lambda m: m.address)),
+            reachability=Reachability(records=records),
+        )
+
+    view_one = seen_from(views[0], side_one)
+    view_two = seen_from(views[1], side_two)
+    assume(view_one is not None and view_two is not None)
+    assert view_one is not None
+    assert view_two is not None
+    return view_one, view_two, side_one, side_two
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [
+        KeepMajority(),
+        KeepMajority(role="db"),
+        StaticQuorum(size=1),
+        StaticQuorum(size=2),
+        StaticQuorum(size=3),
+        KeepOldest(),
+        KeepOldest(down_if_alone=True),
+        KeepOldest(role="db"),
+        KeepOldest(down_if_alone=True, role="db"),
+    ],
+)
+@settings(max_examples=300, deadline=None)
+@given(views=split_views())
+async def test_changes_in_flight_never_let_both_sides_win(
+    strategy: DownStrategy,
+    views: tuple[Gossip, Gossip, frozenset[str], frozenset[str]],
+) -> None:
+    view_one, view_two, side_one, side_two = views
+
+    one = await strategy.decide(view_one)
+    two = await strategy.decide(view_two)
+
+    assert not (kept(one, side_one) and kept(two, side_two))
+
+
+class Hangs:
+    """A lease whose service never answers."""
+
+    async def acquire(self, owner: str) -> bool:
+        await asyncio.Event().wait()
+        return True
+
+
+class Refuses:
+    """A lease whose service cannot be reached."""
+
+    async def acquire(self, owner: str) -> bool:
+        raise ConnectionRefusedError(owner)
+
+
+async def test_a_lease_that_never_answers_downs_this_side_in_bounded_time() -> None:
+    strategy = LeaseMajority(lease=Hangs(), acquire_timeout=timedelta(milliseconds=50))
+    state = view([up(A), up(B), up(C), up(D)], unreachable=[C, D])
+
+    verdict = await asyncio.wait_for(strategy.decide(state), timeout=2.0)
+
+    assert verdict == frozenset({A, B})
+
+
+async def test_a_lease_that_raises_downs_this_side() -> None:
+    strategy = LeaseMajority(lease=Refuses())
+    state = view([up(A), up(B), up(C), up(D)], unreachable=[C, D])
+
+    assert await strategy.decide(state) == frozenset({A, B})
+
+
+def test_lease_majority_refuses_a_timeout_that_is_not_positive() -> None:
+    with pytest.raises(ValueError, match="must be positive"):
+        LeaseMajority(lease=LocalLease(), acquire_timeout=timedelta(0))

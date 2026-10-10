@@ -287,7 +287,7 @@ class ClusterDaemon:
                 well-known name.
             events: This system's event stream, where remoting says that a
                 peer went out of reach or came back, and where this daemon says
-                that it has downed itself.
+                that this node has been downed.
             settings: How often to gossip, and how patient to be.
             relent: Tells remoting to stop refusing a peer it gave up on. A
                 member that has not been downed is still a member, so this
@@ -333,8 +333,14 @@ class ClusterDaemon:
         # for the pair to hold still, so a passing blip is ridden out.
         self._split: frozenset[str] | None = None
         self._split_since = 0.0
+        # The split a strategy last raised about, so a strategy that keeps
+        # failing is logged once per split rather than once per turn.
+        self._failed_split: frozenset[str] | None = None
         self._downed = asyncio.Event()
         self._downed_announced = False
+        # Whether this node has seen itself leaving. A node removed without
+        # that was downed, and heard of it only after the leader removed it.
+        self._left_gracefully = False
         # Set at the end of every turn, for a caller waiting on this node's own
         # status to move. See the `changed` property.
         self._changed = asyncio.Event()
@@ -408,7 +414,10 @@ class ClusterDaemon:
 
     @property
     def downed(self) -> asyncio.Event:
-        """Set once this node has downed itself, for the application to wait on."""
+        """Set once this node has been downed, for the application to wait on.
+
+        A strategy on either side of a split, or an operator, can down it.
+        """
         return self._downed
 
     @property
@@ -519,6 +528,7 @@ class ClusterDaemon:
         self._follow_the_ring()
         self._lead()
         await self._down()
+        self._note_a_graceful_leave()
         self._announce_if_downed()
         if before is not None:
             self._emit(ctx, before)
@@ -984,7 +994,21 @@ class ClusterDaemon:
         Deciding is awaited because the lease-backed strategy reaches an outside
         lock. The wait is the only point in a turn this actor gives up, and only
         while a split is being resolved, so a peer's heartbeat is answered on
-        the turns either side of it.
+        the turns either side of it. A strategy is expected to bound that wait,
+        as the lease-backed one does. One that raises is logged and asked again
+        on the next turn. Its exception does not reach the supervisor, which
+        would stop this daemon, and with it this node's part in the cluster, at
+        the moment the split needs resolving.
+
+        A node decides only once every member it can still hear has seen its
+        current view. A view that holds still for `down_after` can still be
+        wrong about where the split runs: a member on the far side that nobody
+        on this side observes looks reachable from here. Such a member has not
+        seen this side's view since the split, because it cannot hear this
+        side. Waiting until every reachable member has seen the view stops a
+        node from counting it on this side, and from deciding under a name, or
+        a count, that belongs to the far side. It also means every node on a
+        side decides over the same view, so they reach the same verdict.
         """
         me = self.self_member
         if (
@@ -1008,7 +1032,29 @@ class ClusterDaemon:
             return
         if now - self._split_since < self._down_after:
             return
-        self._apply_downing(await self._strategy.decide(self._state))
+        if not self._side_has_seen_the_view():
+            return
+        try:
+            verdict = await self._strategy.decide(self._state)
+        except Exception:
+            if self._failed_split != unreachable:
+                self._failed_split = unreachable
+                _log.exception(
+                    "%r failed to decide about %s; it is asked again every turn "
+                    "until it answers",
+                    self._strategy,
+                    ", ".join(sorted(unreachable)),
+                )
+            return
+        self._apply_downing(verdict)
+
+    def _side_has_seen_the_view(self) -> bool:
+        """Whether every live member this node can hear has seen its view."""
+        gone = self._state.unreachable
+        seen = self._state.seen
+        return all(
+            m.address in seen for m in self._state.alive if m.address not in gone
+        )
 
     def _unreachable_alive(self) -> frozenset[str]:
         """The live members at least one live observer currently cannot hear."""
@@ -1046,27 +1092,58 @@ class ClusterDaemon:
         )
         self._state = changed.bumped_by(self._address)
 
-    def _announce_if_downed(self) -> None:
-        """Say once, on the event stream, that this node has downed itself.
+    def _note_a_graceful_leave(self) -> None:
+        """Remember that this node has seen itself leaving.
 
-        A node reaches this by downing its own side as the side's leader, or by
-        merging in the gossip a side-mate leader sent. Either way a `Down`
-        member may not rejoin as itself, so the application is told to shut the
-        system down. Said once, because the status does not move back and
-        repeating it would only be noise.
+        A graceful leave reaches `Removed` only through `Exiting`, and the
+        leader moves a member to `Exiting` only once every member has seen it
+        `Leaving`, this node included. So a node that leaves gracefully always
+        sees itself leaving on an earlier turn than its removal.
         """
         me = self.self_member
-        if me is None or me.status is not MemberStatus.DOWN or self._downed_announced:
+        if me is not None and me.status in _LEAVING_STATUSES:
+            self._left_gracefully = True
+
+    def _is_downed(self, status: MemberStatus | None) -> bool:
+        """Whether this node's own status means it was downed.
+
+        `Down` does. So does `Removed` without a graceful leave first: the
+        other members stop gossiping to a downed member, so it can hear of its
+        downing only after the leader has already removed it.
+
+        Args:
+            status: This node's own status, or `None` before it has joined.
+
+        Returns:
+            Whether it was downed.
+        """
+        if status is MemberStatus.DOWN:
+            return True
+        return status is MemberStatus.REMOVED and not self._left_gracefully
+
+    def _announce_if_downed(self) -> None:
+        """Say once, on the event stream, that this node has been downed.
+
+        A strategy downs a node on the losing side of a split, on that node or
+        on a side-mate whose gossip it then merges. An operator downs one
+        through any node's management port. Either way a downed member may not
+        rejoin as itself, so the application is told to shut the system down.
+        Said once, because the status does not move back and repeating it
+        would only be noise.
+        """
+        me = self.self_member
+        if me is None or not self._is_downed(me.status) or self._downed_announced:
             return
         self._downed_announced = True
-        _log.warning("%s has downed itself and should shut down", self._address)
+        _log.warning(
+            "%s has been downed (%s) and should shut down", self._address, me.status
+        )
         self._events.publish(
             ClusterDowned(
                 address=self._address,
                 detail=(
-                    f"{self._address} was on the losing side of a split and downed "
-                    "itself. A downed member may not rejoin as itself, so the "
-                    "system should be shut down."
+                    f"{self._address} was downed. A downed member may not rejoin "
+                    "as itself, so the system should be shut down."
                 ),
             )
         )
@@ -1137,9 +1214,8 @@ class ClusterDaemon:
                 self._deliver(ctx, ReachableMember(member=back))
         if before.leader != after.leader:
             self._deliver(ctx, LeaderChanged(leader=after.leader))
-        if (
-            after.self_status is MemberStatus.DOWN
-            and before.self_status is not MemberStatus.DOWN
+        if self._is_downed(after.self_status) and not self._is_downed(
+            before.self_status
         ):
             me = self.self_member
             if me is not None:

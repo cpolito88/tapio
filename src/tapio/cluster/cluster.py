@@ -81,13 +81,14 @@ class Cluster:
                 [DownAll][tapio.cluster.downing.DownAll] to have the losing
                 side downed and, for this node, to have it down itself.
             terminate_on_down: Whether to shut the whole system down when this
-                node downs itself, rather than leaving that to the application.
+                node is downed, rather than leaving that to the application.
                 A downed member may not rejoin as itself, so a service whose
                 only reason to run was the cluster wants this. One that does
                 other work leaves it off and awaits
                 [when_downed][tapio.cluster.cluster.Cluster.when_downed]
-                instead. It has no effect without a `downing` strategy, since
-                nothing then downs this node.
+                instead. It applies however this node was downed: by a
+                strategy, or by an operator through the management port of
+                any node, which works with no `downing` strategy configured.
             management: A small HTTP surface an operator reaches this node on,
                 to read its membership or to ask it to let a member leave or
                 down one. Off when omitted, like remoting: a port that can down
@@ -156,7 +157,7 @@ class Cluster:
             endpoint: Its remoting, which the daemon reaches peers through.
             downing: What to do about an unreachable member.
             terminate_on_down: Whether to shut the system down when this node
-                downs itself.
+                is downed.
             management: The operator surface's settings, when one was asked for.
         """
 
@@ -197,11 +198,11 @@ class Cluster:
             system.spawn_system_actor(self._management.behavior(), MANAGEMENT_NAME)
         self._down_watch: Subscription | None = None
         self._shutdown: asyncio.Task[None] | None = None
-        if downing is not None and terminate_on_down:
+        if terminate_on_down:
             self._down_watch = self._terminate_when_downed()
 
     def _terminate_when_downed(self) -> Subscription:
-        """Shut the system down the moment this node downs itself.
+        """Shut the system down the moment this node is downed.
 
         The daemon publishes
         [ClusterDowned][tapio.cluster.messages.ClusterDowned] from inside its
@@ -213,7 +214,7 @@ class Cluster:
         outlives the system is reported by name rather than as `Task-17`. It is
         held, since the event loop keeps only a weak reference to a task and
         would let an unheld shutdown be collected before it finished. Once
-        fired this stops listening, because a system downs itself once.
+        fired this stops listening, because a system is downed once.
 
         Returns:
             The subscription, so construction can hold it.
@@ -223,9 +224,7 @@ class Cluster:
         def shut_down(event: ClusterDowned) -> None:
             if self._down_watch is not None:
                 self._down_watch.unsubscribe()
-            system.log.warning(
-                "%s downed itself, shutting the system down", event.address
-            )
+            system.log.warning("%s was downed, shutting the system down", event.address)
             self._shutdown = system.dispatcher.spawn_task(
                 system.terminate(), name=f"tapio-cluster-shutdown:{system.name}"
             )
@@ -506,7 +505,7 @@ class Cluster:
             raise ClusterError(msg) from None
 
     async def when_downed(self) -> None:
-        """Wait until a downing strategy has made this node down itself.
+        """Wait until this node is downed.
 
         A downed member may not rejoin as itself, so the usual response is to
         shut the system down:
@@ -521,8 +520,10 @@ class Cluster:
         is only one part of a larger service decides for itself what a downing
         means for the rest of it.
 
-        It never returns when downing is switched off, since nothing then downs
-        this node, and never returns for a node that leaves gracefully: leaving
+        It returns once this node is downed, by a strategy on either side of a
+        split or by an operator through any node's management port. That
+        includes a node that hears of its downing only after the leader has
+        removed it. It never returns for a node that leaves gracefully: leaving
         walks a member out through the lattice and is not a downing.
         """
         await self._daemon.downed.wait()
