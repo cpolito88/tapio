@@ -17,7 +17,8 @@ from tapio.testkit import (
     IsolatedTLSSettings,
     assert_no_leaked_tasks,
 )
-from tests.cluster.conftest import Node, TlsCerts, cluster_of, seeds_of
+from tests.cluster.conftest import Node, cluster_of, seeds_of
+from tests.conftest import TlsCerts
 from tests.failures import eventually
 
 MANAGED = IsolatedManagementSettings(bind_port=0)

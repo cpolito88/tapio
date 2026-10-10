@@ -120,7 +120,18 @@ class RemoteSettings(BaseSettings):
     """How long a link has to be dialled, accepted and handshaken.
 
     One deadline for the whole opening, so a peer that accepts a connection and
-    then says nothing costs this and not a parked task.
+    then says nothing costs this and not a parked task. On a TLS listener it
+    covers the TLS handshake as well.
+    """
+
+    max_pending_handshakes: Annotated[int, Field(ge=1)] = 128
+    """How many inbound connections may be handshaking at once.
+
+    A connection past this is closed as it is accepted. A peer has proved
+    nothing before its handshake ends, so without a cap anyone who can reach
+    the port decides how many sockets and read buffers this system holds.
+    A cluster dials a restarted member from every other member at once, so
+    keep this above the cluster size.
     """
 
     heartbeat_interval: timedelta = timedelta(seconds=1)

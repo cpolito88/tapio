@@ -148,7 +148,8 @@ class ActorRef(Generic[T]):
         The address is compared as well as the path. A path names a place in
         one system's tree and says nothing about which node that system runs
         on. Two nodes of one deployment share a system name and spawn the same
-        actors in the same order, so their refs share paths, uids included.
+        actors in the same order, so their refs share paths up to the uid, and
+        a ref to a well-known name carries no uid at all.
         """
         if not isinstance(other, ActorRef):
             return NotImplemented

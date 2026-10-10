@@ -820,7 +820,9 @@ class Association:
             # broke, and only this one means the peer should be given up on.
             stalled = f"{self._peer} accepted no bytes for {self._write_budget():g}s"
             if self._was_replaced(link):
-                self._lost_with_old_link(outbound, stalled)
+                self._lost_with_old_link(
+                    outbound, f"the link it was written to was replaced: {stalled}"
+                )
                 return
             if isinstance(outbound, Outbound):
                 self._dead_letter(
@@ -832,7 +834,9 @@ class Association:
             await self._declare_unreachable(stalled)
         except OSError as error:
             if self._was_replaced(link):
-                self._lost_with_old_link(outbound, str(error))
+                self._lost_with_old_link(
+                    outbound, f"the link it was written to was replaced: {error}"
+                )
                 return
             if isinstance(outbound, Outbound):
                 self._dead_letter(
@@ -855,17 +859,19 @@ class Association:
         return link is not self._link and not self._closing
 
     def _lost_with_old_link(self, outbound: Outbound | LinkOut, why: str) -> None:
-        """Account for a frame that was on the link a dial race retired.
+        """Account for a frame that was on a link that ended under it.
 
-        It is not sent again on the new link. It may already have reached the
-        peer in part or in full, and delivery is at most once.
+        That is a link a dial race retired, or one that closed while the frame
+        was being written. It is not sent again on another link. It may
+        already have reached the peer in part or in full, and delivery is at
+        most once.
         """
         if isinstance(outbound, Outbound):
             self._dead_letter(
                 outbound.payload,
                 outbound.recipient,
                 DeadLetterReason.LINK_FAILED,
-                detail=f"the link it was written to was replaced: {why}",
+                detail=why,
             )
 
     def _hold(self, outbound: Outbound | LinkOut) -> None:
@@ -1100,8 +1106,16 @@ class Association:
             outbound = self._pending.popleft()
             try:
                 await link.write_frame(outbound.frame)
-            except OSError:
-                self._pending.appendleft(outbound)
+            except BaseException as error:
+                # The frame in hand is in neither `_pending` nor the mailbox,
+                # so it is accounted for here or not at all. It is not put
+                # back: its bytes may already be in the transport's buffer,
+                # and delivery is at most once. A cancellation lands here
+                # too, when a dial race retires this link or the association
+                # stops while the flush is waiting on the peer.
+                self._lost_with_old_link(
+                    outbound, f"the link ended while it was being written: {error!r}"
+                )
                 raise
         if self._closing:
             await link.close()

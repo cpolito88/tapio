@@ -93,11 +93,13 @@ consult where a single system has nothing. A peer that is not a member follows
 the rule above unchanged. See
 [clustering](clustering.md#one-rule-this-contradicts).
 
-Refs held across a quarantine are **not reusable**. Their uid belongs to a
-session that is over, so addressing after a reconnect goes through `resolve`
-again. That is also what makes a restarted peer a different peer rather than
-an impostor at the same address: a system mints a new uid per incarnation, and
-an association is bound to the uid it handshook with.
+Refs held across a quarantine **keep working after `reconnect` if the peer is
+the same incarnation**, because a ref names a node and an actor, not a link. A
+peer that restarted is a different peer. Its system has a new uid, and its
+actors have new uids too, because every actor uid is random. So a ref from
+before the restart reaches nothing over there, even for an actor the new
+incarnation spawned under the same name, and its messages become dead letters
+on the peer. Resolve again to reach the new incarnation.
 
 ## Designing for it
 

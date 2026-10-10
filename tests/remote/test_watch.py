@@ -214,11 +214,13 @@ def watching_two(
     return Behaviors.setup(build)
 
 
+@pytest.mark.usefixtures("counted_uids")
 async def test_two_peers_with_one_system_name_are_two_watchers():
     with assert_no_leaked_tasks():
         target = ActorSystem("target", remoting())
         # Two nodes of one deployment: the same system name, and the same
-        # actors spawned in the same order, so the same paths and uids.
+        # actors spawned in the same order, so the same paths, and with
+        # counted uids the same uids too.
         east = ActorSystem("orders", remoting())
         west = ActorSystem("orders", remoting())
         try:
@@ -272,6 +274,7 @@ async def test_one_peer_unwatching_leaves_the_other_peers_watch():
             await target.terminate()
 
 
+@pytest.mark.usefixtures("counted_uids")
 async def test_one_actor_watches_the_same_path_on_two_nodes_apart():
     with assert_no_leaked_tasks():
         hub = ActorSystem("hub", remoting())
@@ -308,6 +311,7 @@ async def test_one_actor_watches_the_same_path_on_two_nodes_apart():
             await hub.terminate()
 
 
+@pytest.mark.usefixtures("counted_uids")
 async def test_refs_to_one_path_on_two_nodes_are_told_apart():
     with assert_no_leaked_tasks():
         hub = ActorSystem("hub", remoting())

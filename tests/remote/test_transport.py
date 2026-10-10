@@ -14,6 +14,7 @@ from tapio.errors import FrameTooLargeError, InsecureRemoteConfig, MessageDecodi
 from tapio.remote import transport
 from tapio.remote.codec import LENGTH_PREFIX, encode
 from tapio.remote.transport import (
+    HANDSHAKE_FRAME_BYTES,
     FrameLink,
     Heartbeat,
     bind,
@@ -208,6 +209,43 @@ def test_a_deeply_nested_link_frame_is_refused():
 def test_a_link_frame_that_is_not_json_is_refused():
     with pytest.raises(MessageDecodingError, match="not JSON"):
         link_body(framed(b"{oops"))
+
+
+async def test_a_bracketed_ipv6_host_is_dialled_bare():
+    # Port 9 is unbound, so the dial fails. What matters is how: a resolver
+    # given `[::1]` looks for a host by that name and finds none.
+    try:
+        link = await connect("[::1]", 9, max_frame_bytes=1024, ssl_context=None)
+    except socket.gaierror as error:
+        pytest.fail(f"the brackets reached the resolver: {error}")
+    except OSError:
+        return
+    await link.close()
+
+
+async def test_a_handshake_frame_is_capped_below_the_link_limit():
+    # The peer has proved nothing during a handshake, so the link's own limit,
+    # 4 MiB by default, is far more than it should make this end hold.
+    accepted: list[FrameLink] = []
+
+    def announce(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        writer.write((HANDSHAKE_FRAME_BYTES + 1).to_bytes(LENGTH_PREFIX, "big"))
+        accepted.append(FrameLink(reader, writer, max_frame_bytes=1024))
+
+    listener = bind(remote(bind_port=0))
+    server = await listen(announce, listener, ssl_context=None)
+    port = listener.getsockname()[1]
+    link = await connect(
+        "127.0.0.1", port, max_frame_bytes=4 * 1024 * 1024, ssl_context=None
+    )
+    try:
+        with pytest.raises(FrameTooLargeError):
+            await link.read_link(2.0)
+    finally:
+        await link.close()
+        for side in accepted:
+            await side.close()
+        server.close()
 
 
 def test_binding_port_zero_gives_a_port_that_can_be_read_back():

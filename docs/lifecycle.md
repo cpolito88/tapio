@@ -23,7 +23,8 @@ generated names, so `spawn` refuses a name that starts with it.
 
 Every ref carries an incarnation **uid** as well as a path. A ref to an actor
 that has stopped does not become a ref to the next actor at that path, which
-is what stops a stale reference from quietly addressing a stranger.
+is what stops a stale reference from quietly addressing a stranger. The uid is
+random, so this holds across a restart of the whole system too.
 
 ## Holding state
 

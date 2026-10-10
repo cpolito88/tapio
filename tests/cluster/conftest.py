@@ -7,15 +7,11 @@ gossip round is a test nobody runs.
 
 import asyncio
 import json
-import shutil
-import subprocess
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
-
-import pytest
 
 from tapio.actor import ActorSystem
 from tapio.actor.path import ActorPath
@@ -134,135 +130,6 @@ def daemon_running(node: Node) -> bool:
     """Whether the node's daemon still holds its well-known name."""
     path = ActorPath.root(node.system.name).child("system").child("cluster")
     return node.system.refs.lookup(path) is not None
-
-
-@dataclass(frozen=True, slots=True)
-class TlsCerts:
-    """Paths to a CA and the server and client certificates it signed."""
-
-    ca: str
-    server_cert: str
-    server_key: str
-    client_cert: str
-    client_key: str
-
-
-@pytest.fixture(scope="session")
-def mutual_tls_certs(tmp_path_factory: pytest.TempPathFactory) -> TlsCerts:
-    """Generate a CA and a server and client certificate it signed, once.
-
-    Real certificates rather than mocks, so a test drives the actual TLS
-    handshake. The server certificate names the loopback address so a client
-    checking the hostname is satisfied, and every certificate carries the key
-    usage extensions a strict verifier requires: Python 3.13 turns on strict
-    X.509 checking by default, where a CA with no keyUsage extension is refused.
-    Built with openssl, since neither cryptography nor trustme is a dependency;
-    a machine without openssl skips the tests that ask for this.
-    """
-    if shutil.which("openssl") is None:
-        pytest.skip("openssl is not available to generate certificates")
-    root = tmp_path_factory.mktemp("tls")
-
-    def openssl(*args: str) -> None:
-        subprocess.run(["openssl", *args], check=True, capture_output=True)
-
-    def path(name: str) -> str:
-        return str(root / name)
-
-    openssl(
-        "req",
-        "-x509",
-        "-newkey",
-        "rsa:2048",
-        "-keyout",
-        path("ca.key"),
-        "-out",
-        path("ca.pem"),
-        "-days",
-        "1",
-        "-nodes",
-        "-subj",
-        "/CN=Test CA",
-        "-addext",
-        "basicConstraints=critical,CA:TRUE",
-        "-addext",
-        "keyUsage=critical,keyCertSign,cRLSign",
-    )
-    openssl(
-        "req",
-        "-newkey",
-        "rsa:2048",
-        "-keyout",
-        path("server.key"),
-        "-out",
-        path("server.csr"),
-        "-nodes",
-        "-subj",
-        "/CN=127.0.0.1",
-        "-addext",
-        "subjectAltName=IP:127.0.0.1",
-        "-addext",
-        "keyUsage=critical,digitalSignature,keyEncipherment",
-        "-addext",
-        "extendedKeyUsage=serverAuth",
-    )
-    openssl(
-        "x509",
-        "-req",
-        "-in",
-        path("server.csr"),
-        "-CA",
-        path("ca.pem"),
-        "-CAkey",
-        path("ca.key"),
-        "-CAcreateserial",
-        "-out",
-        path("server.pem"),
-        "-days",
-        "1",
-        "-copy_extensions",
-        "copy",
-    )
-    openssl(
-        "req",
-        "-newkey",
-        "rsa:2048",
-        "-keyout",
-        path("client.key"),
-        "-out",
-        path("client.csr"),
-        "-nodes",
-        "-subj",
-        "/CN=operator",
-        "-addext",
-        "keyUsage=critical,digitalSignature",
-        "-addext",
-        "extendedKeyUsage=clientAuth",
-    )
-    openssl(
-        "x509",
-        "-req",
-        "-in",
-        path("client.csr"),
-        "-CA",
-        path("ca.pem"),
-        "-CAkey",
-        path("ca.key"),
-        "-CAcreateserial",
-        "-out",
-        path("client.pem"),
-        "-days",
-        "1",
-        "-copy_extensions",
-        "copy",
-    )
-    return TlsCerts(
-        ca=path("ca.pem"),
-        server_cert=path("server.pem"),
-        server_key=path("server.key"),
-        client_cert=path("client.pem"),
-        client_key=path("client.key"),
-    )
 
 
 def start_node(

@@ -132,11 +132,23 @@ def test_watchers_at_one_path_on_two_nodes_are_held_apart():
     book.add_watcher(east)
     book.add_watcher(west)
 
-    book.remove_watcher(FakeWatcher("watcher", EAST))
+    book.remove_watcher(east)
     book.release(FakeWatcher("stopping"), STOPPING)
 
     assert east.terminated == []
     assert west.terminated == [str(STOPPING)]
+
+
+def test_removing_a_replaced_watcher_keeps_the_one_that_replaced_it():
+    book = DeathWatch()
+    stale, live = FakeWatcher("watcher", EAST), FakeWatcher("watcher", EAST)
+    book.add_watcher(stale)
+    book.add_watcher(live)
+
+    book.remove_watcher(stale)
+    book.release(FakeWatcher("stopping"), STOPPING)
+
+    assert live.terminated == [str(STOPPING)]
 
 
 def test_a_watch_is_stopped_on_the_node_the_ref_names():

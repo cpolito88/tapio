@@ -16,6 +16,7 @@ the test suite asserts.
 import asyncio
 import itertools
 import random
+import secrets
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -113,6 +114,13 @@ def running_cell() -> "ActorCell[Any] | None":
         return cell
     return None
 
+
+_UID_BITS: Final = 63
+"""How much randomness goes into an actor's incarnation uid.
+
+63 bits, so the uid stays a non-negative signed 64-bit integer for any peer
+that reads a path into one.
+"""
 
 _CANCEL_GRACE: Final = 1.0
 """Seconds an actor cancelled at the shutdown deadline has to finish.
@@ -228,17 +236,20 @@ class ActorRuntime:
     `when_terminated`.
     """
 
-    # Quoted: itertools.count is only subscriptable to a type checker.
-    _uids: "itertools.count[int]" = field(default_factory=lambda: itertools.count(1))
-
     def next_uid(self) -> int:
-        """Return the next incarnation uid.
+        """Return a fresh incarnation uid.
 
-        Uid 0 means "no incarnation", so the counter starts at 1. The uid
-        stops a ref to a dead actor from addressing a new actor spawned under
-        the same name.
+        The uid stops a ref to a dead actor from addressing a new actor
+        spawned under the same name. It is random rather than counted. A
+        counter starts again at 1 when the system restarts, and the same
+        deployment spawns the same actors in the same order, so a ref held
+        from before a peer restarted would name a live actor in the new
+        incarnation. A random uid names nothing there, and the frame becomes
+        a dead letter on the peer.
+
+        Uid 0 means "no incarnation", so it is never returned.
         """
-        return next(self._uids)
+        return secrets.randbits(_UID_BITS) or 1
 
 
 class LocalActorRef(ActorRef[T]):

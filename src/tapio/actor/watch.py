@@ -22,8 +22,9 @@ delegates the bookkeeping to this.
 Both ends are keyed by address and path together. A path names a place in one
 system's tree and says nothing about which node that system runs on. Two nodes
 of one deployment share a system name and spawn the same actors in the same
-order, so they hand out the same paths, uids included. Keyed by path alone,
-a watch from one of them would replace the other's.
+order, so they hand out the same paths. Only the random uid tells them apart,
+and a path written without one has nothing to tell them apart at all. Keyed by
+path alone, a watch from one of them could replace the other's.
 """
 
 from typing import TYPE_CHECKING, Any, Protocol, TypeAlias, final, runtime_checkable
@@ -163,10 +164,18 @@ class DeathWatch:
     def remove_watcher(self, watcher: Watcher) -> None:
         """Deregister a watcher. Harmless if it was not registered.
 
+        Only this watcher is removed, not whichever one holds its key now. A
+        peer's watch is held by a proxy, and while an old association to that
+        peer is still stopping, a new one can register a fresh proxy under
+        the same key. The old proxy's release must not take the new one with
+        it, or the watcher on the peer is never told.
+
         Args:
             watcher: What to stop telling.
         """
-        self._watchers.pop((watcher.address, watcher.path), None)
+        key = (watcher.address, watcher.path)
+        if self._watchers.get(key) is watcher:
+            del self._watchers[key]
 
     def watching(self, target: WatchTarget) -> None:
         """Record that this actor is watching another.
