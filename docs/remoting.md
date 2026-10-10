@@ -71,11 +71,12 @@ somewhere else rather than retrying into silence.
 ## Backpressure does not cross a link
 
 `await ref.offer(msg)` on a remote ref waits for room in **this node's**
-outbound buffer. That is a real thing to wait on, and it is a socket that is
-not draining, not a worker that is falling behind. The two come apart exactly
-when it matters: a worker with a large mailbox reads every frame as it
-arrives, so the buffer stays empty, `offer` never waits, and the backlog piles
-up on the other node where this one cannot see it.
+outbound buffer. While the link to the peer is being dialled, it waits for the
+link first, so nothing it hands over is shed during the dial. What it waits on
+is a socket that is not draining, not a worker that is falling behind. The two
+come apart exactly when it matters: a worker with a large mailbox reads every
+frame as it arrives, so the buffer stays empty, `offer` never waits, and the
+backlog piles up on the other node where this one cannot see it.
 
 Nothing in a fire-and-forget wire protocol can do better, so end-to-end flow
 control is built out of messages, where the receiver is the one who knows:

@@ -353,7 +353,10 @@ def _check_proof(secret: SecretStr | None, nonce: str, proof: str, *, who: str) 
     """
     if secret is None:
         return
-    if hmac.compare_digest(_proof(secret, nonce), proof):
+    # Compared as bytes. On str, compare_digest raises TypeError for a
+    # non-ASCII character, and the proof is whatever a peer with no secret
+    # chose to write.
+    if hmac.compare_digest(_proof(secret, nonce).encode(), proof.encode()):
         return
     detail = "sent no proof at all" if not proof else "failed the challenge"
     msg = (

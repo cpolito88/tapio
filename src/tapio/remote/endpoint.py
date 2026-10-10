@@ -348,6 +348,14 @@ class RemoteEndpoint:
             _log.warning("refused a connection from %s: %s", link.peer, error)
             await self._let_go(handle)
             return
+        except Exception:
+            # Anything else is a bug here rather than a peer's mistake. It
+            # still has to end with the socket closed: this runs before the
+            # peer has proved anything, so a peer must never be able to pick
+            # an exception that leaves the connection open.
+            _log.exception("the handshake with %s failed", link.peer)
+            await self._let_go(handle)
+            return
 
     def _decide(self, identity: PeerIdentity) -> Decline | None:
         """Decide about an inbound link before the peer can write to it.

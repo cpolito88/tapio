@@ -33,7 +33,12 @@ from tapio.actor.behavior import (
 )
 from tapio.actor.construction import construct
 from tapio.actor.context import ActorContext
-from tapio.actor.dead_letters import Carrier, DeadLetterOffice, DeadLetterReason
+from tapio.actor.dead_letters import (
+    Carrier,
+    DeadLetterOffice,
+    DeadLetterReason,
+    RuntimeMessage,
+)
 from tapio.actor.events import EventStream
 from tapio.actor.mailbox import Envelope, Mailbox, MailboxConfig
 from tapio.actor.path import ActorPath
@@ -1473,10 +1478,14 @@ class ActorCell(Generic[T]):
         A message travelling inside a wrapper, through an adapter or out to a
         peer, is reported as what its sender sent. The wrapper is only how it
         travelled, and a subscriber matching on message types should not have
-        to know about it.
+        to know about it. A message the runtime sent itself is dropped, since
+        no sender is owed an account of it.
         """
+        if isinstance(message, RuntimeMessage):
+            return
         if isinstance(message, Carrier):
-            message = message.payload
+            message.account(self._runtime.dead_letters, self._path, reason)
+            return
         self._runtime.dead_letters.publish(message, self._path, reason)
 
     def _still_alive(self) -> bool:
