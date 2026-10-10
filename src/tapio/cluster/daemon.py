@@ -45,7 +45,7 @@ from tapio.cluster.events import (
     UnreachableMember,
 )
 from tapio.cluster.gossip import Gossip, leader_actions
-from tapio.cluster.member import Member, MemberStatus
+from tapio.cluster.member import Member, MemberStatus, seniority
 from tapio.cluster.messages import (
     ClusterDowned,
     ClusterMessage,
@@ -1286,12 +1286,16 @@ class ClusterDaemon:
             subscriber: The subscriber, and what it asked for.
         """
         replay: list[ClusterEvent] = []
-        if subscriber.wants(MemberUp):
-            replay.extend(
-                MemberUp(member=member)
-                for member in self._state.alive
-                if member.status is MemberStatus.UP
-            )
+        # Oldest first. A subscriber that acts after each event, as a singleton
+        # manager does, then learns the oldest member before any younger one,
+        # and never mistakes itself for the oldest for one event's time. A
+        # member already on its way out is replayed as leaving, so a subscriber
+        # that arrives during a leave knows that member is still there.
+        for member in sorted(self._state.alive, key=seniority):
+            if member.status is MemberStatus.UP and subscriber.wants(MemberUp):
+                replay.append(MemberUp(member=member))
+            elif member.status in _LEAVING_STATUSES and subscriber.wants(MemberLeaving):
+                replay.append(MemberLeaving(member=member))
         if subscriber.wants(UnreachableMember):
             for address in sorted(self._unreachable_alive()):
                 gone = self._state.member(address)

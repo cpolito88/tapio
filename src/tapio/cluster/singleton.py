@@ -13,19 +13,30 @@ a total order every node computes the same way from the same gossip. So at a
 converged view exactly one manager runs the instance, with no election and no
 lock.
 
-Handoff is triggered by a host going away. A crash is only ever seen as
-removal: every manager hears
+Handoff is triggered by a host going away, and a successor starts only once
+the old host is removed: every manager hears
 [MemberRemoved][tapio.cluster.events.MemberRemoved], recomputes the oldest, and
-the new oldest starts the instance. A graceful leave is seen earlier, as
-[MemberLeaving][tapio.cluster.events.MemberLeaving], one or more converged
-rounds before the removal. The leaving host drives its own transition, so its
-manager hears `MemberLeaving` first and lets its instance go before any
-successor starts. That order is what keeps the two from overlapping. Starting
-the successor only at removal did not: leadership moves off a member once it
-reaches `exiting`, so the successor learns of the removal first, from its own
-leader actions, and would start while the old host, hearing the removal a round
-or more later, was still running its instance. `MemberRemoved` still drives the
-crash path, where there is no leave to hear.
+the new oldest starts the instance. A crash is only ever seen as removal.
+
+A graceful leave is seen earlier, as
+[MemberLeaving][tapio.cluster.events.MemberLeaving]. The leaving host lets its
+instance go when it hears that about itself. Every other manager goes on
+counting the leaving host as the oldest, so no successor starts until the
+removal. The removal needs every member, the leaving host included, to have
+seen the leave, so by then the host has asked its instance to stop. That holds
+wherever the leave was asked for: on the host, on another node's management
+port, or in a frame from a peer. A successor that started at `MemberLeaving`
+instead could start before the host had heard of its own leave.
+
+The host does not wait for its instance to finish stopping. An instance still
+busy in a handler when the successor starts overlaps it until that handler
+returns. Closing that gap needs a handover between the two managers, which this
+design does not have.
+
+A node that is downed lets its instance go at once, on
+[SelfDown][tapio.cluster.events.SelfDown], and never hosts again. A downed node
+is never removed from its own view, so without this its instance would run on
+beside the successor the rest of the cluster starts.
 
 This is not a proxy. It places the instance and keeps it placed; sending to
 wherever it currently runs is a separate concern, which a group router over the
@@ -44,6 +55,7 @@ from tapio.cluster.events import (
     MemberLeaving,
     MemberRemoved,
     MemberUp,
+    SelfDown,
 )
 from tapio.cluster.member import Member, seniority
 from tapio.logging import runtime_logger
@@ -60,6 +72,7 @@ _MANAGER_EVENTS: tuple[type[ClusterEvent], ...] = (
     MemberUp,
     MemberLeaving,
     MemberRemoved,
+    SelfDown,
 )
 
 
@@ -73,7 +86,7 @@ class _Reconcile(Message):
     """Retry subscribing to the daemon until it has started."""
 
 
-_ManagerMessage = MemberUp | MemberLeaving | MemberRemoved | _Reconcile
+_ManagerMessage = MemberUp | MemberLeaving | MemberRemoved | SelfDown | _Reconcile
 
 
 def ClusterSingleton(  # noqa: N802 - a factory named as the thing it builds
@@ -91,6 +104,14 @@ def ClusterSingleton(  # noqa: N802 - a factory named as the thing it builds
     Spawn the same manager on every node. Each subscribes to membership, and
     the one on the oldest member of `role` runs `behavior` as an actor named
     `name`. When that member is removed, the next oldest takes over.
+
+    A host that leaves lets its instance go as soon as it hears of its own
+    leave, and a host that is downed lets it go on
+    [SelfDown][tapio.cluster.events.SelfDown]. The handoff does not wait for
+    the instance to finish stopping. On a downed host the successor can start
+    before the downed side has noticed, so set `terminate_on_down` on the
+    [Cluster][tapio.cluster.Cluster] or act on `when_downed` to end that
+    process as well.
 
     The instance is spawned fresh wherever it runs, so pass a factory such as
     `Behaviors.setup(...)`, not an already-built behavior holding state: state
@@ -147,9 +168,19 @@ class _Manager:
         self._role = role
         self._address = ""
         self._daemon: ActorRef[Any] | None = None
-        # The role members this node has seen up and not seen removed, by their
-        # member key, so a restart at one address does not lose the newcomer.
-        self._hosts: dict[tuple[str, int], Member] = {}
+        # The role members this node has seen up and not seen removed, by
+        # address. A member that restarts at the same address is never reported
+        # removed as its old incarnation, since events follow the newest
+        # incarnation at each address, so the newcomer's MemberUp has to
+        # replace the old one. Keyed by member key, the old incarnation stayed
+        # oldest for ever, at an address nobody would start the instance for.
+        self._hosts: dict[str, Member] = {}
+        # Addresses of hosts on their way out. They still count as the oldest,
+        # so no successor starts before they are removed, but they host
+        # nothing.
+        self._leaving: set[str] = set()
+        # Set once this node is downed. It never hosts again.
+        self._downed = False
         self._keeper: ActorRef[_Handoff] | None = None
 
     def behavior(self) -> Behavior[_ManagerMessage]:
@@ -192,31 +223,49 @@ class _Manager:
                     )
                 return Behaviors.same()
             case MemberUp():
-                if self._role is None or self._role in message.member.roles:
-                    self._hosts[message.member.key] = message.member
+                if self._in_role(message.member):
+                    self._hosts[message.member.address] = message.member
+                    self._leaving.discard(message.member.address)
             case MemberLeaving():
-                # The predecessor lets go here rather than at MemberRemoved.
-                # Leadership has moved on by the time it reaches exiting, so a
-                # successor computed from the removal would otherwise start
-                # while this one was still running.
-                self._hosts.pop(message.member.key, None)
+                member = message.member
+                held = self._hosts.get(member.address)
+                if held is None and self._in_role(member) and member.up_number:
+                    # Replayed to a manager that arrived during the leave. It
+                    # was up before it left, so it is still the oldest it was.
+                    self._hosts[member.address] = member
+                    held = member
+                if held is not None and held.uid == member.uid:
+                    self._leaving.add(member.address)
             case MemberRemoved():
-                self._hosts.pop(message.member.key, None)
+                held = self._hosts.get(message.member.address)
+                if held is not None and held.uid == message.member.uid:
+                    del self._hosts[message.member.address]
+                    self._leaving.discard(message.member.address)
+            case SelfDown():
+                self._downed = True
         self._reconcile(ctx)
         return Behaviors.same()
+
+    def _in_role(self, member: Member) -> bool:
+        """Whether a member can host this singleton."""
+        return self._role is None or self._role in member.roles
 
     def _reconcile(self, ctx: ActorContext[_ManagerMessage]) -> None:
         """Start or hand off the instance to match who the oldest member is."""
         host = self._oldest()
-        am_host = host is not None and host.address == self._address
+        am_host = (
+            not self._downed
+            and host is not None
+            and host.address == self._address
+            and host.address not in self._leaving
+        )
         if am_host and self._keeper is None:
             self._keeper = ctx.spawn(_keeper(self._behavior, self._name), _KEEPER_NAME)
             _log.info("%s runs cluster singleton %r", self._address, self._name)
         elif not am_host and self._keeper is not None:
-            # The host is leaving or gone, so let the instance go. On a graceful
-            # leave this node hears MemberLeaving first, since it drives its own
-            # transition, so it releases before a successor computed from the
-            # removal starts, and the two do not run at once.
+            # This node is leaving, was downed, or is no longer the oldest. A
+            # successor waits for this node's removal, which cannot happen
+            # before this node has seen its own leave and got here.
             self._keeper.tell(_Handoff())
             self._keeper = None
             _log.info("%s hands off cluster singleton %r", self._address, self._name)
@@ -226,10 +275,11 @@ class _Manager:
 
         Oldest by [seniority][tapio.cluster.member.seniority], the same
         definition a downing strategy uses, so a `KeepOldest` split and this
-        singleton agree on which member that is. Only members seen `MemberUp`
-        reach here, and an up member always carries an `up_number`, so the
-        before-acceptance case seniority guards against does not arise here; the
-        address still breaks a tie between equal numbers.
+        singleton agree on which member that is. A leaving member still counts,
+        which is what holds a successor back until it is removed. Only members
+        that were up reach here, and an up member always carries an
+        `up_number`, so the before-acceptance case seniority guards against does
+        not arise here; the address still breaks a tie between equal numbers.
         """
         if not self._hosts:
             return None
