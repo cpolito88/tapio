@@ -33,9 +33,19 @@ configuration is running.
 
 Before any application frame is read, both sides exchange the system name, the
 canonical address, a **system uid**, the wire protocol version, the tapio
-version, and an HMAC of a server-supplied nonce with the shared secret. A bad
-HMAC or a protocol mismatch closes the connection with a logged reason, and
-nothing further is read.
+version, and a proof that they hold the shared secret. A bad proof or a
+protocol mismatch closes the connection with a logged reason, and nothing
+further is read.
+
+**Each proof covers the whole exchange.** It is an HMAC, under the shared
+secret, of which side wrote it, both sides' nonces, and the identity of each
+side that has named itself so far: the system name, address, uid and release.
+A proof of a nonce alone would make every node a signing oracle. Anything a
+node can be made to dial, through a ref in a message, a seed, a DNS entry or a
+member address in gossip, could forward a guarded system's challenge to it and
+pass the answer on under an identity of its choosing. Bound to the exchange,
+an answer is good only for the identity written beside it, so changing who is
+speaking fails the proof, and so does reusing one side's proof as the other's.
 
 **The side that was dialled says almost nothing first.** Its opening frame is a
 challenge and the protocol number. The name, address, incarnation and release
@@ -81,6 +91,13 @@ inheriting the old one's identity.
 encrypt anything. Over plaintext, the shared secret protects the handshake and
 nothing else: every frame after it is readable and modifiable by anything on
 the path.
+
+The secret also cannot tell a relay from a direct connection. A party with no
+secret that a node can be made to dial can still pass an exchange through
+unchanged, and so connect two honest systems under their real identities with
+itself in the middle. It cannot change either identity, but every frame after
+the handshake passes through it. Only TLS prevents that, because it
+authenticates the connection itself rather than what is said over it.
 
 `tls` takes a certificate, a key, and an optional CA for mutual
 authentication. Both ends of a link, the management port and the
