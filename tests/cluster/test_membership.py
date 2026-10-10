@@ -16,8 +16,9 @@ from tapio.actor import ActorPath, ActorSystem
 from tapio.cluster import Cluster, MemberStatus, WireMessage
 from tapio.cluster.daemon import daemon_uri
 from tapio.cluster.member import Member
-from tapio.cluster.messages import Join, Seeds
-from tapio.errors import ClusterError
+from tapio.cluster.messages import Join, Leave, Seeds
+from tapio.errors import ClusterError, MessageEncodingError
+from tapio.remote.registry import key_for_type
 from tapio.testkit import assert_no_leaked_tasks
 from tests.cluster.conftest import (
     WATCHFUL,
@@ -373,3 +374,35 @@ def _statuses_of(node: Node, uid: int) -> list[MemberStatus]:
 def _daemon_path(node: Node) -> ActorPath:
     """The bare path the daemon publishes itself under."""
     return ActorPath.root(node.system.name).child("system").child("cluster")
+
+
+async def test_a_node_that_left_cannot_join_again_as_itself():
+    with assert_no_leaked_tasks():
+        async with cluster_of(2) as nodes:
+            seeds = seeds_of(nodes)
+            await asyncio.gather(*(n.cluster.join_seed_nodes(seeds) for n in nodes))
+            leaving = nodes[1]
+            await leaving.cluster.leave()
+
+            # Removed ranks above Up, so waiting for Up returned at once and
+            # reported a member the cluster had written off.
+            with pytest.raises(ClusterError, match="cannot rejoin as itself"):
+                await leaving.cluster.join_seed_nodes(seeds)
+
+
+async def test_a_peer_cannot_tell_a_member_to_leave():
+    # The daemon is a well-known name, so any system that completes a
+    # handshake can address it. Leaving is an operator's action, behind the
+    # management port's token, and the wire must not offer it to anyone.
+    with assert_no_leaked_tasks():
+        async with cluster_of(3) as nodes:
+            first, second, third = nodes
+            await asyncio.gather(
+                *(n.cluster.join_seed_nodes(seeds_of(nodes)) for n in nodes)
+            )
+            ref = await second.system.resolve(daemon_uri(first.address), expect=Leave)
+
+            assert key_for_type(Leave) is None
+            with pytest.raises(MessageEncodingError, match="no wire key"):
+                ref.tell(Leave(address=third.address))
+            assert first.status_of(third.address) is MemberStatus.UP

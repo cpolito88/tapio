@@ -429,8 +429,11 @@ class Cluster:
         [unsubscribe][tapio.cluster.cluster.Cluster.unsubscribe] is only for an
         actor that wants to keep running and stop listening. For an adapter the
         daemon watches the actor that owns it. A ref with nothing to watch,
-        such as a dead-letter ref, is refused with a warning. Subscribing an
-        actor again replaces what it asked for rather than doubling its events.
+        such as a dead-letter ref, is refused with a warning. So is a ref to
+        an actor on another node: the subscriber must be a local actor,
+        because cluster events do not cross a link. Each node delivers its
+        own events to its own subscribers. Subscribing an actor again replaces
+        what it asked for rather than doubling its events.
 
         Args:
             subscriber: The actor the events go to.
@@ -479,11 +482,15 @@ class Cluster:
             This node's member record, once the leader has accepted it.
 
         Raises:
-            ClusterError: If the seed list is empty, or if this node has not
-                reached `Up` within the timeout. Timing out does not stop the
-                node trying: it keeps asking, and the caller decides whether
-                to keep waiting or to give up on the process.
+            ClusterError: If the seed list is empty, if this node has not
+                reached `Up` within the timeout, or if it has been downed or
+                removed. Timing out does not stop the node trying: it keeps
+                asking, and the caller decides whether to keep waiting or to
+                give up on the process. A downed or removed node cannot rejoin
+                as itself at all, so restart the system to join as a new
+                incarnation.
         """
+        _refuse_a_rejoin(self.self_member)
         if not seeds:
             msg = (
                 f"cannot join with no seed nodes: {self.address} would have "
@@ -494,7 +501,7 @@ class Cluster:
         self._ref.tell(Seeds(addresses=tuple(seeds)))
         patience = (timeout or self._settings.join_timeout).total_seconds()
         try:
-            return await self._until(MemberStatus.UP, patience)
+            member = await self._until(MemberStatus.UP, patience)
         except TimeoutError:
             msg = (
                 f"{self.address} did not reach Up within {patience:g}s. It is "
@@ -503,6 +510,10 @@ class Cluster:
                 "the nodes this one can see."
             )
             raise ClusterError(msg) from None
+        # Waiting for Up returns for anything past it in the lattice, and
+        # Down and Removed are past it. Neither is a member that joined.
+        _refuse_a_rejoin(member)
+        return member
 
     async def when_downed(self) -> None:
         """Wait until this node is downed.
@@ -605,3 +616,26 @@ class Cluster:
     def __repr__(self) -> str:
         """Render this node's address and how many members it can see."""
         return f"Cluster({self.address}, members={len(self.members)})"
+
+
+def _refuse_a_rejoin(member: Member | None) -> None:
+    """Raise if this node's own member record says it can never be up again.
+
+    Args:
+        member: This node's own member record, if it has one.
+
+    Raises:
+        ClusterError: If the member is `Down` or `Removed`. Its daemon has
+            stopped or is stopping, and the cluster will not take the same
+            incarnation back.
+    """
+    if member is None or member.status not in (
+        MemberStatus.DOWN,
+        MemberStatus.REMOVED,
+    ):
+        return
+    msg = (
+        f"{member.address} is {member.status} and cannot rejoin as itself; "
+        "restart the system to join as a new incarnation"
+    )
+    raise ClusterError(msg)

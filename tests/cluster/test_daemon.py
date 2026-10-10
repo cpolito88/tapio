@@ -1,4 +1,4 @@
-"""The daemon's subscribe retry, and when it is willing to decide about a split."""
+"""The daemon's subscribe retry, its downing decisions, and whose claims it keeps."""
 
 import asyncio
 
@@ -6,17 +6,19 @@ from tapio import Behavior, Behaviors, Message
 from tapio.actor import ActorContext, ActorRef, ActorSystem
 from tapio.actor.events import EventStream
 from tapio.actor.timers import TimerScheduler
+from tapio.cluster.clock import VectorClock
 from tapio.cluster.daemon import ClusterDaemon, start_subscribing, subscribe_when_ready
 from tapio.cluster.downing import LeaseMajority, LocalLease
 from tapio.cluster.events import ClusterEvent, MemberUp
 from tapio.cluster.gossip import Gossip
 from tapio.cluster.member import Member, MemberStatus
-from tapio.cluster.messages import ClusterMessage
+from tapio.cluster.messages import ClusterMessage, GossipEnvelope
 from tapio.cluster.reachability import (
     Reachability,
     ReachabilityRecord,
     ReachabilityStatus,
 )
+from tapio.errors import RefResolutionError
 from tapio.remote.registry import RefRegistry
 from tapio.testkit import assert_no_leaked_tasks
 from tests.cluster.conftest import QUICK, remoting, start_node
@@ -178,3 +180,67 @@ async def test_a_view_its_side_has_seen_is_decided() -> None:
 
     assert status_of(daemon, C) is MemberStatus.DOWN
     assert status_of(daemon, D) is MemberStatus.DOWN
+
+
+class _NoPeers:
+    """A context that resolves nobody, so a daemon's answer goes nowhere."""
+
+    async def resolve(self, uri: str, *, expect: object) -> object:
+        raise RefResolutionError(f"{uri} is not resolved in this test")
+
+
+def plain_daemon(*, uid: int) -> ClusterDaemon:
+    """D's daemon with no strategy, and an empty view."""
+    return ClusterDaemon(
+        address=D,
+        uid=uid,
+        refs=RefRegistry(),
+        events=EventStream(),
+        settings=QUICK,
+        relent=lambda address: None,
+        linked=lambda address: False,
+        now=lambda: 0.0,
+    )
+
+
+def after_a_restart_of_d(*, claimed_by_d: ReachabilityStatus) -> Gossip:
+    """The view once D restarted, with a claim about B from D's old incarnation."""
+    members = (
+        Member(address=A, uid=1, status=MemberStatus.UP, up_number=1),
+        Member(address=B, uid=1, status=MemberStatus.UP, up_number=2),
+        Member(address=C, uid=1, status=MemberStatus.UP, up_number=3),
+        Member(address=D, uid=1, status=MemberStatus.DOWN, up_number=4),
+        Member(address=D, uid=2, status=MemberStatus.JOINING),
+    )
+    claim = ReachabilityRecord(observer=D, observed=B, status=claimed_by_d, version=3)
+    return Gossip(
+        members=members,
+        reachability=Reachability(records=(claim,)),
+        version=VectorClock().increment(A),
+        seen=frozenset({A}),
+    )
+
+
+async def test_a_restarted_node_takes_back_the_claims_of_its_predecessor() -> None:
+    daemon = plain_daemon(uid=2)
+    gossip = after_a_restart_of_d(claimed_by_d=ReachabilityStatus.UNREACHABLE)
+
+    await daemon._merge(_NoPeers(), GossipEnvelope(sender=A, gossip=gossip))  # type: ignore[arg-type]
+
+    # The new incarnation never said B was unreachable, and nobody else can
+    # take the old one's claim back.
+    assert daemon.state.unreachable == frozenset()
+    assert daemon.state.reachability.says(D, B) is ReachabilityStatus.REACHABLE
+    # At a higher version, so it wins every merge.
+    assert daemon.state.merge(gossip).unreachable == frozenset()
+
+
+async def test_a_claim_this_incarnation_made_survives_a_merge() -> None:
+    daemon = plain_daemon(uid=2)
+    gossip = after_a_restart_of_d(claimed_by_d=ReachabilityStatus.UNREACHABLE)
+    daemon._state = gossip
+    daemon._observe(B, ReachabilityStatus.UNREACHABLE)
+
+    await daemon._merge(_NoPeers(), GossipEnvelope(sender=A, gossip=gossip))  # type: ignore[arg-type]
+
+    assert daemon.state.unreachable == frozenset({B})
