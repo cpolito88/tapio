@@ -38,6 +38,22 @@ _Secret = Annotated[SecretStr, AfterValidator(_refuse_empty)]
 """A secret that is not empty, checked where the configuration is written."""
 
 
+def _refuse_non_positive(duration: timedelta) -> timedelta:
+    """Refuse a duration of zero or less, which no deadline or interval can be."""
+    if duration <= timedelta(0):
+        msg = f"must be longer than zero, got {duration}"
+        raise ValueError(msg)
+    return duration
+
+
+_Positive = Annotated[timedelta, AfterValidator(_refuse_non_positive)]
+"""A duration longer than zero, checked where the configuration is written.
+
+A zero or negative value would otherwise be accepted here and fail much later,
+somewhere far from the setting that caused it.
+"""
+
+
 class TLSSettings(BaseSettings):
     """Certificates for a link, and optionally for the peer on the other end.
 
@@ -358,7 +374,7 @@ class TapioSettings(BaseSettings):
     the object the sender passed.
     """
 
-    default_mailbox_capacity: int | None = None
+    default_mailbox_capacity: Annotated[int, Field(ge=1)] | None = None
     """User-lane capacity for new mailboxes; `None` means unbounded.
 
     The system lane is always unbounded, whatever this says: a capacity limit
@@ -371,10 +387,10 @@ class TapioSettings(BaseSettings):
     Never consulted while `default_mailbox_capacity` is `None`.
     """
 
-    ask_timeout: timedelta = timedelta(seconds=5)
+    ask_timeout: _Positive = timedelta(seconds=5)
     """Default deadline for `ActorRef.ask` when the call does not give one."""
 
-    shutdown_timeout: timedelta = timedelta(seconds=10)
+    shutdown_timeout: _Positive = timedelta(seconds=10)
     """One deadline for the whole tree, not a per-actor timeout.
 
     Shutdown races a single clock, so worst-case shutdown time tracks this
@@ -382,7 +398,7 @@ class TapioSettings(BaseSettings):
     gets one more second, shared by the whole tree, to finish its cleanup.
     """
 
-    blocking_pool_size: int = 16
+    blocking_pool_size: Annotated[int, Field(ge=1)] = 16
     """Threads available to `ctx.run_blocking`.
 
     A private, bounded pool rather than the loop's default executor, which is
@@ -390,13 +406,15 @@ class TapioSettings(BaseSettings):
     not control, so a bound could not be honoured.
     """
 
-    dead_letter_log_first: int = 10
+    dead_letter_log_first: Annotated[int, Field(ge=0)] = 10
     """Log this many dead letters in full, then switch to periodic summaries.
+
+    `0` logs only the summaries.
 
     A dead actor in a hot send loop must not drown the log.
     """
 
-    dead_letter_summary_interval: timedelta = timedelta(seconds=60)
+    dead_letter_summary_interval: _Positive = timedelta(seconds=60)
     """How often to log a summary once `dead_letter_log_first` is spent."""
 
     remote: RemoteSettings | None = None

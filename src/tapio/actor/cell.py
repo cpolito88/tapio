@@ -729,11 +729,14 @@ class ActorCell(Generic[T]):
         incarnation that created it, so a restart does not turn replies into
         dead letters for someone still holding a ref.
 
-        That also means nothing releases one on its own. An adapter per
-        protocol, made in `setup`, costs one registry entry for the life of
-        the actor and is what most actors want. An adapter per request wants
-        `AdapterRef.release`, or the entries accumulate for as long as the
-        actor runs.
+        That also means nothing releases one on its own. `setup` runs again
+        on every restart, so an adapter made in `setup` costs one registry
+        entry per incarnation, not one per actor. The adapters from earlier
+        incarnations keep working, with the translation the incarnation that
+        made them passed in. Release the previous one in `PreRestart`, or make
+        the adapter outside the part a restart runs again, if the actor
+        restarts often. An adapter per request wants `AdapterRef.release`, or
+        the entries accumulate for as long as the actor runs.
         """
         resolved = resolve_handler_msg_type(
             adapt, explicit=msg_type, message_param_index=0
