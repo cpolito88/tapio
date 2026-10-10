@@ -8,6 +8,7 @@ cluster had removed.
 import asyncio
 
 from tapio import Behavior, Behaviors, DeadLetter, Message, Routers, register_message
+from tapio.actor import ActorRef
 from tapio.cluster import MemberStatus
 from tapio.testkit import assert_no_leaked_tasks
 from tests.cluster.conftest import QUICK, cluster_of, seeds_of
@@ -187,3 +188,51 @@ async def test_a_group_router_follows_a_local_routee_to_its_next_incarnation():
             router.tell(Job(n=1))
 
             await eventually(lambda: counts.get("second") == 1)
+
+
+def recorder(seen: list[tuple[str, int]], address: str) -> Behavior[Job]:
+    """A worker that writes down the node it runs on against each job."""
+
+    async def on_message(message: Job) -> Behavior[Job]:
+        seen.append((address, message.n))
+        return Behaviors.same()
+
+    return Behaviors.receive_message(on_message, msg_type=Job)
+
+
+async def test_one_group_router_value_spawned_twice_routes_as_two_routers():
+    seen: list[tuple[str, int]] = []
+    with assert_no_leaked_tasks():
+        async with cluster_of(2, settings=WORKERS) as nodes:
+            await joined(nodes)
+            for node in nodes:
+                ref = node.system.spawn(recorder(seen, node.address), name="worker")
+                node.system.refs.register_well_known(ref)
+            group = Routers.group(Job, role="worker", path="/user/worker")
+            a = nodes[0].system.spawn(group, name="a")
+            b = nodes[0].system.spawn(group, name="b")
+            everyone = {n.address for n in nodes}
+
+            def reached(n: int) -> set[str]:
+                return {address for address, got in seen if got == n}
+
+            # Each router finds both routees through its own subscription.
+            async with asyncio.timeout(10):
+                while reached(0) != everyone or reached(1) != everyone:
+                    a.tell(Job(n=0))
+                    b.tell(Job(n=1))
+                    await asyncio.sleep(0.02)
+
+            # Fed in turn, so a shared rotation would send everything from `a`
+            # to one node and everything from `b` to the other.
+            async def send(router: ActorRef[Job], n: int) -> None:
+                count = len(seen) + 1
+                router.tell(Job(n=n))
+                await eventually(lambda: len(seen) == count, within=3.0)
+
+            for _ in range(4):
+                await send(a, 2)
+                await send(b, 3)
+
+            assert reached(2) == everyone
+            assert reached(3) == everyone

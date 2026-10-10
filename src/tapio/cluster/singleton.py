@@ -98,7 +98,10 @@ def ClusterSingleton(  # noqa: N802 - a factory named as the thing it builds
     """Build a manager that runs one instance of a behavior across the cluster.
 
     ```python
-    ctx.spawn(ClusterSingleton(coordinator(), name="coordinator", role="worker"))
+    ctx.spawn(
+        ClusterSingleton(coordinator(), name="coordinator", role="worker"),
+        "singleton",
+    )
     ```
 
     Spawn the same manager on every node. Each subscribes to membership, and

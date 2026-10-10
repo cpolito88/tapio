@@ -12,7 +12,7 @@ await kit.run(Increment())
 await kit.run(GetCount(reply_to=kit.self_ref))
 
 assert kit.self_inbox == [Count(value=1)]
-assert kit.effects == (Spawned("worker"),)
+assert kit.effects == ("worker",)
 ```
 
 `run` is awaited, unlike Pekko's, because tapio's handlers are coroutines. It

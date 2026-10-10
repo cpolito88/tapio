@@ -207,6 +207,13 @@ dead-lettered, because the router did not write that message and failing would
 take a whole pool down over one busy member. Put backpressure on the router's
 own mailbox instead, where a producer can `offer` into it and wait.
 
+A `Routers.pool(...)` value can be spawned more than once, and each router it
+starts gets its own routees and its own rotation. To choose routees another
+way, pass `strategy=` a class or a zero-argument function that builds a
+[RoutingStrategy][tapio.actor.router.RoutingStrategy]. Each router then gets a
+new one. A strategy instance passed directly is shared by every router spawned
+from that value.
+
 ## Behaviors as the states of a protocol
 
 The state is the behavior, which is what makes the illegal transitions
