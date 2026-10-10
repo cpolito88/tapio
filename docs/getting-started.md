@@ -185,6 +185,12 @@ has never heard of the adapter does not have your bug raised into it. An
 adapter is not an actor, so it cannot be watched or asked. Watch the actor
 that owns it.
 
+An adapter belongs to the actor rather than to one incarnation, so a restart
+does not turn replies into dead letters. The other side of that is cost: each
+call makes a new adapter, and `setup` runs again on every restart, so an
+adapter made in `setup` costs one registry entry per incarnation. An actor
+that restarts often should release the previous one in `PreRestart`.
+
 ## One address, several actors
 
 When the work is uniform and the answer to "too slow" is "more of the same

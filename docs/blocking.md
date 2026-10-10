@@ -59,7 +59,7 @@ tapio has no opinion about which one.
 
 ## Choosing the pool size
 
-`blocking_pool_size` defaults to 16. It bounds how many blocking calls can be
+`blocking_pool_size` defaults to 16 and must be at least 1. It bounds how many blocking calls can be
 in flight at once across the whole system, so it is a queue in front of
 whatever is on the other side of those calls: a connection pool, a disk, an
 API with a rate limit. Sizing it above what that thing can take moves the

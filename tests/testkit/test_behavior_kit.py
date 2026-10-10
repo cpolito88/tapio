@@ -139,6 +139,16 @@ async def test_a_message_of_the_wrong_type_is_refused():
         await kit.run(Job(item=1))  # type: ignore[arg-type]
 
 
+async def test_the_kit_ignores_the_environment(monkeypatch: pytest.MonkeyPatch):
+    # A user's suite has no fixture clearing `TAPIO_*`. An exported variable
+    # would otherwise switch off the content validation `run` promises.
+    monkeypatch.setenv("TAPIO_VALIDATE_ON_TELL", "0")
+
+    kit = BehaviorTestKit(counter())
+
+    assert kit._settings.validate_on_tell is True
+
+
 async def test_spawns_are_recorded_with_the_ref_that_was_handed_back():
     def build(ctx: ActorContext[Increment]) -> Behavior[Increment]:
         worker = ctx.spawn(_sink(), "worker", MailboxConfig(capacity=10))

@@ -51,6 +51,7 @@ from tapio.errors import ActorNameError, BehaviorTypeError, TapioError
 from tapio.logging import ActorLogAdapter, actor_logger
 from tapio.message import Message
 from tapio.settings import TapioSettings
+from tapio.testkit.settings import IsolatedTapioSettings
 from tapio.validation import MessageType, normalize_msg_type, resolve_validator
 
 __all__ = [
@@ -270,8 +271,10 @@ class BehaviorTestKit(Generic[T]):
                 Read from the behavior otherwise.
             name: The actor name this behavior thinks it has.
             system: The system name its path sits in.
-            settings: Tunables, for a test about `validate_on_tell`. Read from
-                the environment when omitted.
+            settings: Tunables, for a test about `validate_on_tell`. The
+                defaults when omitted, isolated from the environment like the
+                fixtures, so an exported `TAPIO_*` variable cannot change what
+                a test checks.
 
         Raises:
             BehaviorTypeError: If the message type cannot be resolved, exactly
@@ -279,7 +282,7 @@ class BehaviorTestKit(Generic[T]):
             TapioError: If the behavior needs a cell to exist at all, which
                 `with_timers`, `with_stash` and `unstash_all` do.
         """
-        self._settings = settings if settings is not None else TapioSettings()
+        self._settings = settings if settings is not None else IsolatedTapioSettings()
         path = ActorPath.root(system).child("user").child(name, uid=1)
         self._ctx: _KitContext[T] = _KitContext(path)
         self._host = _KitHost(self._ctx)
