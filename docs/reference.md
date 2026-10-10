@@ -226,7 +226,7 @@ Generated from the source, so it cannot drift from what is installed.
 
 ::: tapio.testkit.behavior.Effect
 
-::: tapio.testkit.behavior.Spawned
+::: tapio.testkit.behavior.SpawnedChild
 
 ::: tapio.testkit.behavior.Watched
 

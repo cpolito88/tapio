@@ -18,13 +18,16 @@ The pytest fixtures in [plugin][tapio.testkit.plugin] are registered through
 an entry point, so they need no import and no `conftest.py`.
 """
 
+from typing import TYPE_CHECKING
+
 from tapio.testkit.behavior import (
     BehaviorTestKit,
     DeadLettered,
     Effect,
     RecordingRef,
-    Spawned,
+    SpawnedChild,
     Watched,
+    deprecated_spawned,
 )
 from tapio.testkit.leaks import assert_no_leaked_tasks, assert_no_leaked_threads
 from tapio.testkit.probe import DEFAULT_TIMEOUT, NO_MESSAGE_WINDOW, TestProbe
@@ -56,7 +59,7 @@ __all__ = [
     "IsolatedTapioSettings",
     "LinkFaults",
     "RecordingRef",
-    "Spawned",
+    "SpawnedChild",
     "TestProbe",
     "TwoNodes",
     "Watched",
@@ -66,3 +69,12 @@ __all__ = [
     "link_faults",
     "two_nodes",
 ]
+
+
+if TYPE_CHECKING:
+    from tapio.testkit.behavior import Spawned as Spawned
+else:
+
+    def __getattr__(name: str) -> object:
+        """Serve the old name of `SpawnedChild`, with a deprecation warning."""
+        return deprecated_spawned(name, __name__)

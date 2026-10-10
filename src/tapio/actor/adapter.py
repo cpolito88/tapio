@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 __all__ = ["AdaptedMessage", "AdapterRef", "AdapterRegistry"]
 
 T = TypeVar("T", bound=Message)
-U = TypeVar("U", bound=Message)
+U_contra = TypeVar("U_contra", bound=Message, contravariant=True)
 
 Adapt: TypeAlias = Callable[[Any], Message]
 """Translates one protocol's message into the owning actor's own."""
@@ -101,7 +101,7 @@ class AdaptedMessage(Carrier):
         return f"AdaptedMessage({self.payload!r}, {describe_callable(self.adapt)})"
 
 
-class AdapterRef(ActorRef[U]):
+class AdapterRef(ActorRef[U_contra]):
     """A ref that translates what it is told and delivers it to one actor.
 
     Handed out by
@@ -233,7 +233,7 @@ class AdapterRef(ActorRef[U]):
         """
         return self._cell.runtime.address
 
-    def tell(self, message: U) -> None:
+    def tell(self, message: U_contra) -> None:
         """Accept a message, to be translated and delivered to the owner.
 
         The split is the same as any other send. An error about the message
@@ -278,7 +278,7 @@ class AdapterRef(ActorRef[U]):
                 type(message).__name__,
             )
 
-    async def offer(self, message: U) -> None:
+    async def offer(self, message: U_contra) -> None:
         """Accept a message, waiting for the owner's mailbox to have room.
 
         Args:

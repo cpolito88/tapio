@@ -1,5 +1,7 @@
 """Running one behavior with no system, and reading back what it did."""
 
+import importlib
+
 import pytest
 
 from tapio import Behavior, Behaviors, Message
@@ -24,7 +26,7 @@ from tapio.testkit import (
     BehaviorTestKit,
     DeadLettered,
     IsolatedTapioSettings,
-    Spawned,
+    SpawnedChild,
     Watched,
 )
 
@@ -162,7 +164,9 @@ async def test_spawns_are_recorded_with_the_ref_that_was_handed_back():
     kit: BehaviorTestKit[Increment] = BehaviorTestKit(Behaviors.setup(build))
     await kit.run(Increment())
 
-    assert kit.effects == (Spawned("worker", _sink(), None, kit.child("worker").ref),)
+    assert kit.effects == (
+        SpawnedChild("worker", _sink(), None, kit.child("worker").ref),
+    )
     assert kit.child("worker").inbox == [Job(item=1)]
     assert kit.child("worker").mailbox == MailboxConfig(capacity=10)
 
@@ -417,3 +421,20 @@ def _sink() -> Behavior[Job]:
         return Behaviors.same()
 
     return Behaviors.receive_message(on_message, msg_type=Job)
+
+
+@pytest.mark.parametrize("module", ["tapio.testkit", "tapio.testkit.behavior"])
+def test_the_old_name_of_a_spawned_child_still_works_and_warns(module: str):
+    package = importlib.import_module(module)
+
+    with pytest.warns(DeprecationWarning, match="renamed SpawnedChild"):
+        old = package.Spawned
+
+    assert old is SpawnedChild
+
+
+def test_a_name_the_kit_never_had_is_still_an_attribute_error():
+    import tapio.testkit
+
+    with pytest.raises(AttributeError, match="no attribute 'Spawnd'"):
+        _ = tapio.testkit.Spawnd  # type: ignore[attr-defined]
