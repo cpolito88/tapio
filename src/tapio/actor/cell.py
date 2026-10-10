@@ -703,6 +703,14 @@ class ActorCell(Generic[T]):
                 "names are unique among siblings"
             )
             raise ActorNameError(msg)
+        try:
+            # Checked here rather than left to the path the spawn builds, which
+            # raises a bare ValueError. A caller spawning a name built from
+            # user input catches ActorNameError, as the error's docs say.
+            self._path.child(name)
+        except ValueError as error:
+            msg = f"cannot spawn {name!r} under {self._path}: {error}"
+            raise ActorNameError(msg) from error
         return self._spawn_child(behavior, name, mailbox)
 
     def spawn_anonymous(

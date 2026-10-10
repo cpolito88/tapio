@@ -67,9 +67,10 @@ class RoutingStrategy(Protocol):
 class RoundRobin:
     """Hand each message to the next routee in turn.
 
-    It keeps a counter rather than a position, so removing a dead routee
-    shifts the rotation instead of restarting it. An actor that has just
-    received work does not receive more straight away because the pool shrank.
+    It keeps a counter, taken modulo the current number of routees. While the
+    pool keeps its size, every routee gets one message in turn. After the pool
+    shrinks, the rotation carries on from an arbitrary point, so the routee
+    that has just received a message can receive the next one too.
     """
 
     __slots__ = ("_sent",)

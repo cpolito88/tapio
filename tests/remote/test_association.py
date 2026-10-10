@@ -193,6 +193,7 @@ async def test_a_full_outbound_lane_off_loop_still_names_the_peer():
                 # than the overflow needs and short enough that the write then
                 # times out, freeing the actor for a clean shutdown.
                 unreachable_after=timedelta(seconds=1),
+                handshake_timeout=timedelta(milliseconds=800),
                 heartbeat_interval=timedelta(seconds=60),
             ),
         )
@@ -558,6 +559,7 @@ async def test_a_peer_that_accepts_no_bytes_is_declared_unreachable():
             "alpha",
             remoting(
                 unreachable_after=timedelta(milliseconds=200),
+                handshake_timeout=timedelta(milliseconds=150),
                 heartbeat_interval=timedelta(seconds=60),
             ),
         )
@@ -603,6 +605,7 @@ async def test_a_close_from_the_reader_survives_a_full_outbound_lane():
             remoting(
                 outbound_capacity=2,
                 unreachable_after=timedelta(milliseconds=300),
+                handshake_timeout=timedelta(milliseconds=250),
                 heartbeat_interval=timedelta(seconds=60),
             ),
         )
@@ -1555,6 +1558,7 @@ async def test_a_heartbeat_that_meets_a_full_mailbox_is_not_a_dead_letter():
                 outbound_capacity=2,
                 heartbeat_interval=timedelta(milliseconds=10),
                 unreachable_after=timedelta(seconds=1),
+                handshake_timeout=timedelta(milliseconds=800),
             ),
         )
         two = ActorSystem("beta", remoting())

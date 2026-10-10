@@ -867,7 +867,11 @@ async def test_a_tls_listener_closes_a_silent_peer_at_the_handshake_deadline(
 async def test_a_hello_larger_than_a_handshake_frame_is_refused_at_once():
     with assert_no_leaked_tasks():
         system = ActorSystem(
-            "guarded", remoting(handshake_timeout=timedelta(seconds=30))
+            "guarded",
+            remoting(
+                handshake_timeout=timedelta(seconds=30),
+                unreachable_after=timedelta(seconds=60),
+            ),
         )
         port = system.address.port
         assert port is not None

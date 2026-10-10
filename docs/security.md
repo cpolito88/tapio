@@ -113,9 +113,12 @@ the boundary it is:
   importable object is remote code execution, and it is how this goes wrong
   casually. An unregistered key becomes a dead letter naming the key, and
   nothing is imported to find out what it might have meant.
-- **Strict validation as the decode.** A frame becomes a message by being
-  validated against the registered model, so a field that is the wrong type or
-  missing is a decoding failure and not a surprise inside a handler.
+- **Validation as the decode.** A frame becomes a message by being validated
+  against the registered model, in Pydantic's default lax mode. A missing
+  field, or a value that cannot be converted to the field's type, is a
+  decoding failure and not a surprise inside a handler. A value that can be
+  converted, such as `"5"` for an `int`, is converted. Set `strict=True` in a
+  message's `model_config` to refuse those too.
 - **No reflection anywhere in the path.** Nothing a peer sends selects code to
   run. It selects a registered model to validate against, and that is all.
 

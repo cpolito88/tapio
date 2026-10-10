@@ -62,11 +62,7 @@ Every node is given the same seed list, in the same order, its own address
 included:
 
 ```python
-await cluster.join_seed_nodes([
-    "tapio://orders@10.0.0.1:2551",
-    "tapio://orders@10.0.0.2:2551",
-    "tapio://orders@10.0.0.3:2551",
-])
+--8<-- "tests/docs/test_clustering_page.py:join"
 ```
 
 Every address in that list has to name a host and a port, and so does every
@@ -120,7 +116,7 @@ again or an operator downs it.
 ## Leaving
 
 ```python
-await cluster.leave()
+--8<-- "tests/docs/test_clustering_page.py:leave"
 ```
 
 The member walks out rather than vanishing: `leaving`, then `exiting` once
@@ -175,8 +171,7 @@ Every node sorts the member addresses, finds itself, and watches the few that
 follow it, wrapping round at the end:
 
 ```python
-cluster = Cluster(system, ClusterSettings(monitored_peers=5))
-cluster.monitored  # the members this node watches, in address order
+--8<-- "tests/docs/test_clustering_page.py:monitored"
 ```
 
 So every member is watched by exactly that many others, whether or not
@@ -313,7 +308,7 @@ Membership changes reach an application as messages, delivered to an ordinary
 actor's mailbox. An actor subscribes, and from then on it is told what changed:
 
 ```python
-cluster.subscribe(worker, MemberUp, MemberRemoved, UnreachableMember)
+--8<-- "tests/docs/test_clustering_page.py:subscribe"
 ```
 
 There are seven events, all carrying the member they are about:
@@ -355,8 +350,7 @@ A role is what a node says it is for, fixed when it joins and part of what the
 cluster agreed on when it accepted the node:
 
 ```python
-cluster = Cluster(system, ClusterSettings(roles={"worker"}))
-cluster.members_with_role("worker")  # the worker members, oldest first
+--8<-- "tests/docs/test_clustering_page.py:roles"
 ```
 
 Every member carries its roles in the gossip, so every node can filter on them
@@ -489,10 +483,7 @@ Binding it anywhere another host can reach requires a token, the same refusal
 remoting makes about a secret:
 
 ```python
-Cluster(system, management=ManagementSettings(
-    bind_host="0.0.0.0",
-    token=SecretStr("..."),  # required beyond loopback, or the node will not start
-))
+--8<-- "tests/docs/test_clustering_page.py:management-token"
 ```
 
 The token is presented as `Authorization: Bearer <token>` and compared in
@@ -511,10 +502,7 @@ The port also speaks TLS, using the same
 [TLSSettings][tapio.settings.TLSSettings] remoting does:
 
 ```python
-Cluster(system, management=ManagementSettings(
-    bind_host="0.0.0.0",
-    tls=TLSSettings(certfile="server.pem", keyfile="server.key", cafile="ca.pem"),
-))
+--8<-- "tests/docs/test_clustering_page.py:management-tls"
 ```
 
 With `certfile` and `keyfile` the port answers HTTPS, and the command reaches

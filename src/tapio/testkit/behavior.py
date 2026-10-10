@@ -568,9 +568,9 @@ class _KitContext(ActorContext[T]):
         """Record a spawn and hand back a ref that records what it is told.
 
         Raises:
-            ActorNameError: If the name starts with `$`, as a running actor
-                would refuse it, so the kit does not pass a spawn that fails
-                for real.
+            ActorNameError: If the name starts with `$`, or no actor path
+                could hold it, as a running actor would refuse it, so the kit
+                does not pass a spawn that fails for real.
         """
         if name.startswith("$"):
             msg = (
@@ -578,6 +578,11 @@ class _KitContext(ActorContext[T]):
                 "for the names spawn_anonymous and message adapters generate"
             )
             raise ActorNameError(msg)
+        try:
+            self._path.child(name)
+        except ValueError as error:
+            msg = f"cannot spawn {name!r} under {self._path}: {error}"
+            raise ActorNameError(msg) from error
         return self._record_spawn(behavior, name, mailbox)
 
     def spawn_anonymous(

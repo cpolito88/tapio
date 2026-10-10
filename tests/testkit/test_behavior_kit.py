@@ -151,6 +151,15 @@ async def test_the_kit_ignores_the_environment(monkeypatch: pytest.MonkeyPatch):
     assert kit._settings.validate_on_tell is True
 
 
+async def test_the_kit_refuses_a_name_no_path_could_hold():
+    def build(ctx: ActorContext[Increment]) -> Behavior[Increment]:
+        ctx.spawn(_sink(), "bad name")
+        return Behaviors.ignore()
+
+    with pytest.raises(ActorNameError, match="cannot spawn"):
+        BehaviorTestKit(Behaviors.setup(build))
+
+
 async def test_spawns_are_recorded_with_the_ref_that_was_handed_back():
     def build(ctx: ActorContext[Increment]) -> Behavior[Increment]:
         worker = ctx.spawn(_sink(), "worker", MailboxConfig(capacity=10))

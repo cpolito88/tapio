@@ -31,7 +31,14 @@ A link can also end without a verdict: the socket fails, the peer closes it,
 or a frame is refused. Watchers are told `Terminated` in that case too,
 because the association that held their watches is gone, and `PeerUnreachable`
 is published with `quarantined=False`. The address is not frozen, and the next
-send dials again. Only silence quarantines.
+send dials again.
+
+A peer is quarantined when nothing has arrived from it for
+`unreachable_after`, and also when this node cannot get a frame into it for
+that long. The silence is counted from when the association is created, so a
+dial still in progress counts too. That is why `handshake_timeout` must be
+shorter than `unreachable_after`, and the settings refuse anything else: a
+dial that is only slow would otherwise be judged as silence.
 
 ## The part that can be wrong
 

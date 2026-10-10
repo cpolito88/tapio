@@ -115,6 +115,18 @@ async def test_a_chosen_name_cannot_take_the_generated_prefix(system: ActorSyste
     assert system.spawn_anonymous(idle()).path.name == "$1"
 
 
+@pytest.mark.parametrize("name", ["bad name", "a/b", ""])
+async def test_a_name_no_path_could_hold_raises_actor_name_error(
+    system: ActorSystem, name: str
+):
+    # A name built from user input is caught with ActorNameError, as that
+    # error's docs say. A bare ValueError from the path escaped that clause.
+    with pytest.raises(ActorNameError, match="cannot spawn"):
+        system.spawn(idle(), name=name)
+
+    assert system.spawn(idle(), name="good-name").path.name == "good-name"
+
+
 async def test_spawning_after_shutdown_raises_and_leaves_nothing_running():
     with assert_no_leaked_tasks():
         system = ActorSystem("closing")
