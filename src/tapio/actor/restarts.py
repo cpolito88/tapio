@@ -50,11 +50,10 @@ class RestartLog:
             `True` while the layer is within `max_restarts` for its window,
             `False` once this restart takes it over.
         """
-        if strategy.max_restarts is None:
-            # No limit to count against, so nothing is worth keeping. An actor
-            # restarting for a month under an unlimited strategy would
-            # otherwise accumulate a month of timestamps. There is no window to
-            # age the count against either, so it grows with every restart.
+        if strategy.max_restarts is None and strategy.window is None:
+            # Nothing to count against and nothing to age the count by, so
+            # timestamps are not worth keeping. An actor restarting for a month
+            # under such a strategy would otherwise hold a month of them.
             self._counts[key] = self._counts.get(key, 0) + 1
             return True
         times = self._times.setdefault(key, deque())
@@ -64,18 +63,18 @@ class RestartLog:
                 times.popleft()
         times.append(now)
         # The exponent grows with the restarts still inside the window, so a
-        # failure the limit has already forgotten does not keep lengthening the
-        # wait. Without this the backoff climbs to its ceiling for an actor that
-        # is never anywhere near its restart limit.
+        # failure the window has already forgotten does not keep lengthening
+        # the wait. That holds with or without a limit. Without it the backoff
+        # climbs to its ceiling for an actor whose failures are days apart.
         self._counts[key] = len(times)
-        return len(times) <= strategy.max_restarts
+        return strategy.max_restarts is None or len(times) <= strategy.max_restarts
 
     def count(self, key: Hashable) -> int:
         """How many restarts one supervisor has made inside its window.
 
-        For a limited strategy this is the restarts still inside the window, so
-        it falls back as failures age out; for an unlimited one, which has no
-        window, it is the count over the actor's life.
+        With a window this is the restarts still inside it, so it falls back
+        as failures age out. Without one it is the count over the actor's
+        life.
 
         Args:
             key: The supervisor to report on.

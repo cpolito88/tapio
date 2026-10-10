@@ -6,7 +6,11 @@ the test leaves running.
 """
 
 import os
+import shutil
+import subprocess
 from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any, TypeVar
 
 import pytest
@@ -24,6 +28,7 @@ from tapio.logging import ActorLogAdapter, actor_logger
 from tapio.settings import TapioSettings
 from tapio.testkit import (
     IsolatedTapioSettings,
+    assert_no_leaked_tasks,
 )
 from tapio.validation import MessageType
 from tests.messages import Greeted
@@ -151,9 +156,164 @@ def settings() -> TapioSettings:
 
 @pytest.fixture
 async def system(settings: TapioSettings) -> AsyncIterator[ActorSystem]:
-    """A running system, terminated however the test ends."""
-    running = ActorSystem("test", settings)
-    try:
+    """A running system, terminated however the test ends, and checked for leaks.
+
+    Every task the test left running fails it at teardown, as AGENTS.md asks of
+    anything that starts a system. Threads are not checked here: a test that
+    uses `asyncio.to_thread` leaves the loop's default executor running, which
+    is not the system's to stop. `assert_no_leaked_threads` checks those that
+    are.
+    """
+    async with running_system(settings) as running:
         yield running
-    finally:
-        await running.terminate()
+
+
+@asynccontextmanager
+async def running_system(settings: TapioSettings) -> AsyncIterator[ActorSystem]:
+    """Run a system for the length of a block, and fail if it leaked a task.
+
+    The `system` fixture is this. It is a plain context manager so a test can
+    show that the check fails when a task is left behind.
+    """
+    with assert_no_leaked_tasks():
+        running = ActorSystem("test", settings)
+        try:
+            yield running
+        finally:
+            await running.terminate()
+
+
+@dataclass(frozen=True, slots=True)
+class TlsCerts:
+    """Paths to a CA and the certificates it signed."""
+
+    ca: str
+    server_cert: str
+    server_key: str
+    client_cert: str
+    client_key: str
+    node_cert: str
+    """Good for both ends of a remoting link: serverAuth and clientAuth."""
+    node_key: str
+    elsewhere_cert: str
+    """Signed by the same CA for `elsewhere.example`, not for loopback."""
+    elsewhere_key: str
+
+
+@pytest.fixture(scope="session")
+def mutual_tls_certs(tmp_path_factory: pytest.TempPathFactory) -> TlsCerts:
+    """Generate a CA and a server and client certificate it signed, once.
+
+    Real certificates rather than mocks, so a test drives the actual TLS
+    handshake. The server certificate names the loopback address so a client
+    checking the hostname is satisfied, and every certificate carries the key
+    usage extensions a strict verifier requires: Python 3.13 turns on strict
+    X.509 checking by default, where a CA with no keyUsage extension is refused.
+    Built with openssl, since neither cryptography nor trustme is a dependency;
+    a machine without openssl skips the tests that ask for this.
+    """
+    if shutil.which("openssl") is None:
+        pytest.skip("openssl is not available to generate certificates")
+    root = tmp_path_factory.mktemp("tls")
+
+    def openssl(*args: str) -> None:
+        subprocess.run(["openssl", *args], check=True, capture_output=True)
+
+    def path(name: str) -> str:
+        return str(root / name)
+
+    openssl(
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-keyout",
+        path("ca.key"),
+        "-out",
+        path("ca.pem"),
+        "-days",
+        "1",
+        "-nodes",
+        "-subj",
+        "/CN=Test CA",
+        "-addext",
+        "basicConstraints=critical,CA:TRUE",
+        "-addext",
+        "keyUsage=critical,keyCertSign,cRLSign",
+    )
+
+    def leaf(name: str, subject: str, *extensions: str) -> None:
+        """Issue `{name}.pem` and `{name}.key`, signed by the test CA."""
+        added = [arg for extension in extensions for arg in ("-addext", extension)]
+        openssl(
+            "req",
+            "-newkey",
+            "rsa:2048",
+            "-keyout",
+            path(f"{name}.key"),
+            "-out",
+            path(f"{name}.csr"),
+            "-nodes",
+            "-subj",
+            subject,
+            *added,
+        )
+        openssl(
+            "x509",
+            "-req",
+            "-in",
+            path(f"{name}.csr"),
+            "-CA",
+            path("ca.pem"),
+            "-CAkey",
+            path("ca.key"),
+            "-CAcreateserial",
+            "-out",
+            path(f"{name}.pem"),
+            "-days",
+            "1",
+            "-copy_extensions",
+            "copy",
+        )
+
+    leaf(
+        "server",
+        "/CN=127.0.0.1",
+        "subjectAltName=IP:127.0.0.1",
+        "keyUsage=critical,digitalSignature,keyEncipherment",
+        "extendedKeyUsage=serverAuth",
+    )
+    leaf(
+        "client",
+        "/CN=operator",
+        "keyUsage=critical,digitalSignature",
+        "extendedKeyUsage=clientAuth",
+    )
+    # A remoting node both listens and dials, so its certificate serves both.
+    leaf(
+        "node",
+        "/CN=127.0.0.1",
+        "subjectAltName=IP:127.0.0.1",
+        "keyUsage=critical,digitalSignature,keyEncipherment",
+        "extendedKeyUsage=serverAuth,clientAuth",
+    )
+    # The same CA vouches for it, but for another host, so only a dialler that
+    # checks the hostname refuses it.
+    leaf(
+        "elsewhere",
+        "/CN=elsewhere.example",
+        "subjectAltName=DNS:elsewhere.example",
+        "keyUsage=critical,digitalSignature,keyEncipherment",
+        "extendedKeyUsage=serverAuth,clientAuth",
+    )
+    return TlsCerts(
+        ca=path("ca.pem"),
+        server_cert=path("server.pem"),
+        server_key=path("server.key"),
+        client_cert=path("client.pem"),
+        client_key=path("client.key"),
+        node_cert=path("node.pem"),
+        node_key=path("node.key"),
+        elsewhere_cert=path("elsewhere.pem"),
+        elsewhere_key=path("elsewhere.key"),
+    )

@@ -272,12 +272,19 @@ class _WriteFaultLink:
     flush alone and breaks the first ordinary send.
     """
 
-    __slots__ = ("_after", "_link", "_stall", "_written")
+    __slots__ = ("_after", "_link", "_parked", "_stall", "_written")
 
-    def __init__(self, link: FrameLink, after: int, stall: bool) -> None:
+    def __init__(
+        self,
+        link: FrameLink,
+        after: int,
+        stall: bool,
+        parked: asyncio.Event | None = None,
+    ) -> None:
         self._link = link
         self._after = after
         self._stall = stall
+        self._parked = parked
         self._written = 0
 
     @property
@@ -293,6 +300,8 @@ class _WriteFaultLink:
                 # Never returns, and never raises. This is a peer holding the
                 # connection open while reading nothing, which is what parks a
                 # real `drain` for good.
+                if self._parked is not None:
+                    self._parked.set()
                 await asyncio.Event().wait()
             raise OSError(107, "Transport endpoint is not connected")
         self._written += 1
@@ -314,9 +323,90 @@ def failing_writes(after: int = 0) -> Callable[[FrameLink], Link]:
     return lambda link: _WriteFaultLink(link, after, stall=False)
 
 
-def stalled_writes(after: int = 0) -> Callable[[FrameLink], Link]:
-    """A link filter whose writes never return once `after` have succeeded."""
-    return lambda link: _WriteFaultLink(link, after, stall=True)
+def stalled_writes(
+    after: int = 0, parked: asyncio.Event | None = None
+) -> Callable[[FrameLink], Link]:
+    """A link filter whose writes never return once `after` have succeeded.
+
+    Args:
+        after: How many writes go through before they stall.
+        parked: Set when a write first stalls, so a test can wait for the
+            association to be parked instead of guessing how long it takes.
+    """
+    return lambda link: _WriteFaultLink(link, after, stall=True, parked=parked)
+
+
+class _HeldCloseLink:
+    """A link whose close waits until the test lets it go.
+
+    A peer that stopped reading holds a real graceful close for as long as the
+    transport allows. This stands in for that, without depending on how large
+    the kernel's buffers are.
+    """
+
+    __slots__ = ("_gate", "_link")
+
+    def __init__(self, link: FrameLink, gate: asyncio.Event) -> None:
+        self._link = link
+        self._gate = gate
+
+    @property
+    def peer(self) -> str:
+        return self._link.peer
+
+    async def read_frame(self) -> bytes:
+        return await self._link.read_frame()
+
+    async def write_frame(self, data: bytes) -> None:
+        await self._link.write_frame(data)
+
+    async def write_link(self, message: LinkFrame) -> None:
+        await self._link.write_link(message)
+
+    async def close(self) -> None:
+        await self._gate.wait()
+        await self._link.close()
+
+    def __repr__(self) -> str:
+        return f"_HeldCloseLink({self._link.peer!r})"
+
+
+class _BuggyReadLink:
+    """A link whose reads raise an exception nothing expects."""
+
+    __slots__ = ("_link",)
+
+    def __init__(self, link: FrameLink) -> None:
+        self._link = link
+
+    @property
+    def peer(self) -> str:
+        return self._link.peer
+
+    async def read_frame(self) -> bytes:
+        raise RuntimeError("the reader hit a bug")
+
+    async def write_frame(self, data: bytes) -> None:
+        await self._link.write_frame(data)
+
+    async def write_link(self, message: LinkFrame) -> None:
+        await self._link.write_link(message)
+
+    async def close(self) -> None:
+        await self._link.close()
+
+    def __repr__(self) -> str:
+        return f"_BuggyReadLink({self._link.peer!r})"
+
+
+def buggy_reads() -> Callable[[FrameLink], Link]:
+    """A link filter whose reads raise a `RuntimeError`."""
+    return _BuggyReadLink
+
+
+def held_closes(gate: asyncio.Event) -> Callable[[FrameLink], Link]:
+    """A link filter whose closes wait until `gate` is set."""
+    return lambda link: _HeldCloseLink(link, gate)
 
 
 @contextlib.asynccontextmanager
@@ -358,6 +448,67 @@ async def silent_peer() -> AsyncIterator[Address]:
             task.cancel()
         for task in handlers:
             with contextlib.suppress(asyncio.CancelledError):
+                await task
+        server.close()
+        await server.wait_closed()
+
+
+@contextlib.asynccontextmanager
+async def superseding_peer() -> AsyncIterator[Address]:
+    """A peer that answers every dial with "my own link wins", and never dials.
+
+    A real peer only says that while its own dial is on the way, so this is
+    the case where that dial never arrives.
+
+    Yields:
+        The address to resolve against.
+    """
+    handlers: set[asyncio.Task[None]] = set()
+
+    async def accept(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        task = asyncio.current_task()
+        if task is not None:
+            handlers.add(task)
+        link = FrameLink(reader, writer, max_frame_bytes=1024 * 1024)
+        try:
+            await link.write_frame(
+                framed(
+                    json.dumps(
+                        {
+                            "link": "server-hello",
+                            "protocol": PROTOCOL_VERSION,
+                            "nonce": "0" * 32,
+                        }
+                    ).encode()
+                )
+            )
+            await link.read_link(2.0)
+            await link.write_frame(
+                framed(
+                    json.dumps(
+                        {
+                            "link": "declined",
+                            "reason": "the link superseding opened wins",
+                            "superseded": True,
+                        }
+                    ).encode()
+                )
+            )
+            await asyncio.Event().wait()
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(accept, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        yield Address(system="superseding", host="127.0.0.1", port=port)
+    finally:
+        for task in handlers:
+            task.cancel()
+        for task in handlers:
+            with contextlib.suppress(asyncio.CancelledError, OSError):
                 await task
         server.close()
         await server.wait_closed()

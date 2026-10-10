@@ -207,6 +207,32 @@ async def test_reconnect_is_what_repairs_a_quarantine():
             await eventually(lambda: ticks == [1, 2])
 
 
+async def test_reconnect_to_a_peer_that_still_refuses_says_so():
+    # The other side of a partition quarantined this one too, and has not
+    # relented. Its refusal reaches the dialler before any welcome, so
+    # `reconnect` raises instead of returning on a link about to be closed.
+    with assert_no_leaked_tasks():
+        async with two_nodes() as nodes:
+            ticks: list[int] = []
+            worker = nodes.beta.spawn(counting(ticks), "worker")
+            remote = await nodes.alpha.resolve(uri(nodes.beta, worker), expect=Tick)
+            remote.tell(Tick(n=1))
+            await eventually(lambda: ticks == [1])
+
+            nodes.partition()
+            await eventually(
+                lambda: (
+                    endpoint(nodes.alpha).quarantined != ()
+                    and endpoint(nodes.beta).quarantined != ()
+                ),
+                within=5.0,
+            )
+            nodes.heal()
+
+            with pytest.raises(HandshakeError, match="refused this system"):
+                await endpoint(nodes.alpha).reconnect(nodes.beta.address)
+
+
 async def test_reconnect_to_a_peer_that_is_not_there_says_so():
     with assert_no_leaked_tasks():
         async with two_nodes() as nodes:

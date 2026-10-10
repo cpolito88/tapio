@@ -370,8 +370,10 @@ async def ask_through(
 def promise_path(runtime: "ActorRuntime") -> ActorPath:
     """Address one promise under `/system/promises`.
 
-    The uid comes from the system's incarnation counter, so no two asks in a
-    system share a path, even across a restart of whatever made them.
+    The uid is a fresh incarnation uid, which is 63 random bits, and it names
+    the promise too. A reply meant for an ask from before a restart therefore
+    names a promise that does not exist, rather than one that happens to be
+    waiting at the same count.
     """
     uid = runtime.next_uid()
     promises = ActorPath.root(runtime.name).child("system").child(_PROMISES)

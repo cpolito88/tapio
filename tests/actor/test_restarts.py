@@ -47,9 +47,34 @@ def test_restarts_inside_the_window_still_grow_the_exponent():
     assert _BACKOFF.delay(log.count("layer"), jitter=0.0) == 4.0
 
 
-def test_an_unlimited_strategy_counts_for_the_life_of_the_actor():
-    # With no limit there is no window to age the count against, so it grows
-    # with every restart, which is the only meaning backoff can have there.
+def test_an_unlimited_strategy_with_a_window_ages_its_count():
+    strategy = SupervisorStrategy.restart(
+        window=timedelta(seconds=10), backoff=_BACKOFF
+    )
+    log = RestartLog()
+
+    # Failures a day apart. Without a limit the window still decides how long
+    # the backoff is, so each one waits the minimum.
+    for day in range(10):
+        assert log.record("layer", strategy, now=day * 86_400.0)
+
+    assert log.count("layer") == 1
+    assert _BACKOFF.delay(log.count("layer"), jitter=0.0) == 1.0
+
+
+def test_an_unlimited_strategy_counts_inside_its_window():
+    strategy = SupervisorStrategy.restart(
+        window=timedelta(seconds=10), backoff=_BACKOFF
+    )
+    log = RestartLog()
+
+    for tick in range(20):
+        assert log.record("layer", strategy, now=float(tick) / 10)
+
+    assert log.count("layer") == 20
+
+
+def test_an_unlimited_strategy_without_a_window_counts_for_the_life_of_the_actor():
     strategy = SupervisorStrategy.restart(backoff=_BACKOFF)
     log = RestartLog()
 

@@ -1,9 +1,9 @@
 """System-wide settings, read from the environment with a `TAPIO_` prefix."""
 
 from datetime import timedelta
-from typing import Annotated
+from typing import Annotated, Self
 
-from pydantic import Field, SecretStr
+from pydantic import AfterValidator, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from tapio.actor.mailbox import MailboxConfig, OverflowStrategy
@@ -15,6 +15,43 @@ __all__ = [
     "TLSSettings",
     "TapioSettings",
 ]
+
+
+def _refuse_empty(secret: SecretStr) -> SecretStr:
+    """Refuse an empty secret, which anyone can present.
+
+    The bind checks ask whether a secret is configured. An empty one counts as
+    configured and proves nothing, so a port that the check meant to keep shut
+    would open to anyone. A deployment template whose variable was never set
+    produces exactly this value.
+    """
+    if not secret.get_secret_value():
+        msg = (
+            "an empty secret proves nothing, since anyone can present an empty "
+            "one. Set a non-empty value, or leave it unset."
+        )
+        raise ValueError(msg)
+    return secret
+
+
+_Secret = Annotated[SecretStr, AfterValidator(_refuse_empty)]
+"""A secret that is not empty, checked where the configuration is written."""
+
+
+def _refuse_non_positive(duration: timedelta) -> timedelta:
+    """Refuse a duration of zero or less, which no deadline or interval can be."""
+    if duration <= timedelta(0):
+        msg = f"must be longer than zero, got {duration}"
+        raise ValueError(msg)
+    return duration
+
+
+_Positive = Annotated[timedelta, AfterValidator(_refuse_non_positive)]
+"""A duration longer than zero, checked where the configuration is written.
+
+A zero or negative value would otherwise be accepted here and fail much later,
+somewhere far from the setting that caused it.
+"""
 
 
 class TLSSettings(BaseSettings):
@@ -83,12 +120,13 @@ class RemoteSettings(BaseSettings):
     max_frame_bytes: int = 4 * 1024 * 1024
     """Refuse a frame larger than this, before its body is read."""
 
-    secret: SecretStr | None = None
+    secret: _Secret | None = None
     """The shared secret both ends prove they hold during the handshake.
 
     Required to bind anywhere but loopback: a system that accepts frames naming
     actor paths and message types from any host that can reach the port, with
-    nothing to prove, fails to start rather than serving strangers.
+    nothing to prove, fails to start rather than serving strangers. An empty
+    secret is refused, since anyone can present one.
     """
 
     tls: TLSSettings | None = None
@@ -98,7 +136,19 @@ class RemoteSettings(BaseSettings):
     """How long a link has to be dialled, accepted and handshaken.
 
     One deadline for the whole opening, so a peer that accepts a connection and
-    then says nothing costs this and not a parked task.
+    then says nothing costs this and not a parked task. On a TLS listener it
+    covers the TLS handshake as well. It must be shorter than
+    `unreachable_after`.
+    """
+
+    max_pending_handshakes: Annotated[int, Field(ge=1)] = 128
+    """How many inbound connections may be handshaking at once.
+
+    A connection past this is closed as it is accepted. A peer has proved
+    nothing before its handshake ends, so without a cap anyone who can reach
+    the port decides how many sockets and read buffers this system holds.
+    A cluster dials a restarted member from every other member at once, so
+    keep this above the cluster size.
     """
 
     heartbeat_interval: timedelta = timedelta(seconds=1)
@@ -118,6 +168,12 @@ class RemoteSettings(BaseSettings):
     a long pause and an overloaded peer all look the same from one node, and
     resolving which it was needs membership and a quorum that a single system
     does not have. Set it well above the peer's `heartbeat_interval`.
+
+    A write that cannot get into the peer for this long quarantines it too,
+    and so does a dial still in progress, because the silence is measured
+    from when the association was created. So it must be longer than
+    `handshake_timeout`, or a dial that is only slow is judged as silence.
+    The settings refuse the opposite.
     """
 
     outbound_capacity: int = 10_000
@@ -127,6 +183,24 @@ class RemoteSettings(BaseSettings):
     receiving actor: nothing in a fire-and-forget wire protocol can offer the
     latter. What overflows here goes to dead letters with the peer named.
     """
+
+    @model_validator(mode="after")
+    def _dial_within_the_silence_window(self) -> Self:
+        """Refuse a handshake deadline as long as the silence window or longer.
+
+        The failure detector starts counting when the association is created,
+        before the dial has finished. A dial allowed to take longer than the
+        window can therefore be judged as silence, and the peer is quarantined
+        where it should only have failed to connect and been dialled again.
+        """
+        if self.handshake_timeout >= self.unreachable_after:
+            msg = (
+                f"handshake_timeout ({self.handshake_timeout}) must be shorter "
+                f"than unreachable_after ({self.unreachable_after}), or a dial "
+                "that is only slow quarantines the peer as if it had gone silent"
+            )
+            raise ValueError(msg)
+        return self
 
 
 class ClusterSettings(BaseSettings):
@@ -175,7 +249,11 @@ class ClusterSettings(BaseSettings):
     that follow it. So every member is watched by this many others whatever
     the traffic does, and the heartbeat traffic stays linear in the number of
     nodes. All-to-all monitoring is quadratic, and it is what makes naive
-    implementations fall over at a few dozen nodes."""
+    implementations fall over at a few dozen nodes.
+
+    An unreachable member does not count towards this. The ring reaches past
+    it, so during a partition a node watches every far-side member up to the
+    next one it can reach."""
 
     heartbeat_interval: timedelta = timedelta(seconds=1)
     """How often this node asks each member it watches whether it is answering.
@@ -276,7 +354,7 @@ class ManagementSettings(BaseSettings):
     """The port to answer operators on. `0` takes whatever the OS hands out,
     which is what a test binds so no two of them argue over a number."""
 
-    token: SecretStr | None = None
+    token: _Secret | None = None
     """The bearer token an operator presents, or `None` to ask for nothing.
 
     One of the two ways to prove an operator is one, the other being a client
@@ -285,7 +363,8 @@ class ManagementSettings(BaseSettings):
     nothing to prove, fails to start rather than serving strangers. On loopback
     it is optional, since reaching the port at all already means being on the
     machine. Compared in constant time, and presented as
-    `Authorization: Bearer <token>`.
+    `Authorization: Bearer <token>`. An empty token is refused, since anyone
+    can present one.
     """
 
     tls: TLSSettings | None = None
@@ -320,7 +399,7 @@ class TapioSettings(BaseSettings):
     the object the sender passed.
     """
 
-    default_mailbox_capacity: int | None = None
+    default_mailbox_capacity: Annotated[int, Field(ge=1)] | None = None
     """User-lane capacity for new mailboxes; `None` means unbounded.
 
     The system lane is always unbounded, whatever this says: a capacity limit
@@ -333,17 +412,18 @@ class TapioSettings(BaseSettings):
     Never consulted while `default_mailbox_capacity` is `None`.
     """
 
-    ask_timeout: timedelta = timedelta(seconds=5)
+    ask_timeout: _Positive = timedelta(seconds=5)
     """Default deadline for `ActorRef.ask` when the call does not give one."""
 
-    shutdown_timeout: timedelta = timedelta(seconds=10)
+    shutdown_timeout: _Positive = timedelta(seconds=10)
     """One deadline for the whole tree, not a per-actor timeout.
 
     Shutdown races a single clock, so worst-case shutdown time tracks this
-    value rather than depth times timeout.
+    value rather than depth times timeout. An actor cancelled at the deadline
+    gets one more second, shared by the whole tree, to finish its cleanup.
     """
 
-    blocking_pool_size: int = 16
+    blocking_pool_size: Annotated[int, Field(ge=1)] = 16
     """Threads available to `ctx.run_blocking`.
 
     A private, bounded pool rather than the loop's default executor, which is
@@ -351,13 +431,15 @@ class TapioSettings(BaseSettings):
     not control, so a bound could not be honoured.
     """
 
-    dead_letter_log_first: int = 10
+    dead_letter_log_first: Annotated[int, Field(ge=0)] = 10
     """Log this many dead letters in full, then switch to periodic summaries.
+
+    `0` logs only the summaries.
 
     A dead actor in a hot send loop must not drown the log.
     """
 
-    dead_letter_summary_interval: timedelta = timedelta(seconds=60)
+    dead_letter_summary_interval: _Positive = timedelta(seconds=60)
     """How often to log a summary once `dead_letter_log_first` is spent."""
 
     remote: RemoteSettings | None = None

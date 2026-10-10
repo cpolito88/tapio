@@ -34,7 +34,14 @@ the daemon behind it is still answering.
 
 What the transport says is remembered for every peer, not only the ones on
 this node's ring, because the ring moves as the membership does. A peer that
-leaves the ring and comes back has not been proved healthy by the change.
+leaves the ring and comes back has not been proved healthy by the change. It
+is recorded in the gossip only for a peer on the ring, though. Every record
+stays in the gossip for good, so a record per peer this node ever had a link
+to grows with the square of the cluster after one partition.
+
+The ring reaches past an unreachable member rather than counting it. That is
+what makes recording only the ring enough: during a partition every member on
+the far side is still watched by somebody on this side.
 """
 
 from collections.abc import Callable, Iterable
@@ -54,19 +61,36 @@ __all__ = [
 
 
 def monitored_by(
-    address: str, members: Iterable[Member], count: int
+    address: str,
+    members: Iterable[Member],
+    count: int,
+    unreachable: frozenset[str] = frozenset(),
 ) -> tuple[str, ...]:
     """Return the members one node watches, by their place on the ring.
 
-    A pure function of the membership, so every node works out the same ring
-    from the same view and nobody has to be told who watches whom.
+    A pure function of the membership and its reachability, so every node
+    works out the same ring from the same view and nobody has to be told who
+    watches whom.
+
+    An unreachable member is watched but not counted, and the ring reaches
+    past it to the next one. So a node watches `count` members it can count on,
+    plus every unreachable member between them. That is what keeps every
+    member observed during a partition. Take a node on one side of a split,
+    and the run of far-side members that follows it on the ring. It watches
+    the whole run, however long, because none of it counts. So every far-side
+    member is watched by the nearest node on this side before it, and this
+    side records it unreachable without anyone recording every member it ever
+    had a link to.
 
     Args:
         address: The watching node's address.
         members: The members to arrange, which are the live ones. A member
             with two incarnations counts once, since the ring is over
             addresses and both records name the same place on it.
-        count: How many to watch. More than there are peers means all of them.
+        count: How many reachable members to watch. More than there are peers
+            means all of them.
+        unreachable: The members some live observer cannot hear. They are
+            watched when the ring passes them, and not counted.
 
     Returns:
         The addresses to watch, in ring order starting after this node. Empty
@@ -77,8 +101,15 @@ def monitored_by(
     if address not in ring:
         return ()
     start = ring.index(address)
-    following = (*ring[start + 1 :], *ring[:start])
-    return following[:count]
+    watched: list[str] = []
+    counted = 0
+    for peer in (*ring[start + 1 :], *ring[:start]):
+        if counted >= count:
+            break
+        watched.append(peer)
+        if peer not in unreachable:
+            counted += 1
+    return tuple(watched)
 
 
 @dataclass(slots=True)
@@ -143,13 +174,21 @@ class RingMonitor:
         """The members this node watches, in address order."""
         return tuple(sorted(self._watched))
 
-    def follow(self, members: Iterable[Member], now: float) -> tuple[str, ...]:
+    def follow(
+        self,
+        members: Iterable[Member],
+        now: float,
+        unreachable: frozenset[str] = frozenset(),
+    ) -> tuple[str, ...]:
         """Take up the ring the current membership implies.
 
         Args:
             members: The live members.
             now: The current time, which a peer picked up now is credited
                 with. A member this node has never probed is not a silent one.
+            unreachable: The members some live observer cannot hear, which
+                the ring watches without counting. See
+                [monitored_by][tapio.cluster.monitor.monitored_by].
 
         Returns:
             The peers this node has just stopped watching, so the caller can
@@ -158,7 +197,7 @@ class RingMonitor:
             with nothing left to retract it.
         """
         live = tuple(members)
-        wanted = monitored_by(self._address, live, self._size)
+        wanted = monitored_by(self._address, live, self._size, unreachable)
         dropped = tuple(sorted(set(self._watched) - set(wanted)))
         for peer in dropped:
             del self._watched[peer]

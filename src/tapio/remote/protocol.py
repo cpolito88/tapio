@@ -64,4 +64,19 @@ while debugging exactly that, the answer is that one end predates v0.6.0, and
 the fix is to upgrade it rather than to look for a version mismatch that will
 never be reported. The next contract change raises the number, and that one
 will gate something.
+
+**The `declined` frame did not raise it, which contradicts the sentence
+above.** That is a decision, made for the reason below. A dialled system can
+answer a client-hello with `declined` in place of a welcome, to refuse the
+dialler or to tell it that its own link wins a simultaneous dial. That adds a
+frame the dialler must understand, which by the rule above is a contract
+change. The number stays at 1 because no pair of releases that works together
+today stops working together. A system that predates the frame never sends it,
+so a newer dialler sees what it always saw. An older dialler that receives it
+fails the handshake with "expected a welcome frame, got 'declined'". For a
+refusal that is the right outcome. For a lost dial race it closes the
+association and dead-letters what it held, where before it wrote those frames
+into a closing link and lost them without a trace. Raising the number would
+make every earlier release refuse this one on every link, which costs far more
+than that one improvement for old diallers is worth.
 """

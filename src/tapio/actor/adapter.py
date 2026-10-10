@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 __all__ = ["AdaptedMessage", "AdapterRef", "AdapterRegistry"]
 
 T = TypeVar("T", bound=Message)
-U = TypeVar("U", bound=Message)
+U_contra = TypeVar("U_contra", bound=Message, contravariant=True)
 
 Adapt: TypeAlias = Callable[[Any], Message]
 """Translates one protocol's message into the owning actor's own."""
@@ -101,7 +101,7 @@ class AdaptedMessage(Carrier):
         return f"AdaptedMessage({self.payload!r}, {describe_callable(self.adapt)})"
 
 
-class AdapterRef(ActorRef[U]):
+class AdapterRef(ActorRef[U_contra]):
     """A ref that translates what it is told and delivers it to one actor.
 
     Handed out by
@@ -116,10 +116,12 @@ class AdapterRef(ActorRef[U]):
 
     An adapter lives until its owner stops, or until somebody calls
     [release][tapio.actor.adapter.AdapterRef.release]. Most actors want one
-    adapter per foreign protocol, made once in `setup`, and never release it.
-    An actor that makes one per request wants `release`, since otherwise every
-    request leaves an entry in the system's ref registry for as long as the
-    actor runs.
+    adapter per foreign protocol, made in `setup`, and never release it.
+    `setup` runs again on every restart, though, so that is one adapter per
+    incarnation: an actor that restarts often should release the previous
+    one in `PreRestart`. An actor that makes one per request wants `release`,
+    since otherwise every request leaves an entry in the system's ref registry
+    for as long as the actor runs.
     """
 
     __slots__ = ("_adapt", "_cell", "_released", "_validate")
@@ -179,13 +181,47 @@ class AdapterRef(ActorRef[U]):
         if self._released:
             return
         self._released = True
-        self._cell.release_adapter(self.path)
+        # The registries belong to the loop. Changed from another thread, they
+        # could be changed while the owner's termination walks them.
+        self._on_the_loop(self._cell.release_adapter, self.path)
 
     def _released_letter(self, message: Message) -> None:
-        """Account for a message that arrived after the adapter was released."""
-        self._cell.runtime.dead_letters.publish(
-            message, self.path, DeadLetterReason.ADAPTER_RELEASED
+        """Account for a message that arrived after the adapter was released.
+
+        Published on the system's loop, whichever thread the send came from.
+        Dead-letter subscribers are loop code, and the office's counters are
+        not guarded against two threads.
+        """
+        scheduled = self._on_the_loop(
+            self._cell.runtime.dead_letters.publish,
+            message,
+            self.path,
+            DeadLetterReason.ADAPTER_RELEASED,
         )
+        if not scheduled:
+            # The same last resort a live adapter takes after the loop closed.
+            self._cell.log.warning(
+                "dead letter: %s sent to a released adapter after the loop closed",
+                type(message).__name__,
+            )
+
+    def _on_the_loop(self, call: Callable[..., None], *args: Any) -> bool:
+        """Run a call on the system's loop: now if on it, soon if not.
+
+        Returns:
+            Whether the call ran or was scheduled. `False` when the loop has
+            closed: nobody is left to run it, and the system it was for has
+            gone with the loop.
+        """
+        dispatcher = self._cell.runtime.dispatcher
+        if dispatcher.is_current():
+            call(*args)
+            return True
+        try:
+            dispatcher.call_soon_threadsafe(call, *args)
+        except RuntimeError:
+            return False
+        return True
 
     @property
     def address(self) -> Address:
@@ -197,7 +233,7 @@ class AdapterRef(ActorRef[U]):
         """
         return self._cell.runtime.address
 
-    def tell(self, message: U) -> None:
+    def tell(self, message: U_contra) -> None:
         """Accept a message, to be translated and delivered to the owner.
 
         The split is the same as any other send. An error about the message
@@ -242,7 +278,7 @@ class AdapterRef(ActorRef[U]):
                 type(message).__name__,
             )
 
-    async def offer(self, message: U) -> None:
+    async def offer(self, message: U_contra) -> None:
         """Accept a message, waiting for the owner's mailbox to have room.
 
         Args:

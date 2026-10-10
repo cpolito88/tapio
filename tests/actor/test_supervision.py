@@ -143,6 +143,34 @@ async def test_restart_stops_children_and_respawns_the_ones_setup_made(
     assert children[0].path.uid != children[1].path.uid
 
 
+async def test_a_restart_does_not_tell_the_new_incarnation_about_old_children(
+    system: ActorSystem,
+):
+    seen: list[str] = []
+    children: list[ActorRef[Job]] = []
+
+    def spawn_and_watch(ctx: ActorContext[Job]) -> None:
+        child = ctx.spawn(recording([]), name="child")
+        ctx.watch(child)
+        children.append(child)
+
+    actor = system.spawn(
+        recording(seen, strategy=RESTART, on_setup=spawn_and_watch), name="parent"
+    )
+    actor.tell(Job(fail=True))
+    actor.tell(Job(item=1))
+    await eventually(lambda: "job 1" in seen)
+
+    # The system lane drains first, so a `Terminated` for the child the restart
+    # stopped would be in front of "job 1". The new incarnation never watched
+    # that child, and its own setup has already replaced it.
+    assert seen == ["setup", "PreRestart", "setup", "job 1"]
+
+    # The new incarnation's own watch still works.
+    children[1].tell(Job(item=-1))
+    await eventually(lambda: "Terminated" in seen)
+
+
 async def test_restart_tells_watchers_nothing(system: ActorSystem):
     seen: list[str] = []
     watcher_saw: list[str] = []
@@ -284,9 +312,11 @@ async def test_a_stop_during_backoff_is_not_waited_out():
     # A backing-off actor still reads its system lane, so shutdown does not
     # wait out a window it has no interest in. The bound is the system's own
     # shutdown deadline rather than a literal: past it the sweep would have
-    # cancelled the cell, and the PostStop below would not be there.
+    # cancelled the cell instead of letting it stop.
     assert elapsed < shutdown_timeout.total_seconds()
-    assert seen[-1] == "PostStop"
+    # `PreRestart` was the failed incarnation's last signal. A `PostStop` after
+    # it would release the same resources a second time.
+    assert seen == ["setup", "PreRestart"]
 
 
 async def test_only_the_declared_exceptions_are_governed(system: ActorSystem):

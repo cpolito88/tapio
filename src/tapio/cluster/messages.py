@@ -109,13 +109,19 @@ class HeartbeatReply(WireMessage):
 
 
 @final
-@register_message()
-class Leave(WireMessage):
-    """Ask the cluster to let a member go gracefully.
+class Leave(Message):
+    """Ask this node to let a member go gracefully.
 
     Ordinarily a node asks about itself, but the address is carried explicitly
     because an operator tool may ask about another one, and because what acts
     on it is the leader rather than the member named.
+
+    Local, like [Down][tapio.cluster.messages.Down]: it arrives from
+    [Cluster.leave][tapio.cluster.cluster.Cluster.leave] or from this node's
+    own management endpoint, never across a link, so it is not registered on
+    the wire. Registered, it let any system that completed a handshake make
+    any member leave, past the token or certificate the management port asks
+    for.
     """
 
     address: AddressStr
@@ -188,9 +194,10 @@ class Down(Message):
     member a strategy will not reach, either because none is configured or
     because the member is unreachable to everyone and no strategy fires without
     a split. It moves the member up the lattice to `Down` exactly as a strategy
-    would, so gossip carries the decision and the downed member hears it and
-    shuts itself down. A `Down` cannot be taken back, which is the whole reason
-    it is a member's last honest status before `Removed`.
+    would, so gossip carries the decision and the downed member hears it. That
+    member shuts itself down if it was clustered with `terminate_on_down`. A
+    `Down` cannot be taken back, which is the whole reason it is a member's
+    last honest status before `Removed`.
     """
 
     address: AddressStr
@@ -219,13 +226,15 @@ class HeartbeatTick(Message):
 
 @final
 class ClusterDowned(Message):
-    """Published on the system event stream when this node downs itself.
+    """Published on the system event stream when this node has been downed.
 
     A downing strategy decided this node is on the side of a partition that
-    loses, so the node marked itself `Down`. A `Down` member may not return, so
-    the process cannot rejoin as itself: the honest response is to shut the
-    system down, and to come back, if at all, as a new incarnation. Subscribe
-    to this, or await
+    loses, or an operator downed it through any node's management port. It is
+    published as well when this node hears of its downing only after the
+    leader has removed it. A downed member may not return, so the process
+    cannot rejoin as itself: the honest response is to shut the system down,
+    and to come back, if at all, as a new incarnation. Subscribe to this, pass
+    `terminate_on_down` to [Cluster][tapio.cluster.cluster.Cluster], or await
     [Cluster.when_downed][tapio.cluster.cluster.Cluster.when_downed], to do
     that.
 
@@ -263,6 +272,7 @@ class LinkChanged(Message):
 ClusterMessage: TypeAlias = (
     WireMessage
     | Seeds
+    | Leave
     | Subscribe
     | Unsubscribe
     | Down

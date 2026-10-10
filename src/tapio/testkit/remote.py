@@ -18,8 +18,13 @@ async with two_nodes() as nodes:
     nodes.partition()      # both directions, both nodes
     ...                    # watchers get Terminated, sends dead-letter
     nodes.heal()           # the packets flow again, and nothing re-associates
+    nodes.beta.remote.clear_quarantine(nodes.alpha.address)  # each side relents
     await nodes.alpha.remote.reconnect(nodes.beta.address)
 ```
+
+A partition quarantines both sides, so the side being dialled has to clear
+its own quarantine first. Otherwise it refuses the dial, and `reconnect`
+raises `HandshakeError` naming the refusal.
 
 The pair runs in one process on loopback ports the OS picks, so a test needs
 no orchestration and no port nobody else is using.
@@ -83,8 +88,8 @@ class LinkFaults:
         """Let frames through again.
 
         Nothing re-associates by itself. A system that gave up on a peer stays
-        given up on until `remote.reconnect` says otherwise, which is what
-        this is for testing.
+        given up on until it relents, with `remote.clear_quarantine` or
+        `remote.reconnect`, which is what this is for testing.
         """
         self._partitioned = False
         self._healed.set()
@@ -297,9 +302,11 @@ class TwoNodes:
     def heal(self) -> None:
         """Let the packets flow again, which on its own repairs nothing.
 
-        A node that gave up on its peer stays given up on. `remote.reconnect`
-        is the repair, and it is explicit because a false alarm has already
-        told watchers that live actors are gone.
+        A node that gave up on its peer stays given up on. The repair is
+        explicit, because a false alarm has already told watchers that live
+        actors are gone. A partition quarantines both nodes, so each relents
+        for itself: one calls `remote.clear_quarantine` and the other
+        `remote.reconnect`.
         """
         self.alpha_faults.heal()
         self.beta_faults.heal()
@@ -316,6 +323,7 @@ async def two_nodes(
     beta: str = "beta",
     unreachable_after: timedelta = timedelta(milliseconds=300),
     heartbeat_interval: timedelta = timedelta(milliseconds=20),
+    handshake_timeout: timedelta | None = None,
 ) -> AsyncIterator[TwoNodes]:
     """Start two systems that can reach each other, and stop them afterwards.
 
@@ -324,14 +332,19 @@ async def two_nodes(
 
     The default timings are far shorter than production ones, because a test
     that waits ten seconds to see a quarantine is a test nobody runs. They are
-    still a heartbeat interval well inside a detector window, which is the
-    only relationship between the two that matters.
+    still a heartbeat interval well inside a detector window, and a handshake
+    deadline shorter than that window, which are the relationships between
+    them that matter.
 
     Args:
         alpha: The first system's name.
         beta: The second system's name.
         unreachable_after: How long silence lasts before a peer is given up on.
         heartbeat_interval: How often an idle link says it is still there.
+        handshake_timeout: How long a dial may take. Four fifths of
+            `unreachable_after` when omitted, and never more than the
+            production default of 5 seconds, since it has to be shorter than
+            the silence window.
 
     Yields:
         The pair, and the controls for breaking the network between them.
@@ -343,6 +356,11 @@ async def two_nodes(
         bind_port=0,
         unreachable_after=unreachable_after,
         heartbeat_interval=heartbeat_interval,
+        handshake_timeout=(
+            handshake_timeout
+            if handshake_timeout is not None
+            else min(timedelta(seconds=5), unreachable_after * 0.8)
+        ),
     )
     settings = IsolatedTapioSettings(remote=remote)
     first = ActorSystem(alpha, settings)

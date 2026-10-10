@@ -33,6 +33,18 @@ def test_an_ipv6_literal_survives_the_round_trip():
     assert Address.parse(str(address)) == address
 
 
+def test_a_bare_ipv6_literal_is_refused_with_a_hint():
+    # Its colons would make the port ambiguous, so it could never be read back.
+    with pytest.raises(ValueError, match="in brackets"):
+        Address(system="orders", host="::1", port=25520)
+
+
+@pytest.mark.parametrize("host", ["", "orders svc", "a/b", "user@host"])
+def test_a_host_that_could_not_be_read_back_is_refused(host: str):
+    with pytest.raises(ValueError, match="invalid host"):
+        Address(system="orders", host=host, port=25520)
+
+
 def test_a_host_without_a_port_is_refused():
     # Half an address would render as something a peer can parse but not dial.
     with pytest.raises(ValueError, match="host and a port together"):

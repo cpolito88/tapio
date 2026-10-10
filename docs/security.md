@@ -44,6 +44,13 @@ challenge. A listening port answers anything that can reach it, so a first
 frame carrying those four would hand a scanner the deployment's identity and
 the exact release it runs for the cost of one connection.
 
+A dialled system that will not use the link answers with a `declined` frame
+in place of the welcome. It carries the reason and nothing about the system
+that sent it, and it too is written only after the dialler has answered the
+challenge. The two reasons are a refusal, such as a quarantine, and a
+simultaneous dial that the other link wins. Saying so before the welcome is
+what keeps the dialler from writing into a link that is about to be closed.
+
 The dialler still names itself in its answer, so this is not symmetrical. It is
 not the same exposure either: a dialler chose the address it dialled, where a
 listener chose nobody. Closing the other half would need a fourth frame and a
@@ -60,7 +67,9 @@ releases talk to each other as long as neither release changed the wire. What
 they cannot do is disagree about the protocol.
 
 The system uid is minted per system incarnation, and it is what makes a
-restarted peer a *different* peer rather than the same one returning. An
+restarted peer a *different* peer rather than the same one returning. Actor
+uids are random too, so a ref held from before a peer restarted names no actor
+in the new incarnation, even one spawned under the same name. An
 association is bound to the uid it handshook with, so a peer that reconnects
 presenting a new uid means the old one died: the previous association is
 quarantined and its watchers are told, instead of the new connection silently
@@ -74,9 +83,15 @@ nothing else: every frame after it is readable and modifiable by anything on
 the path.
 
 `tls` takes a certificate, a key, and an optional CA for mutual
-authentication. **Use both for anything crossing a machine boundary.** The
+authentication. Both ends of a link, the management port and the
+`tapio-cluster` command require TLS 1.2 or later, whatever the Python build's
+default. **Use both for anything crossing a machine boundary.** The
 secret without TLS is only appropriate where the network itself is the
 boundary, such as a container network or a loopback interface.
+
+The certificate and key are loaded while the system is being constructed. A
+file that is missing or cannot be read makes `ActorSystem(...)` raise `OSError`
+and release the port. It does not leave a port bound that never answers.
 
 ## The decoder is the trust boundary
 
@@ -86,14 +101,26 @@ the boundary it is:
 - **A frame size cap before allocation.** Frames over `max_frame_bytes`, four
   megabytes by default, are refused without reading them, which is the
   cheapest way to stop a hostile or buggy peer from exhausting memory.
+- **A smaller cap before authentication.** A peer that has not finished the
+  handshake has proved nothing, so a handshake frame over 4096 bytes is
+  refused, whatever `max_frame_bytes` says. A real hello is a few hundred
+  bytes.
+- **A bound on how many peers can be handshaking.** At most
+  `max_pending_handshakes` inbound connections, 128 by default, are
+  handshaking at once. A connection past that is closed as it is accepted.
+  Each one has `handshake_timeout` to finish, and on a TLS listener that
+  deadline covers the TLS handshake too.
 - **Registry-only type resolution.** The `t` field of a frame is a registry
   key, never an import path. Resolving a dotted name from a socket into an
   importable object is remote code execution, and it is how this goes wrong
   casually. An unregistered key becomes a dead letter naming the key, and
   nothing is imported to find out what it might have meant.
-- **Strict validation as the decode.** A frame becomes a message by being
-  validated against the registered model, so a field that is the wrong type or
-  missing is a decoding failure and not a surprise inside a handler.
+- **Validation as the decode.** A frame becomes a message by being validated
+  against the registered model, in Pydantic's default lax mode. A missing
+  field, or a value that cannot be converted to the field's type, is a
+  decoding failure and not a surprise inside a handler. A value that can be
+  converted, such as `"5"` for an `int`, is converted. Set `strict=True` in a
+  message's `model_config` to refuse those too.
 - **No reflection anywhere in the path.** Nothing a peer sends selects code to
   run. It selects a registered model to validate against, and that is all.
 
@@ -130,6 +157,12 @@ sidecar that terminates TLS and authenticates the caller.** It is not written to
 be an internet-facing API. It answers one request per connection. It holds at
 most thirty-two connections at once and refuses the rest with a `503`. It gives
 each request thirty seconds to arrive and be answered.
+
+Over TLS the same limits cover the TLS handshake. The port accepts plain TCP
+and starts TLS on each connection itself, so a connection that never sends a
+hello counts against the cap and is closed at the deadline. A connection
+refused by the cap over TLS is closed with no `503`, because an answer could
+only be sent after a handshake, and the handshake is the cost the cap bounds.
 
 Those limits are there because this port shares an event loop with the cluster
 daemon. A flood that starves the loop delays gossip and heartbeat replies. The

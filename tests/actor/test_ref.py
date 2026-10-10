@@ -3,11 +3,10 @@
 import pytest
 from pydantic import ValidationError
 
-from tapio import Message
 from tapio.actor import ActorPath, ActorRef
 from tapio.errors import RefResolutionError
 from tapio.remote.address import Address
-from tests.messages import Greet, Greeted
+from tests.messages import Greet, Greeted, Increment
 
 
 def test_a_live_ref_validates_as_a_field(ref):
@@ -62,9 +61,9 @@ def test_the_type_parameter_is_not_checked_at_runtime():
     # Generics are erased, so ActorRef[Greeted] and ActorRef[Increment]
     # validate the same. A type checker catches the mismatch statically, and
     # the runtime check lives on the receiving actor.
-    wrong: ActorRef[Message] = ActorRef(ActorPath.root("sys").child("elsewhere"))
+    wrong: ActorRef[Increment] = ActorRef(ActorPath.root("sys").child("elsewhere"))
     msg = Greet(whom="w", count=1, reply_to=wrong)  # type: ignore[arg-type]
-    assert msg.reply_to is wrong
+    assert msg.reply_to is wrong  # type: ignore[comparison-overlap]
 
 
 def test_a_ref_subclass_validates_too():
@@ -117,3 +116,20 @@ def test_the_base_ref_cannot_deliver(ref):
     # Delivery belongs to the refs a running actor system hands out.
     with pytest.raises(NotImplementedError, match="cannot deliver messages"):
         ref.tell(Greeted(whom="world"))
+
+
+def test_a_ref_that_takes_more_stands_where_one_that_takes_less_is_wanted():
+    # Checked by mypy, which runs over the tests: everything a field asks to
+    # send can be sent to a ref that takes more, so this needs no cast. The
+    # last line must stay a type error, which the `ignore` pins: mypy reports
+    # an ignore that has nothing to ignore.
+    wider: ActorRef[Greeted | Increment] = ActorRef(
+        ActorPath.root("sys").child("user").child("counter")
+    )
+
+    msg = Greet(whom="w", count=1, reply_to=wider)
+
+    assert msg.reply_to is wider
+    narrow: ActorRef[Greeted] = wider
+    widened: ActorRef[Greeted | Increment] = narrow  # type: ignore[assignment]
+    assert widened is wider

@@ -1,6 +1,8 @@
 """The ring: who watches whom, and what a watcher concludes from silence."""
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from tapio.cluster.gossip import Gossip
 from tapio.cluster.member import Member, MemberStatus
@@ -81,6 +83,60 @@ def test_traffic_is_bounded_by_the_ring_and_not_by_the_cluster():
     # Ten times the nodes, the same traffic per node. All-to-all monitoring
     # would be 49 here and quadratic overall.
     assert len(monitored_by(address(1), large, 5)) == 5
+
+
+def test_the_ring_reaches_past_an_unreachable_member_without_counting_it():
+    gone = frozenset({address(2), address(3)})
+
+    watched = monitored_by(address(1), ring(1, 2, 3, 4, 5, 6), 2, gone)
+
+    assert watched == (address(2), address(3), address(4), address(5))
+
+
+def test_a_ring_that_is_all_unreachable_is_watched_whole():
+    gone = frozenset({address(2), address(3), address(4)})
+
+    assert monitored_by(address(1), ring(1, 2, 3, 4), 1, gone) == tuple(sorted(gone))
+
+
+@given(
+    st.integers(min_value=2, max_value=40).flatmap(
+        lambda n: st.tuples(
+            st.just(n),
+            st.sets(st.integers(min_value=1, max_value=n), min_size=1, max_size=n - 1),
+            st.integers(min_value=1, max_value=5),
+        )
+    )
+)
+def test_every_member_on_the_far_side_of_a_split_is_watched_from_this_side(
+    case: tuple[int, set[int], int],
+):
+    # Each side sees the other as unreachable. However the split runs, and
+    # however small the ring, somebody on this side watches every far member,
+    # so this side records it unreachable and never counts it as its own.
+    size, far_ports, count = case
+    members = ring(*range(1, size + 1))
+    far = frozenset(address(port) for port in far_ports)
+    here = [m.address for m in members if m.address not in far]
+
+    watched_from_here = {
+        peer for node in here for peer in monitored_by(node, members, count, far)
+    }
+
+    assert far <= watched_from_here
+
+
+def test_a_split_writes_pairs_linear_in_the_cluster():
+    # The pairs a split can ever write are the ones the ring watches. Before,
+    # the transport wrote one for every far member a node had a link to,
+    # which is a quarter of the square of the cluster on each side.
+    members = ring(*range(1, 301))
+    far = frozenset(address(port) for port in range(1, 301) if port % 2 == 0)
+    here = [m.address for m in members if m.address not in far]
+
+    pairs = sum(len(monitored_by(node, members, 5, far)) for node in here)
+
+    assert pairs < 10 * len(members)
 
 
 def a_monitor(*, size: int = 5, window: float = 10.0) -> RingMonitor:

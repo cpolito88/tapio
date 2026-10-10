@@ -5,25 +5,28 @@ gossip. What is scaled down is patience, since a test that waits a second per
 gossip round is a test nobody runs.
 """
 
-import shutil
-import subprocess
+import asyncio
+import json
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import timedelta
-
-import pytest
+from typing import Any
 
 from tapio.actor import ActorSystem
+from tapio.actor.path import ActorPath
 from tapio.cluster import Cluster, DownStrategy, Member, MemberStatus
 from tapio.remote.address import Address
 from tapio.settings import ClusterSettings, ManagementSettings, TapioSettings
 from tapio.testkit import (
     IsolatedClusterSettings,
+    IsolatedManagementSettings,
     IsolatedRemoteSettings,
     IsolatedTapioSettings,
+    IsolatedTLSSettings,
 )
 from tapio.testkit.remote import LinkFaults, link_faults
+from tests.conftest import TlsCerts
 
 QUICK = IsolatedClusterSettings(
     gossip_interval=timedelta(milliseconds=20),
@@ -126,133 +129,10 @@ def seeds_of(nodes: Sequence[Node]) -> list[str]:
     return [node.address for node in nodes]
 
 
-@dataclass(frozen=True, slots=True)
-class TlsCerts:
-    """Paths to a CA and the server and client certificates it signed."""
-
-    ca: str
-    server_cert: str
-    server_key: str
-    client_cert: str
-    client_key: str
-
-
-@pytest.fixture(scope="session")
-def mutual_tls_certs(tmp_path_factory: pytest.TempPathFactory) -> TlsCerts:
-    """Generate a CA and a server and client certificate it signed, once.
-
-    Real certificates rather than mocks, so a test drives the actual TLS
-    handshake. The server certificate names the loopback address so a client
-    checking the hostname is satisfied, and every certificate carries the key
-    usage extensions a strict verifier requires: Python 3.13 turns on strict
-    X.509 checking by default, where a CA with no keyUsage extension is refused.
-    Built with openssl, since neither cryptography nor trustme is a dependency;
-    a machine without openssl skips the tests that ask for this.
-    """
-    if shutil.which("openssl") is None:
-        pytest.skip("openssl is not available to generate certificates")
-    root = tmp_path_factory.mktemp("tls")
-
-    def openssl(*args: str) -> None:
-        subprocess.run(["openssl", *args], check=True, capture_output=True)
-
-    def path(name: str) -> str:
-        return str(root / name)
-
-    openssl(
-        "req",
-        "-x509",
-        "-newkey",
-        "rsa:2048",
-        "-keyout",
-        path("ca.key"),
-        "-out",
-        path("ca.pem"),
-        "-days",
-        "1",
-        "-nodes",
-        "-subj",
-        "/CN=Test CA",
-        "-addext",
-        "basicConstraints=critical,CA:TRUE",
-        "-addext",
-        "keyUsage=critical,keyCertSign,cRLSign",
-    )
-    openssl(
-        "req",
-        "-newkey",
-        "rsa:2048",
-        "-keyout",
-        path("server.key"),
-        "-out",
-        path("server.csr"),
-        "-nodes",
-        "-subj",
-        "/CN=127.0.0.1",
-        "-addext",
-        "subjectAltName=IP:127.0.0.1",
-        "-addext",
-        "keyUsage=critical,digitalSignature,keyEncipherment",
-        "-addext",
-        "extendedKeyUsage=serverAuth",
-    )
-    openssl(
-        "x509",
-        "-req",
-        "-in",
-        path("server.csr"),
-        "-CA",
-        path("ca.pem"),
-        "-CAkey",
-        path("ca.key"),
-        "-CAcreateserial",
-        "-out",
-        path("server.pem"),
-        "-days",
-        "1",
-        "-copy_extensions",
-        "copy",
-    )
-    openssl(
-        "req",
-        "-newkey",
-        "rsa:2048",
-        "-keyout",
-        path("client.key"),
-        "-out",
-        path("client.csr"),
-        "-nodes",
-        "-subj",
-        "/CN=operator",
-        "-addext",
-        "keyUsage=critical,digitalSignature",
-        "-addext",
-        "extendedKeyUsage=clientAuth",
-    )
-    openssl(
-        "x509",
-        "-req",
-        "-in",
-        path("client.csr"),
-        "-CA",
-        path("ca.pem"),
-        "-CAkey",
-        path("ca.key"),
-        "-CAcreateserial",
-        "-out",
-        path("client.pem"),
-        "-days",
-        "1",
-        "-copy_extensions",
-        "copy",
-    )
-    return TlsCerts(
-        ca=path("ca.pem"),
-        server_cert=path("server.pem"),
-        server_key=path("server.key"),
-        client_cert=path("client.pem"),
-        client_key=path("client.key"),
-    )
+def daemon_running(node: Node) -> bool:
+    """Whether the node's daemon still holds its well-known name."""
+    path = ActorPath.root(node.system.name).child("system").child("cluster")
+    return node.system.refs.lookup(path) is not None
 
 
 def start_node(
@@ -381,3 +261,56 @@ async def replacement_for(
         yield replacement
     finally:
         await replacement.system.terminate()
+
+
+def tls_managed(certs: TlsCerts) -> ManagementSettings:
+    """A management endpoint that speaks mutual TLS with the given certificates."""
+    return IsolatedManagementSettings(
+        bind_port=0,
+        tls=IsolatedTLSSettings(
+            certfile=certs.server_cert,
+            keyfile=certs.server_key,
+            cafile=certs.ca,
+        ),
+    )
+
+
+def management_port(node: Node) -> int:
+    """The management port a node bound, read from the address it reports."""
+    address = node.cluster.management_address
+    assert address is not None
+    return int(address.rsplit(":", 1)[1])
+
+
+async def management_request(
+    port: int,
+    method: str,
+    path: str,
+    *,
+    body: dict[str, object] | None = None,
+    token: str | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """Make one HTTP request to a management port and read its JSON answer.
+
+    Done with a raw asyncio connection rather than a blocking client so the
+    request runs on the loop the endpoint answers on, without a thread.
+    """
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    lines = [f"{method} {path} HTTP/1.1", "Host: 127.0.0.1"]
+    if token is not None:
+        lines.append(f"Authorization: Bearer {token}")
+    payload = b""
+    if body is not None:
+        payload = json.dumps(body).encode("utf-8")
+        lines.append("Content-Type: application/json")
+        lines.append(f"Content-Length: {len(payload)}")
+    lines.append("Connection: close")
+    writer.write(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1") + payload)
+    await writer.drain()
+    raw = await reader.read()
+    writer.close()
+    await writer.wait_closed()
+    head, _, tail = raw.partition(b"\r\n\r\n")
+    code = int(head.split(b"\r\n")[0].split(b" ")[1])
+    parsed = json.loads(tail) if tail else {}
+    return code, parsed

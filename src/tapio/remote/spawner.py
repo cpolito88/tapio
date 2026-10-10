@@ -471,6 +471,16 @@ def _answer(
                 "and refs in that message resolve normally."
             ),
         )
+    except Exception as error:  # a reply beats stopping the spawner
+        # Pydantic wraps only a validator's `ValueError` and `AssertionError`.
+        # Anything else a validator raises comes through as itself, and the
+        # arguments come from the peer, so a peer could pick it.
+        ctx.log.exception("validating the arguments for %r raised", key)
+        return SpawnFailed(
+            factory=key,
+            reason=SpawnFailure.INVALID_ARGS,
+            detail=(f"{key!r} arguments raised {type(error).__name__}: {error}"),
+        )
 
     name = message.name
     if name is not None and name.startswith(_GENERATED_PREFIX):

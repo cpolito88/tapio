@@ -27,14 +27,14 @@ change.
 
 import functools
 import operator
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, cast, final
 
 from tapio.actor.behavior import Behavior, Behaviors
 from tapio.actor.context import ActorContext
 from tapio.actor.dead_letters import DeadLetterReason
 from tapio.actor.ref import ActorRef
-from tapio.actor.router import RoundRobin, RoutingStrategy
+from tapio.actor.router import RoutingStrategy, fresh_strategy
 from tapio.actor.timers import TimerScheduler
 from tapio.cluster.daemon import start_subscribing, subscribe_when_ready
 from tapio.cluster.events import (
@@ -74,9 +74,12 @@ def group_router(
     *,
     path: str,
     role: str | None = None,
-    strategy: RoutingStrategy | None = None,
+    strategy: RoutingStrategy | Callable[[], RoutingStrategy] | None = None,
 ) -> Behavior[Any]:
     """Build a group router over an actor published on the members of a role.
+
+    Each actor spawned from the returned behavior keeps its own routees and its
+    own strategy, so one value can be spawned as several routers.
 
     Args:
         msg_type: What the routees accept, and so what this router forwards. A
@@ -89,18 +92,43 @@ def group_router(
             published as a well-known name.
         role: The role a member must carry to take a share. `None` routes to
             every member.
-        strategy: How to choose between routees. Round-robin when omitted.
+        strategy: How to choose between routees. Round-robin when omitted. A
+            class or other zero-argument callable gives each router its own
+            strategy. An instance is shared by every router spawned from this
+            behavior.
 
     Returns:
         The router behavior, to spawn.
     """
-    chosen = strategy if strategy is not None else RoundRobin()
     resolved = normalize_msg_type(msg_type, origin="a group router")
-    return _GroupRouter(resolved, path, role, chosen).behavior()
+    accepted = functools.reduce(operator.or_, (resolved, *_ROUTER_EVENTS, _Reconcile))
+
+    def with_timers(timers: TimerScheduler[Any]) -> Behavior[Any]:
+        def build(ctx: ActorContext[Any]) -> Behavior[Any]:
+            # Built per actor, and again on a restart. A table shared between
+            # two spawns of this behavior would let one router drop a member
+            # from the other, and a restart starts from the daemon's replay.
+            router = _GroupRouter(
+                resolved,
+                path,
+                role,
+                fresh_strategy(strategy),
+                here=str(ctx.self_ref.address),
+            )
+            start_subscribing(timers, _SUBSCRIBE_TIMER, _Reconcile())
+
+            async def on_message(ctx: ActorContext[Any], message: Any) -> Behavior[Any]:
+                return await router.receive(ctx, timers, message)
+
+            return Behaviors.receive(on_message, accepted)
+
+        return Behaviors.setup(build)
+
+    return Behaviors.with_timers(with_timers)
 
 
 class _GroupRouter:
-    """One router's view of who is routable, and how it spreads work over them."""
+    """One router actor's view of who is routable, and how it spreads work."""
 
     def __init__(
         self,
@@ -108,41 +136,27 @@ class _GroupRouter:
         path: str,
         role: str | None,
         strategy: RoutingStrategy,
+        *,
+        here: str,
     ) -> None:
-        """Describe the router, before its actor exists."""
+        """Start one router actor with an empty pool.
+
+        Args:
+            msg_type: What the routees accept.
+            path: The path the routee is published at on each member.
+            role: The role a member must carry, or `None` for every member.
+            strategy: The strategy this actor routes with.
+            here: This node's address, in the form members are named by.
+        """
         self._msg_type = msg_type
         self._path = path
         self._role = role
         self._strategy = strategy
+        self._here = here
         self._daemon: ActorRef[Any] | None = None
         self._routees: dict[str, ActorRef[Any]] = {}
-        # This node's address, in the form members are named by. Set when the
-        # actor is built, since that is when there is a node to ask.
-        self._here: str | None = None
 
-    def behavior(self) -> Behavior[Any]:
-        """Build the router actor, accepting its own type plus cluster events."""
-        accepted = functools.reduce(
-            operator.or_, (self._msg_type, *_ROUTER_EVENTS, _Reconcile)
-        )
-
-        def with_timers(timers: TimerScheduler[Any]) -> Behavior[Any]:
-            def build(ctx: ActorContext[Any]) -> Behavior[Any]:
-                self._here = str(ctx.self_ref.address)
-                start_subscribing(timers, _SUBSCRIBE_TIMER, _Reconcile())
-
-                async def on_message(
-                    ctx: ActorContext[Any], message: Any
-                ) -> Behavior[Any]:
-                    return await self._receive(ctx, timers, message)
-
-                return Behaviors.receive(on_message, accepted)
-
-            return Behaviors.setup(build)
-
-        return Behaviors.with_timers(with_timers)
-
-    async def _receive(
+    async def receive(
         self,
         ctx: ActorContext[Any],
         timers: TimerScheduler[Any],

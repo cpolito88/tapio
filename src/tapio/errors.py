@@ -1,10 +1,16 @@
 """The tapio error hierarchy.
 
-Every error tapio raises derives from `TapioError`, so a caller can catch the
-whole library with one clause. Where an error has an obvious builtin
-counterpart it inherits from that too: `MessageTypeError` is a `TypeError` and
-`AskTimeoutError` is a `TimeoutError`, so existing `except` clauses keep
-working.
+Every error about the runtime's state derives from `TapioError`, so a caller
+can catch that part of the library with one clause. Where an error has an
+obvious builtin counterpart it inherits from that too: `MessageTypeError` is a
+`TypeError` and `AskTimeoutError` is a `TimeoutError`, so existing `except`
+clauses keep working.
+
+A programming error in an argument raises the builtin instead: a system name
+no path could hold, a pool size of zero, a mailbox capacity of zero, raise
+`ValueError`, and an `offer` from another thread raises `RuntimeError`. A
+child name is the exception: a spawn raises `ActorNameError` for any name it
+refuses, since a name is often built from input the caller does not control.
 
 No tapio error inherits from `ValueError`. Pydantic turns a `ValueError`
 raised inside a validator into a `ValidationError`, which would bury the

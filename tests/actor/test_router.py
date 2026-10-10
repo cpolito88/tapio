@@ -1,6 +1,7 @@
 """Tests for routers: one address in front of several identical actors."""
 
 import asyncio
+from typing import Any
 
 import pytest
 
@@ -21,10 +22,11 @@ from tapio.actor import (
     ActorContext,
     ActorPath,
     ActorRef,
-    LocalActorRef,
     PostStop,
     Signal,
 )
+from tapio.actor.cell import LocalActorRef
+from tapio.actor.router import fresh_strategy
 from tapio.errors import BehaviorTypeError
 from tests.failures import BoomError, eventually
 
@@ -92,6 +94,54 @@ async def test_work_goes_round_the_pool_in_turn(system: ActorSystem):
         ("routee-3", 3),
         ("routee-3", 6),
     ]
+
+
+def tagged(seen: list[str]) -> Behavior[Job]:
+    """A routee that writes down its router and its own name for each job."""
+
+    def build(ctx: ActorContext[Job]) -> Behavior[Job]:
+        tag = f"{ctx.path.parent.name}/{ctx.path.name}"
+
+        async def on_job(message: Job) -> Behavior[Job]:
+            seen.append(tag)
+            return Behaviors.same()
+
+        return Behaviors.receive_message(on_job, msg_type=Job)
+
+    return Behaviors.setup(build)
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [None, RoundRobin, lambda: RoundRobin()],
+    ids=["default", "class", "factory"],
+)
+async def test_one_pool_spawned_twice_gives_each_router_its_own_rotation(
+    system: ActorSystem, strategy: Any
+):
+    seen: list[str] = []
+    pool = Routers.pool(2, tagged(seen), strategy=strategy)
+    a = system.spawn(pool, "a")
+    b = system.spawn(pool, "b")
+
+    # Fed in turn, so a shared rotation would give `a` every even turn and `b`
+    # every odd one, and each router would only ever reach one routee.
+    async def send(router: ActorRef[Job], count: int) -> None:
+        router.tell(Job(item=count))
+        await eventually(lambda: len(seen) == count)
+
+    for sent in range(1, 9):
+        await send(a if sent % 2 else b, sent)
+
+    assert sorted(set(seen)) == ["a/routee-1", "a/routee-2", "b/routee-1", "b/routee-2"]
+
+
+def test_a_strategy_instance_is_used_as_it_is():
+    strategy = RoundRobin()
+
+    assert fresh_strategy(strategy) is strategy
+    assert fresh_strategy(RoundRobin) is not fresh_strategy(RoundRobin)
+    assert isinstance(fresh_strategy(None), RoundRobin)
 
 
 async def test_the_router_accepts_what_a_routee_accepts(system: ActorSystem):
@@ -208,12 +258,10 @@ async def test_a_pool_needs_a_routee():
         Routers.pool(0, Behaviors.empty())
 
 
-def test_the_rotation_survives_the_pool_shrinking():
-    """Removing a routee shifts the rotation rather than restarting it.
-
-    It keeps the counter, not the position, so an actor that has just been
-    given work does not get more because the pool got smaller.
-    """
+def test_after_a_shrink_the_rotation_carries_on_from_its_counter():
+    # A counter modulo the size, so after a shrink the rotation goes on from
+    # an arbitrary point. Here it lands on the routee that took the last
+    # message, which the docstring says can happen.
     strategy = RoundRobin()
     three: list[ActorRef[Job]] = [_ref(n) for n in (1, 2, 3)]
 
@@ -221,7 +269,7 @@ def test_the_rotation_survives_the_pool_shrinking():
     assert chosen == three
 
     two = [three[0], three[2]]
-    assert strategy.select(two, Job(item=0)) is two[1]
+    assert strategy.select(two, Job(item=0)) is two[1] is chosen[-1]
 
 
 def _ref(n: int) -> ActorRef[Job]:

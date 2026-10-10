@@ -45,9 +45,17 @@ _POLL_INTERVAL = 0.01
 
 
 class BlockingPool:
-    """The threads one system runs blocking calls on."""
+    """The threads one system runs blocking calls on.
 
-    __slots__ = ("_closed", "_executor", "_match", "_prefix", "_size")
+    Owned and shut down by its system, which hands it out as
+    `system.blocking`. From an actor, use `ctx.run_blocking`. Call `submit`
+    only from the system's loop: it creates the executor on first use and
+    schedules onto the loop, and neither is safe from another thread. Do not
+    call `shutdown` yourself. It refuses every later blocking call in the
+    system, and the system calls it against its own shutdown deadline.
+    """
+
+    __slots__ = ("_closed", "_executor", "_lock", "_owned", "_prefix", "_size")
 
     def __init__(self, *, size: int, system: str) -> None:
         """Describe a pool without starting anything.
@@ -58,11 +66,13 @@ class BlockingPool:
         """
         self._size = size
         self._prefix = f"tapio-blocking-{system}"
-        # What the `threads` property matches on. ThreadPoolExecutor names its
-        # threads "{prefix}_{n}", so the trailing separator is what keeps a
-        # system named "orders" from claiming the threads of one named
-        # "orders-eu": "orders_" is not a prefix of "orders-eu_".
-        self._match = f"{self._prefix}_"
+        # The threads this pool started, recorded by each one as it starts.
+        # Matching on the name instead claimed another system's threads,
+        # because two systems in one process can share a name. Written from
+        # the worker threads, so it has a lock. It holds at most `size`
+        # threads, since the executor is made once and never replaced.
+        self._owned: set[threading.Thread] = set()
+        self._lock = threading.Lock()
         self._executor: ThreadPoolExecutor | None = None
         self._closed = False
 
@@ -91,16 +101,19 @@ class BlockingPool:
 
     @property
     def threads(self) -> tuple[threading.Thread, ...]:
-        """The live threads this pool owns, by name.
+        """The live threads this pool started.
 
         Exposed for the same reason a cell exposes its watchers: a test has to
         be able to assert that shutdown left nothing running.
         """
-        return tuple(
-            thread
-            for thread in threading.enumerate()
-            if thread.name.startswith(self._match) and thread.is_alive()
-        )
+        with self._lock:
+            owned = tuple(self._owned)
+        return tuple(thread for thread in owned if thread.is_alive())
+
+    def _register(self) -> None:
+        """Record the calling thread as one of this pool's, as it starts."""
+        with self._lock:
+            self._owned.add(threading.current_thread())
 
     def submit(
         self,
@@ -131,7 +144,9 @@ class BlockingPool:
             raise RuntimeError(msg)
         if self._executor is None:
             self._executor = ThreadPoolExecutor(
-                max_workers=self._size, thread_name_prefix=self._prefix
+                max_workers=self._size,
+                thread_name_prefix=self._prefix,
+                initializer=self._register,
             )
         call = functools.partial(fn, *args, **kwargs)
         return loop.run_in_executor(self._executor, call)

@@ -31,7 +31,14 @@ A link can also end without a verdict: the socket fails, the peer closes it,
 or a frame is refused. Watchers are told `Terminated` in that case too,
 because the association that held their watches is gone, and `PeerUnreachable`
 is published with `quarantined=False`. The address is not frozen, and the next
-send dials again. Only silence quarantines.
+send dials again.
+
+A peer is quarantined when nothing has arrived from it for
+`unreachable_after`, and also when this node cannot get a frame into it for
+that long. The silence is counted from when the association is created, so a
+dial still in progress counts too. That is why `handshake_timeout` must be
+shorter than `unreachable_after`, and the settings refuse anything else: a
+dial that is only slow would otherwise be judged as silence.
 
 ## The part that can be wrong
 
@@ -74,6 +81,11 @@ recovery, since the next send dials again.
 re-associates. Nothing does that on its own, even after the network is
 repaired, and that is the deliberate part.
 
+A partition usually quarantines both sides, and each side relents for itself.
+The side being dialled calls `system.remote.clear_quarantine(peer_address)`
+first. Otherwise it refuses the dial, and `reconnect` raises `HandshakeError`
+with the reason it gave.
+
 Automatic re-association after a false positive is the dangerous case: the
 watchers here were already told `Terminated` for actors that are alive and
 carrying on. Silently resuming would leave two nodes with contradictory
@@ -88,11 +100,13 @@ consult where a single system has nothing. A peer that is not a member follows
 the rule above unchanged. See
 [clustering](clustering.md#one-rule-this-contradicts).
 
-Refs held across a quarantine are **not reusable**. Their uid belongs to a
-session that is over, so addressing after a reconnect goes through `resolve`
-again. That is also what makes a restarted peer a different peer rather than
-an impostor at the same address: a system mints a new uid per incarnation, and
-an association is bound to the uid it handshook with.
+Refs held across a quarantine **keep working after `reconnect` if the peer is
+the same incarnation**, because a ref names a node and an actor, not a link. A
+peer that restarted is a different peer. Its system has a new uid, and its
+actors have new uids too, because every actor uid is random. So a ref from
+before the restart reaches nothing over there, even for an actor the new
+incarnation spawned under the same name, and its messages become dead letters
+on the peer. Resolve again to reach the new incarnation.
 
 ## Designing for it
 

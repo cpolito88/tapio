@@ -1,5 +1,7 @@
 """Running one behavior with no system, and reading back what it did."""
 
+import importlib
+
 import pytest
 
 from tapio import Behavior, Behaviors, Message
@@ -14,12 +16,17 @@ from tapio.actor import (
     StashBuffer,
     SupervisorStrategy,
 )
-from tapio.errors import BehaviorTypeError, MessageTypeError, TapioError
+from tapio.errors import (
+    ActorNameError,
+    BehaviorTypeError,
+    MessageTypeError,
+    TapioError,
+)
 from tapio.testkit import (
     BehaviorTestKit,
     DeadLettered,
     IsolatedTapioSettings,
-    Spawned,
+    SpawnedChild,
     Watched,
 )
 
@@ -134,6 +141,25 @@ async def test_a_message_of_the_wrong_type_is_refused():
         await kit.run(Job(item=1))  # type: ignore[arg-type]
 
 
+async def test_the_kit_ignores_the_environment(monkeypatch: pytest.MonkeyPatch):
+    # A user's suite has no fixture clearing `TAPIO_*`. An exported variable
+    # would otherwise switch off the content validation `run` promises.
+    monkeypatch.setenv("TAPIO_VALIDATE_ON_TELL", "0")
+
+    kit = BehaviorTestKit(counter())
+
+    assert kit._settings.validate_on_tell is True
+
+
+async def test_the_kit_refuses_a_name_no_path_could_hold():
+    def build(ctx: ActorContext[Increment]) -> Behavior[Increment]:
+        ctx.spawn(_sink(), "bad name")
+        return Behaviors.ignore()
+
+    with pytest.raises(ActorNameError, match="cannot spawn"):
+        BehaviorTestKit(Behaviors.setup(build))
+
+
 async def test_spawns_are_recorded_with_the_ref_that_was_handed_back():
     def build(ctx: ActorContext[Increment]) -> Behavior[Increment]:
         worker = ctx.spawn(_sink(), "worker", MailboxConfig(capacity=10))
@@ -147,7 +173,9 @@ async def test_spawns_are_recorded_with_the_ref_that_was_handed_back():
     kit: BehaviorTestKit[Increment] = BehaviorTestKit(Behaviors.setup(build))
     await kit.run(Increment())
 
-    assert kit.effects == (Spawned("worker", _sink(), None, kit.child("worker").ref),)
+    assert kit.effects == (
+        SpawnedChild("worker", _sink(), None, kit.child("worker").ref),
+    )
     assert kit.child("worker").inbox == [Job(item=1)]
     assert kit.child("worker").mailbox == MailboxConfig(capacity=10)
 
@@ -164,6 +192,15 @@ async def test_an_anonymous_spawn_gets_a_generated_name():
     kit: BehaviorTestKit[Increment] = BehaviorTestKit(Behaviors.setup(build))
 
     assert kit.children[0].name == "$1"
+
+
+async def test_a_chosen_name_with_the_generated_prefix_is_refused():
+    def build(ctx: ActorContext[Increment]) -> Behavior[Increment]:
+        ctx.spawn(_sink(), "$1")
+        return Behaviors.ignore()
+
+    with pytest.raises(ActorNameError, match="reserved"):
+        BehaviorTestKit(Behaviors.setup(build))
 
 
 async def test_asking_for_a_child_that_was_never_spawned_says_which_were():
@@ -393,3 +430,20 @@ def _sink() -> Behavior[Job]:
         return Behaviors.same()
 
     return Behaviors.receive_message(on_message, msg_type=Job)
+
+
+@pytest.mark.parametrize("module", ["tapio.testkit", "tapio.testkit.behavior"])
+def test_the_old_name_of_a_spawned_child_still_works_and_warns(module: str):
+    package = importlib.import_module(module)
+
+    with pytest.warns(DeprecationWarning, match="renamed SpawnedChild"):
+        old = package.Spawned
+
+    assert old is SpawnedChild
+
+
+def test_a_name_the_kit_never_had_is_still_an_attribute_error():
+    import tapio.testkit
+
+    with pytest.raises(AttributeError, match="no attribute 'Spawnd'"):
+        _ = tapio.testkit.Spawnd  # type: ignore[attr-defined]

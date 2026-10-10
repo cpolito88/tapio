@@ -1,6 +1,7 @@
 """Tests for message adapters."""
 
 import asyncio
+import threading
 from typing import Any
 
 import pytest
@@ -18,8 +19,9 @@ from tapio import (
     OverflowStrategy,
     SupervisorStrategy,
 )
-from tapio.actor import ActorContext, ActorRef, LocalActorRef
+from tapio.actor import ActorContext, ActorRef
 from tapio.actor.adapter import AdaptedMessage, AdapterRef, AdapterRegistry
+from tapio.actor.cell import LocalActorRef
 from tapio.actor.path import ActorPath
 from tapio.errors import BehaviorTypeError
 from tapio.remote.registry import RefRegistry
@@ -454,6 +456,66 @@ async def test_a_released_adapter_leaves_the_registry_and_stops_delivering(
     await eventually(lambda: len(letters) == 2)
     assert letters[1].reason == DeadLetterReason.ADAPTER_RELEASED
     assert seen == ["quoted 100"]
+
+
+async def test_a_released_adapter_accounts_on_the_loop_whoever_sends(
+    system: ActorSystem,
+):
+    # Dead-letter subscribers are loop code, and the office's counters are not
+    # guarded against two threads, so a send from another thread hops first.
+    handed_out: list[ActorRef[Price]] = []
+
+    def build(ctx: ActorContext[Shop]) -> Behavior[Shop]:
+        handed_out.append(ctx.message_adapter(lambda p: Quoted(cents=p.cents), Price))
+        return Behaviors.receive_message(_ignore)
+
+    system.spawn(Behaviors.setup(build), name="shop")
+    await eventually(lambda: len(handed_out) == 1)
+    adapter = handed_out[0]
+    assert isinstance(adapter, AdapterRef)
+    adapter.release()
+    threads: list[str] = []
+    system.dead_letters.subscribe(
+        lambda letter: threads.append(threading.current_thread().name)
+    )
+
+    sender = threading.Thread(
+        target=lambda: adapter.tell(Price(cents=1)), name="foreign-sender"
+    )
+    sender.start()
+    sender.join()
+
+    await eventually(lambda: bool(threads))
+    assert threads == [threading.current_thread().name]
+
+
+async def test_releasing_an_adapter_from_another_thread_changes_the_refs_on_the_loop(
+    system: ActorSystem, monkeypatch: pytest.MonkeyPatch
+):
+    handed_out: list[ActorRef[Price]] = []
+
+    def build(ctx: ActorContext[Shop]) -> Behavior[Shop]:
+        handed_out.append(ctx.message_adapter(lambda p: Quoted(cents=p.cents), Price))
+        return Behaviors.receive_message(_ignore)
+
+    system.spawn(Behaviors.setup(build), name="shop")
+    await eventually(lambda: len(handed_out) == 1)
+    adapter = handed_out[0]
+    assert isinstance(adapter, AdapterRef)
+    changed_on: list[str] = []
+    deregister = RefRegistry.deregister
+
+    def recording(registry: RefRegistry, path: ActorPath) -> None:
+        changed_on.append(threading.current_thread().name)
+        deregister(registry, path)
+
+    monkeypatch.setattr(RefRegistry, "deregister", recording)
+
+    await asyncio.to_thread(adapter.release)
+
+    assert adapter.is_released
+    await eventually(lambda: system.refs.lookup(adapter.path) is None)
+    assert changed_on == [threading.current_thread().name]
 
 
 async def test_releasing_an_adapter_twice_is_harmless(system: ActorSystem):

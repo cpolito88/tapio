@@ -44,7 +44,21 @@ class Dispatcher:
     def spawn_task(
         self, coro: Coroutine[Any, Any, None], *, name: str
     ) -> asyncio.Task[None]:
-        """Start a named task on this system's loop."""
+        """Start a named task on this system's loop.
+
+        The task is owned by no cell, so no termination sequence cancels it.
+        The caller must hold it, and cancel or await it before the system
+        terminates, or it is the orphaned task the leak checks look for. Actor
+        code should not use this: a task an actor needs belongs to that
+        actor's cell.
+
+        Args:
+            coro: What the task runs.
+            name: The task's name, for a leak report and a log line.
+
+        Returns:
+            The task, which the caller now owns.
+        """
         return self._loop.create_task(coro, name=name)
 
     def call_soon_threadsafe(self, callback: Callable[..., None], *args: Any) -> None:

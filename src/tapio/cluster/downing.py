@@ -19,6 +19,32 @@ oldest member", therefore names the *same* winner on both sides without either
 side saying a word. The loser downs itself and shuts down; the winner downs the
 loser and carries on. One decision, computed twice, agreeing.
 
+**The two views are mirror images only up to what was in flight when the split
+came.** A join, a leave and each step the leader takes travel by gossip, so a
+split can leave one of them on one side only. One side may then know a joiner
+the other has never heard of, or still hold a member as `Exiting` that the
+other has already removed. The leader takes a step only once every member has
+seen the one before, so it is at most one step ahead on one side. A join and a
+leave can be asked for on any member, so they can be ahead on either side.
+
+The counting strategies absorb this by counting the two sides differently. On
+its own side a node counts only the `Up` and `Leaving` members the leader has
+accepted. On the far side it counts every live member, `Joining` and `Exiting`
+included. A member counted on its own side is then counted by the far side too:
+the far side has seen the view the leader accepted it from, so it holds the
+member at `Joining` or later, and removing it would take the leader a second
+step. So each side counts itself at no more than the other side counts it, and
+when one side sees itself winning the other cannot see itself winning too. The
+oldest member is chosen by the same rule, and a member counted on its own side
+has the same place in the order on both sides. The price is that a split during
+a join or a leave can down both sides where an exact count would have kept one.
+That is the safe direction.
+
+A down made on one side only is not covered. An operator's down, or the down a
+node gives an old incarnation of a member that restarted, takes a member out of
+one view in a single step. No way of counting can make two views agree about a
+member one of them no longer counts at all.
+
 Four of the strategies here are pure functions of a view: given the same
 membership and the same reachability they return the same verdict, and the
 whole argument for correctness is that the two sides feed them mirror-image
@@ -27,7 +53,8 @@ It breaks a tie the count cannot, an even split with no majority, by reaching
 for a [Lease][tapio.cluster.downing.Lease] that only one side can hold. That
 reaches outside the view, so the decision is asynchronous and the safety
 argument is different: not that both sides compute the same answer, but that
-the lease lets only one of them win.
+the lease lets only one of them win. A lease that cannot be reached in time, or
+that fails, counts as lost, so the side that asked downs itself.
 
 That one exception is why deciding is asynchronous even though most of it does
 no waiting. A pure strategy returns at once; the lease one waits on an outside
@@ -42,12 +69,15 @@ self-down means. The daemon reads which case it is in from whether its own
 address is in the set.
 """
 
+import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Protocol, final, runtime_checkable
 
 from tapio.cluster.gossip import Gossip
-from tapio.cluster.member import Member, seniority
+from tapio.cluster.member import Member, MemberStatus, seniority
+from tapio.logging import runtime_logger
 
 __all__ = [
     "DownAll",
@@ -60,6 +90,8 @@ __all__ = [
     "StaticQuorum",
 ]
 
+_log = runtime_logger("cluster.downing")
+
 
 @runtime_checkable
 class DownStrategy(Protocol):
@@ -70,6 +102,13 @@ class DownStrategy(Protocol):
     message passing between them.
     [LeaseMajority][tapio.cluster.downing.LeaseMajority] is the one that reaches
     outside the view, which is why deciding is asynchronous.
+
+    The daemon awaits a decision inside its own turn, so it answers no
+    heartbeat while a strategy waits. A strategy that waits on something
+    outside the process has to bound that wait well inside the cluster's
+    `unreachable_after`, or its own side-mates will see this node go quiet. An
+    exception from `decide` is logged, and the decision is tried again on the
+    next turn.
     """
 
     async def decide(self, state: Gossip) -> frozenset[str]:
@@ -108,8 +147,22 @@ def _sides(state: Gossip) -> tuple[tuple[Member, ...], tuple[Member, ...]]:
     return reachable, unreachable
 
 
-def _counted(members: Iterable[Member], role: str | None) -> tuple[Member, ...]:
-    """Keep the members a decision counts, which is those in a role when one is set.
+_COUNTED_HERE = frozenset({MemberStatus.UP, MemberStatus.LEAVING})
+"""The statuses a member is counted at on the side doing the counting.
+
+`Joining` is left out because any member admits a joiner, so the far side may
+never have heard of it. `Exiting` is left out because the leader removes an
+exiting member, so the far side may already hold it as removed. Both are still
+downed with their side. They only stop counting towards it.
+
+A member also has to have been accepted, which a nonzero `up_number` shows. A
+joiner can be asked to leave before the leader accepts it, and then it is
+`Leaving` on one side while the far side may never have heard of it.
+"""
+
+
+def _with_role(members: Iterable[Member], role: str | None) -> tuple[Member, ...]:
+    """Keep the members in a role, or all of them when no role is set.
 
     A role narrows *who votes*, not who is downed: a side that loses is downed
     whole, but the sizes compared to decide which side that is are counted over
@@ -122,11 +175,49 @@ def _counted(members: Iterable[Member], role: str | None) -> tuple[Member, ...]:
         role: The role to count, or `None` to count them all.
 
     Returns:
-        The members that count.
+        The members in the role.
     """
     if role is None:
         return tuple(members)
     return tuple(m for m in members if role in m.roles)
+
+
+def _counted_here(members: Iterable[Member], role: str | None) -> tuple[Member, ...]:
+    """Keep the members of this node's own side that count towards it.
+
+    These are the `Up` and `Leaving` members the leader has accepted, in the
+    role when one is set. The far side counts each of them too, whatever it
+    holds them at, which is what keeps the two counts from both calling
+    themselves the winner. See the module docstring for the argument.
+
+    Args:
+        members: The reachable members.
+        role: The role to count, or `None` to count them all.
+
+    Returns:
+        The members that count.
+    """
+    return _with_role(
+        (m for m in members if m.status in _COUNTED_HERE and m.up_number), role
+    )
+
+
+def _counted_there(members: Iterable[Member], role: str | None) -> tuple[Member, ...]:
+    """Keep the members of the far side that count towards it.
+
+    Every live member counts there, `Joining` and `Exiting` included, because
+    the far side may already hold a joiner as `Up` or an exiting member as
+    still `Leaving`. Counting the far side generously and this side strictly
+    errs towards this side losing, which is the safe way to err.
+
+    Args:
+        members: The unreachable members.
+        role: The role to count, or `None` to count them all.
+
+    Returns:
+        The members that count.
+    """
+    return _with_role(members, role)
 
 
 def _addresses(members: Iterable[Member]) -> frozenset[str]:
@@ -184,6 +275,10 @@ class KeepMajority:
     membership, so both agree which side that is, which is the same reason the
     leader is the lowest address: a total order over the bytes both sides hold
     needs no round to settle.
+
+    This side is counted over its accepted `Up` and `Leaving` members, and the
+    far side over every live member, so a split while a member joins or leaves
+    cannot make both sides the majority. See the module docstring for why.
     """
 
     role: str | None = None
@@ -203,13 +298,15 @@ class KeepMajority:
         reachable, unreachable = _sides(state)
         if not unreachable:
             return frozenset()
-        here = _counted(reachable, self.role)
-        there = _counted(unreachable, self.role)
+        here = _counted_here(reachable, self.role)
+        there = _counted_there(unreachable, self.role)
         if not here and not there:
             return _addresses((*reachable, *unreachable))
         if len(here) != len(there):
             loser = unreachable if len(here) > len(there) else reachable
             return _addresses(loser)
+        # On a tie each side has counted every member exactly as the other
+        # side counts it, so both take the lowest address from the same set.
         lowest = min(_addresses((*here, *there)))
         keep_here = any(m.address == lowest for m in here)
         return _addresses(unreachable if keep_here else reachable)
@@ -272,8 +369,8 @@ class StaticQuorum:
         reachable, unreachable = _sides(state)
         if not unreachable:
             return frozenset()
-        here = len(_counted(reachable, self.role))
-        there = len(_counted(unreachable, self.role))
+        here = len(_counted_here(reachable, self.role))
+        there = len(_counted_there(unreachable, self.role))
         if here >= self.size and there < self.size:
             return _addresses(unreachable)
         if there >= self.size and here < self.size:
@@ -302,6 +399,14 @@ class KeepOldest:
     that case: when the oldest is the only member on its side, it downs itself
     instead, and the larger side lives. Both sides see the same single node
     alone against the same larger group, so both still agree.
+
+    The oldest is chosen among this side's accepted `Up` and `Leaving` members
+    and every live member of the far side, for the reason the module docstring
+    gives. An oldest member that is already `Exiting` therefore counts for the
+    far side only, so a split while the oldest leaves can down both sides.
+    Whether this side is alone is judged the same way: this side may be alone
+    unless it has two members that count, and the far side is alone only when
+    it has one live member at all.
     """
 
     down_if_alone: bool = False
@@ -325,19 +430,25 @@ class KeepOldest:
         reachable, unreachable = _sides(state)
         if not unreachable:
             return frozenset()
-        here = _counted(reachable, self.role)
-        there = _counted(unreachable, self.role)
-        candidates = (*here, *there)
-        if not candidates:
+        here = _counted_here(reachable, self.role)
+        there = _counted_there(unreachable, self.role)
+        if not here and not there:
             return _addresses((*reachable, *unreachable))
-        oldest = min(candidates, key=seniority)
-        oldest_here = any(m.key == oldest.key for m in here)
-        elders_side, other_side = (
-            (reachable, unreachable) if oldest_here else (unreachable, reachable)
-        )
-        if self.down_if_alone and len(elders_side) == 1 and other_side:
-            return _addresses(elders_side)
-        return _addresses(other_side)
+        oldest_here = min(here, key=seniority) if here else None
+        oldest_there = min(there, key=seniority) if there else None
+        if oldest_there is None or (
+            oldest_here is not None and seniority(oldest_here) < seniority(oldest_there)
+        ):
+            if self.down_if_alone and len(_counted_here(reachable, None)) < 2:
+                return _addresses(reachable)
+            return _addresses(unreachable)
+        # The oldest is over there. A lone oldest is downed in favour of this
+        # side only if this side has a member of its own that counts: without
+        # one, both sides could be judging a lone oldest that the other side
+        # does not count.
+        if self.down_if_alone and len(unreachable) == 1 and here:
+            return _addresses(unreachable)
+        return _addresses(reachable)
 
     def __repr__(self) -> str:
         """Render whether a lone oldest yields, and the role it is chosen among."""
@@ -457,10 +568,39 @@ class LeaseMajority:
     The winning side keeps the lease and never gives it back, so the lease must
     be one that expires on its own; see [Lease][tapio.cluster.downing.Lease] for
     why a never-expiring lease cannot resolve a second, later split.
+
+    A lease that does not answer within `acquire_timeout`, or that raises,
+    counts as lost, and this side downs itself. The daemon answers no heartbeat
+    while it waits, so an unbounded wait would make this node look dead to its
+    own side and change the split being decided. Treating the failure as a loss
+    is the safe direction: when the lease cannot be reached from either side,
+    both sides down themselves rather than both staying up. A lease that was
+    granted but whose answer came too late is a loss too, so both sides can go
+    down in that case as well.
     """
 
     lease: Lease
     """The outside lock the sides race for. It must live outside the partition."""
+
+    acquire_timeout: timedelta = timedelta(seconds=1)
+    """How long to wait for the lease before counting it as lost.
+
+    Keep it well inside the cluster's `unreachable_after`, since this node
+    answers no heartbeat while it waits.
+    """
+
+    def __post_init__(self) -> None:
+        """Refuse a timeout that leaves no time to reach the lease.
+
+        Raises:
+            ValueError: If the timeout is not positive.
+        """
+        if self.acquire_timeout <= timedelta(0):
+            msg = (
+                f"acquire_timeout must be positive, not {self.acquire_timeout}: "
+                "a lease that is given no time to answer is lost on every split"
+            )
+            raise ValueError(msg)
 
     async def decide(self, state: Gossip) -> frozenset[str]:
         """Keep this side if it can take the lease, and down it if it cannot.
@@ -470,16 +610,45 @@ class LeaseMajority:
 
         Returns:
             The unreachable side's addresses when this side takes the lease, and
-            this side's own when it cannot.
+            this side's own when it cannot, when the lease does not answer in
+            time, or when it raises.
         """
         reachable, unreachable = _sides(state)
         if not unreachable:
             return frozenset()
         owner = min(_addresses(reachable))
-        if await self.lease.acquire(owner):
+        if await self._acquire(owner):
             return _addresses(unreachable)
         return _addresses(reachable)
 
+    async def _acquire(self, owner: str) -> bool:
+        """Ask the lease for an owner, counting a timeout or an error as a loss.
+
+        Args:
+            owner: The name this side asks under.
+
+        Returns:
+            Whether the lease answered in time that this owner holds it.
+        """
+        try:
+            async with asyncio.timeout(self.acquire_timeout.total_seconds()):
+                return await self.lease.acquire(owner)
+        except TimeoutError:
+            _log.warning(
+                "%r did not answer within %s, so %s counts it as lost",
+                self.lease,
+                self.acquire_timeout,
+                owner,
+            )
+        except Exception:
+            # Any failure, a refused connection or a bug in the lease alike,
+            # leaves this side unable to show it holds the lease.
+            _log.exception("%r failed, so %s counts it as lost", self.lease, owner)
+        return False
+
     def __repr__(self) -> str:
-        """Render the lease, which is the whole of the configuration."""
-        return f"LeaseMajority(lease={self.lease!r})"
+        """Render the lease and how long it is waited for."""
+        return (
+            f"LeaseMajority(lease={self.lease!r}, "
+            f"acquire_timeout={self.acquire_timeout!r})"
+        )

@@ -62,11 +62,7 @@ Every node is given the same seed list, in the same order, its own address
 included:
 
 ```python
-await cluster.join_seed_nodes([
-    "tapio://orders@10.0.0.1:2551",
-    "tapio://orders@10.0.0.2:2551",
-    "tapio://orders@10.0.0.3:2551",
-])
+--8<-- "tests/docs/test_clustering_page.py:join"
 ```
 
 Every address in that list has to name a host and a port, and so does every
@@ -91,7 +87,9 @@ running seed takes to answer.
 
 `join_seed_nodes` returns once this node is `up`. If it times out, the node is
 still asking: the error is about how long you were prepared to wait, not about
-the node giving up.
+the node giving up. A node that has left, or been downed, cannot join again as
+itself, and `join_seed_nodes` raises `ClusterError` for it. Restart the system
+to join as a new incarnation.
 
 ## Convergence, and the leader
 
@@ -100,11 +98,14 @@ reachable and has seen that exact version of the gossip. Convergence is not
 consensus. It is the condition under which the leader is allowed to act, and
 that is all it is used for.
 
-The leader is the first member in address order whose status is `up` or
-`leaving`. Every node computes it, one node acts on it, and there is no
-handover protocol because there is no state to hand over. Before anybody is
-`up`, which is every cluster's first moment, it falls back to the first member
-in address order: somebody has to be able to accept the first join.
+The leader is the first member in address order, among those no live member
+reports unreachable, whose status is `up` or `leaving`. If there is none, for
+example before anybody is `up` or while every `up` member is unreachable, it is
+the first such member of any live status, `joining` and `exiting` included:
+somebody has to be able to accept the first join. A leader acts only on a
+converged view, so a fallback leader during a split does nothing until the
+split is resolved. Every node computes the leader, one node acts on it, and
+there is no handover protocol because there is no state to hand over.
 
 A leader with an unreachable member converges on nothing and therefore does
 nothing. Joins wait, leaves wait, and the cluster keeps running. That blocking
@@ -115,15 +116,17 @@ again or an operator downs it.
 ## Leaving
 
 ```python
-await cluster.leave()
+--8<-- "tests/docs/test_clustering_page.py:leave"
 ```
 
 The member walks out rather than vanishing: `leaving`, then `exiting` once
 every node has seen it, then `removed`. Each step needs a converged view, so
 leaving takes as long as agreement takes, and every node ends up holding the
 same tombstone. A [cluster singleton](#cluster-singletons) on the leaving member
-lets go the moment it reaches `leaving`, before any successor starts, so a
-graceful leave never runs two instances at once.
+lets go the moment it hears of its own leave, and no successor starts until the
+member is removed. Wherever the leave was asked for, the two instances do not
+normally overlap. An instance still busy in a handler when its host lets go can
+overlap the successor until that handler returns.
 
 The tombstone is kept rather than pruned. Dropping the record would let a peer
 holding an older view put the member back, since merging two views unions the
@@ -132,6 +135,13 @@ removal, and it is not in this release.
 
 Leaving does not terminate the system. Ending the process is the
 application's decision.
+
+A leave is asked for through [leave][tapio.cluster.cluster.Cluster.leave] on
+the node itself, or through a node's
+[management port](#managing-a-cluster). It is never accepted
+from across a link. Any system that completes a remoting handshake can address
+a node's cluster daemon, and a leave it could send would bypass the token or
+certificate the management port asks for.
 
 ## What a node gossips
 
@@ -161,8 +171,7 @@ Every node sorts the member addresses, finds itself, and watches the few that
 follow it, wrapping round at the end:
 
 ```python
-cluster = Cluster(system, ClusterSettings(monitored_peers=5))
-cluster.monitored  # the members this node watches, in address order
+--8<-- "tests/docs/test_clustering_page.py:monitored"
 ```
 
 So every member is watched by exactly that many others, whether or not
@@ -170,6 +179,10 @@ anybody has reason to send it anything, and the probing costs one message per
 watched member per round rather than one per pair. All-to-all monitoring is
 quadratic, and it is what makes naive implementations fall over at a few dozen
 nodes.
+
+An unreachable member is watched but not counted. The ring reaches past it to
+the next member, so a node always watches `monitored_peers` members it can
+count on, plus every unreachable member between them.
 
 A watcher sends a heartbeat every `heartbeat_interval`, the watched member
 answers, and a member that has not answered for `unreachable_after` is
@@ -201,18 +214,48 @@ back the first, and a link coming up again brings back the second. An answer
 never retracts what the transport said, since a peer that remoting is refusing
 to carry frames to cannot answer at all.
 
-The probe follows the ring, but the transport's verdict is recorded for every
-member, including the ones off this node's ring. This matters for a downing
-strategy's safety. A strategy is safe because the two sides of a partition feed
-it mirror-image views: each side sees the whole of the other as unreachable and
-names the same losing side without a message crossing the split. A node's ring
-reaches only `monitored_peers` of the far side, so on a partition larger than
-that the probe alone would leave each side seeing only a slice of the other and
-counting the rest as its own, and then both sides can call themselves the
-majority. The transport fills the gap, because a partition drops every link
-across it and not only the watched ones. A strategy's safety therefore depends
-on the split being fully observed this way, which is a property of the
-transport noticing every dropped link, not of the ring.
+The transport's verdict is recorded only for a member on this node's ring.
+For any other member it is remembered, and the member starts from it if the
+ring moves onto it. Every record stays in the gossip for good, so recording
+the transport for every member a node ever had a link to grew with the square
+of the cluster after one partition, and at a few hundred nodes the gossip no
+longer fitted in a frame.
+
+The ring reaching past unreachable members is what a downing strategy's safety
+rests on. A strategy is safe because the two sides of a partition feed it
+mirror-image views: each side sees the whole of the other as unreachable and
+names the same losing side without a message crossing the split. Take a node
+on one side and the run of far-side members that follows it on the ring. None
+of that run counts, so the node watches all of it, however long it is. Every
+far-side member is therefore watched by the nearest node on this side before
+it, and this side sees the whole of the far side as unreachable. A long run
+is covered a step at a time, one window per step for a member nobody had a
+link to, and a node does not decide until its whole side has seen the view.
+
+A record names its observer by address, not by incarnation. A node that
+restarts at the same address therefore finds its predecessor's claims in the
+gossip, counting again now that its address is live. It takes back every
+claim under its address that it did not make itself, because only the
+observer can retract a claim and it is the observer at that address now.
+
+The two views are mirror images only up to the membership changes that were in
+flight when the split came. A member admitted moments before may be known on
+one side only, and a member the leader has just removed may still be `exiting`
+on the other. The counting strategies allow for that. A side counts itself
+over the `up` and `leaving` members the leader has accepted, and counts the far
+side over every live member, so a change that crossed to one side cannot make both sides the
+winner. A split during a join or a leave can therefore down both sides, which
+is the safe direction. A `down` made on one side only is the case no count
+covers: an operator downing a member while the cluster is split can make the
+two views disagree about who is left.
+
+A node also waits, before it decides, until every member it can still hear has
+seen its current view. A far-side member that nobody on this side observes
+looks reachable from here, but it cannot have seen anything this side has
+gossiped since the split. Waiting for it keeps a node from counting it on this
+side. A strategy that raises is logged and asked again on the next turn, and
+[LeaseMajority][tapio.cluster.downing.LeaseMajority] counts a lease that does
+not answer within its `acquire_timeout`, or that fails, as lost.
 
 A link coming up is not an answer either. It proves a process is accepting
 connections, and what this node is asking is whether the daemon behind it is
@@ -265,7 +308,7 @@ Membership changes reach an application as messages, delivered to an ordinary
 actor's mailbox. An actor subscribes, and from then on it is told what changed:
 
 ```python
-cluster.subscribe(worker, MemberUp, MemberRemoved, UnreachableMember)
+--8<-- "tests/docs/test_clustering_page.py:subscribe"
 ```
 
 There are seven events, all carrying the member they are about:
@@ -295,7 +338,9 @@ apart. That is the same guarantee everything else in clustering gives.
 
 A subscriber that stops is forgotten, because the daemon watches it. For an
 adapter, the daemon watches the actor that owns it. A ref with nothing to
-watch, such as a dead-letter ref, is refused with a warning. Call
+watch, such as a dead-letter ref, is refused with a warning. So is a ref to an
+actor on another node: events are not registered on the wire, so a subscriber
+must be a local actor, and each node tells its own subscribers. Call
 [unsubscribe][tapio.cluster.cluster.Cluster.unsubscribe] only for an actor that
 wants to keep running and stop listening.
 
@@ -305,8 +350,7 @@ A role is what a node says it is for, fixed when it joins and part of what the
 cluster agreed on when it accepted the node:
 
 ```python
-cluster = Cluster(system, ClusterSettings(roles={"worker"}))
-cluster.members_with_role("worker")  # the worker members, oldest first
+--8<-- "tests/docs/test_clustering_page.py:roles"
 ```
 
 Every member carries its roles in the gossip, so every node can filter on them
@@ -332,15 +376,26 @@ leader accepted members in, which every node computes the same way from the same
 gossip. So at a converged view exactly one manager runs the instance, with no
 election and no lock.
 
-Handoff is triggered by a host going away. A crash is only ever seen as removal:
-every manager hears `MemberRemoved`, recomputes the oldest, and the new oldest
-starts the instance. A graceful leave is seen earlier, as `MemberLeaving`, one
-or more converged rounds before the removal. The leaving host drives its own
-transition, so its manager hears `MemberLeaving` first and lets its instance go
-before any successor starts. That order is what keeps the two from overlapping.
-Waiting for `removed` did not: leadership moves off a member once it reaches
-`exiting`, so the successor learns of the removal first and would start while the
-old host, hearing it a round or more later, was still running its instance.
+Handoff is triggered by a host going away, and a successor starts only once the
+old host is removed. A crash is only ever seen as removal: every manager hears
+`MemberRemoved`, recomputes the oldest, and the new oldest starts the instance.
+
+A graceful leave is seen earlier, as `MemberLeaving`. The leaving host lets its
+instance go when it hears that about itself. Every other manager goes on
+counting the leaving host as the oldest, so no successor starts before the
+removal. The removal needs every member, the leaving host included, to have seen
+the leave, so by then the host has asked its instance to stop. That holds
+wherever the leave was asked for: on the host, or with `tapio-cluster leave`
+pointed at any other node. The host does not wait for its instance to finish
+stopping, though. An instance still busy in a handler when the successor starts
+overlaps it until that handler returns.
+
+A host on the losing side of a split is downed rather than removed, and it never
+sees its own removal. Its manager lets the instance go on `SelfDown` and never
+hosts again. The majority starts a successor once it has removed the old host,
+which can be before the downed side has noticed, so two instances can overlap
+for up to the difference between the two sides' `down_after`. Set
+`terminate_on_down` or act on `when_downed` to end the downed process as well.
 
 The instance is a fresh start wherever it runs, not a move of live state. What
 mattered on the old host does not cross to the new one, which is the honest
@@ -355,7 +410,7 @@ children. A group router owns none of them. It routes to whatever actor each
 member of a role publishes at an agreed path, and the pool follows membership:
 
 ```python
-proxy = ctx.spawn(Routers.group(Job, role="worker", path="/user/worker"))
+--8<-- "tests/docs/test_clustering_page.py:group-router"
 ```
 
 A member that joins is added, and one that is removed or goes unreachable is
@@ -415,8 +470,12 @@ for a member no strategy will reach: one that is unreachable to everyone, so no
 split fires a
 strategy, or a cluster running with no strategy configured at all. The member
 goes to `down` exactly as a strategy would put it there, and a `down` cannot be
-taken back, so the downed member hears the decision as gossip and shuts itself
-down.
+taken back. The downed member hears the decision as gossip, and
+[when_downed][tapio.cluster.cluster.Cluster.when_downed] returns on it. It shuts
+itself down if it was clustered with `terminate_on_down`, which works with no
+strategy configured. In a small cluster the downed member often hears of its
+downing only after the leader has removed it, since nobody gossips to a downed
+member. That counts as being downed too.
 
 The port can down a member, so it is a serious surface, and it is off unless it
 is configured, like remoting. When it is on it binds loopback by default.
@@ -424,10 +483,7 @@ Binding it anywhere another host can reach requires a token, the same refusal
 remoting makes about a secret:
 
 ```python
-Cluster(system, management=ManagementSettings(
-    bind_host="0.0.0.0",
-    token=SecretStr("..."),  # required beyond loopback, or the node will not start
-))
+--8<-- "tests/docs/test_clustering_page.py:management-token"
 ```
 
 The token is presented as `Authorization: Bearer <token>` and compared in
@@ -446,10 +502,7 @@ The port also speaks TLS, using the same
 [TLSSettings][tapio.settings.TLSSettings] remoting does:
 
 ```python
-Cluster(system, management=ManagementSettings(
-    bind_host="0.0.0.0",
-    tls=TLSSettings(certfile="server.pem", keyfile="server.key", cafile="ca.pem"),
-))
+--8<-- "tests/docs/test_clustering_page.py:management-tls"
 ```
 
 With `certfile` and `keyfile` the port answers HTTPS, and the command reaches
@@ -460,6 +513,12 @@ TLS is therefore the second way to satisfy the bind-beyond-loopback rule: a
 bearer token alone travels in a header, so a plaintext bind beyond loopback
 leaks it, while a token over TLS or a client certificate does not. The command
 presents its certificate with `--client-cert` and `--client-key`.
+
+The certificate and key are loaded while the cluster is being constructed. A
+file that is missing or cannot be read makes `Cluster(...)` raise `OSError` and
+release the port, rather than leave a port bound that never answers. Over TLS,
+a connection refused by the cap is closed without a `503`, so the command
+reports that it could not reach the node.
 
 ## Addressing, and the one uid rule this bends
 

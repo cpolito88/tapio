@@ -185,6 +185,12 @@ has never heard of the adapter does not have your bug raised into it. An
 adapter is not an actor, so it cannot be watched or asked. Watch the actor
 that owns it.
 
+An adapter belongs to the actor rather than to one incarnation, so a restart
+does not turn replies into dead letters. The other side of that is cost: each
+call makes a new adapter, and `setup` runs again on every restart, so an
+adapter made in `setup` costs one registry entry per incarnation. An actor
+that restarts often should release the previous one in `PreRestart`.
+
 ## One address, several actors
 
 When the work is uniform and the answer to "too slow" is "more of the same
@@ -206,6 +212,13 @@ as sending anywhere never blocks. A routee that cannot take a message gets it
 dead-lettered, because the router did not write that message and failing would
 take a whole pool down over one busy member. Put backpressure on the router's
 own mailbox instead, where a producer can `offer` into it and wait.
+
+A `Routers.pool(...)` value can be spawned more than once, and each router it
+starts gets its own routees and its own rotation. To choose routees another
+way, pass `strategy=` a class or a zero-argument function that builds a
+[RoutingStrategy][tapio.actor.router.RoutingStrategy]. Each router then gets a
+new one. A strategy instance passed directly is shared by every router spawned
+from that value.
 
 ## Behaviors as the states of a protocol
 

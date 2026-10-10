@@ -8,11 +8,12 @@ checked by watching the member it named actually move.
 
 import asyncio
 import contextlib
-import json
 import socket
-from typing import Any
+import ssl
+import time
 
 import pytest
+from pydantic import ValidationError
 
 from tapio.actor import ActorSystem
 from tapio.cluster import Cluster, MemberStatus
@@ -23,7 +24,16 @@ from tapio.testkit import (
     IsolatedTLSSettings,
     assert_no_leaked_tasks,
 )
-from tests.cluster.conftest import Node, cluster_of, remoting, seeds_of
+from tests.cluster.conftest import (
+    Node,
+    cluster_of,
+    management_port,
+    management_request,
+    remoting,
+    seeds_of,
+    tls_managed,
+)
+from tests.conftest import TlsCerts
 from tests.failures import eventually
 
 MANAGED = IsolatedManagementSettings(bind_port=0)
@@ -34,47 +44,6 @@ GUARDED = IsolatedManagementSettings(
     token="s3cret",  # type: ignore[arg-type]
 )
 """The same endpoint, but one that requires a bearer token."""
-
-
-def _port(node: Node) -> int:
-    """The management port a node bound, read from the address it reports."""
-    address = node.cluster.management_address
-    assert address is not None
-    return int(address.rsplit(":", 1)[1])
-
-
-async def _request(
-    port: int,
-    method: str,
-    path: str,
-    *,
-    body: dict[str, object] | None = None,
-    token: str | None = None,
-) -> tuple[int, dict[str, Any]]:
-    """Make one HTTP request to a management port and read its JSON answer.
-
-    Done with a raw asyncio connection rather than a blocking client so the
-    request runs on the loop the endpoint answers on, without a thread.
-    """
-    reader, writer = await asyncio.open_connection("127.0.0.1", port)
-    lines = [f"{method} {path} HTTP/1.1", "Host: 127.0.0.1"]
-    if token is not None:
-        lines.append(f"Authorization: Bearer {token}")
-    payload = b""
-    if body is not None:
-        payload = json.dumps(body).encode("utf-8")
-        lines.append("Content-Type: application/json")
-        lines.append(f"Content-Length: {len(payload)}")
-    lines.append("Connection: close")
-    writer.write(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1") + payload)
-    await writer.drain()
-    raw = await reader.read()
-    writer.close()
-    await writer.wait_closed()
-    head, _, tail = raw.partition(b"\r\n\r\n")
-    code = int(head.split(b"\r\n")[0].split(b" ")[1])
-    parsed = json.loads(tail) if tail else {}
-    return code, parsed
 
 
 async def _joined(nodes: tuple[Node, ...]) -> None:
@@ -89,7 +58,9 @@ async def test_status_reports_the_view_the_node_holds():
             await _joined(nodes)
             node = nodes[0]
 
-            code, payload = await _request(_port(node), "GET", "/status")
+            code, payload = await management_request(
+                management_port(node), "GET", "/status"
+            )
 
             assert code == 200
             assert payload["address"] == node.address
@@ -107,8 +78,11 @@ async def test_down_moves_the_member_it_names():
             await _joined(nodes)
             first, second = nodes
 
-            code, payload = await _request(
-                _port(first), "POST", "/down", body={"address": second.address}
+            code, payload = await management_request(
+                management_port(first),
+                "POST",
+                "/down",
+                body={"address": second.address},
             )
 
             assert code == 202
@@ -137,8 +111,11 @@ async def test_leave_walks_the_member_out():
             await _joined(nodes)
             first, second = nodes
 
-            code, _ = await _request(
-                _port(first), "POST", "/leave", body={"address": second.address}
+            code, _ = await management_request(
+                management_port(first),
+                "POST",
+                "/leave",
+                body={"address": second.address},
             )
 
             assert code == 202
@@ -154,11 +131,13 @@ async def test_a_token_is_required_when_one_is_configured():
     with assert_no_leaked_tasks():
         async with cluster_of(1, management=GUARDED) as nodes:
             await _joined(nodes)
-            port = _port(nodes[0])
+            port = management_port(nodes[0])
 
-            missing, _ = await _request(port, "GET", "/status")
-            wrong, _ = await _request(port, "GET", "/status", token="nope")
-            right, payload = await _request(port, "GET", "/status", token="s3cret")
+            missing, _ = await management_request(port, "GET", "/status")
+            wrong, _ = await management_request(port, "GET", "/status", token="nope")
+            right, payload = await management_request(
+                port, "GET", "/status", token="s3cret"
+            )
 
             assert missing == 401
             assert wrong == 401
@@ -174,12 +153,12 @@ async def test_a_non_ascii_bearer_token_is_answered_not_crashed():
     with assert_no_leaked_tasks():
         async with cluster_of(1, management=GUARDED) as nodes:
             await _joined(nodes)
-            port = _port(nodes[0])
+            port = management_port(nodes[0])
 
             # "\xc3\xa9" is the UTF-8 encoding of "e-acute" seen as two latin-1
             # characters, which is what a real client sending UTF-8 puts on the
             # wire.
-            code, _ = await _request(port, "GET", "/status", token="\xc3\xa9")
+            code, _ = await management_request(port, "GET", "/status", token="\xc3\xa9")
 
             assert code == 401
 
@@ -188,22 +167,22 @@ async def test_malformed_requests_answer_with_the_right_code():
     with assert_no_leaked_tasks():
         async with cluster_of(1, management=MANAGED) as nodes:
             await _joined(nodes)
-            port = _port(nodes[0])
+            port = management_port(nodes[0])
             member = nodes[0].address
 
-            unknown_path, _ = await _request(port, "GET", "/nope")
-            wrong_method, _ = await _request(port, "POST", "/status")
-            no_address, _ = await _request(port, "POST", "/down", body={})
-            bad_address, _ = await _request(
+            unknown_path, _ = await management_request(port, "GET", "/nope")
+            wrong_method, _ = await management_request(port, "POST", "/status")
+            no_address, _ = await management_request(port, "POST", "/down", body={})
+            bad_address, _ = await management_request(
                 port, "POST", "/leave", body={"address": "tapio://ghost"}
             )
-            not_a_member, _ = await _request(
+            not_a_member, _ = await management_request(
                 port,
                 "POST",
                 "/down",
                 body={"address": "tapio://node9@127.0.0.1:1"},
             )
-            downing_self, _ = await _request(
+            downing_self, _ = await management_request(
                 port, "POST", "/down", body={"address": member}
             )
 
@@ -225,7 +204,7 @@ async def test_a_stalled_request_is_timed_out_not_parked(monkeypatch):
     with assert_no_leaked_tasks():
         async with cluster_of(1, management=MANAGED) as nodes:
             await _joined(nodes)
-            port = _port(nodes[0])
+            port = management_port(nodes[0])
 
             reader, writer = await asyncio.open_connection("127.0.0.1", port)
             writer.write(b"GET /status HTTP/1.1\r\n")  # no blank line ever follows
@@ -248,7 +227,7 @@ async def _answers(port: int, code: int, *, within: float = 5.0) -> None:
     try:
         async with asyncio.timeout(within):
             while True:
-                answered, _ = await _request(port, "GET", "/status")
+                answered, _ = await management_request(port, "GET", "/status")
                 if answered == code:
                     return
     except TimeoutError:
@@ -262,7 +241,7 @@ async def test_the_port_refuses_connections_past_its_cap():
     with assert_no_leaked_tasks():
         async with cluster_of(1, management=MANAGED) as nodes:
             await _joined(nodes)
-            port = _port(nodes[0])
+            port = management_port(nodes[0])
 
             held = [
                 await asyncio.open_connection("127.0.0.1", port)
@@ -271,7 +250,7 @@ async def test_the_port_refuses_connections_past_its_cap():
             try:
                 await _answers(port, 503)
 
-                refused, payload = await _request(port, "GET", "/status")
+                refused, payload = await management_request(port, "GET", "/status")
 
                 assert refused == 503
                 assert payload == {"error": "too many connections"}
@@ -290,11 +269,139 @@ async def test_the_port_refuses_connections_past_its_cap():
                         await writer.wait_closed()
 
 
+async def _tls_status(
+    port: int, certs: TlsCerts, *, client_certificate: bool = True
+) -> int | None:
+    """Ask for the status over TLS, and return the code it answered.
+
+    Returns:
+        The status code, or `None` when the port closed the connection before
+        it answered.
+    """
+    context = ssl.create_default_context(cafile=certs.ca)
+    if client_certificate:
+        context.load_cert_chain(certs.client_cert, certs.client_key)
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port, ssl=context)
+    except OSError:
+        return None
+    try:
+        writer.write(
+            b"GET /status HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+        )
+        await writer.drain()
+        raw = await reader.read()
+    except OSError:
+        return None
+    finally:
+        writer.close()
+        with contextlib.suppress(OSError):
+            await writer.wait_closed()
+    return int(raw.split(b" ")[1]) if raw else None
+
+
+async def _answers_over_tls(
+    port: int, certs: TlsCerts, code: int | None, *, within: float = 5.0
+) -> None:
+    """Wait until a `GET /status` over TLS answers with a code, or is refused."""
+    try:
+        async with asyncio.timeout(within):
+            while await _tls_status(port, certs) != code:
+                pass
+    except TimeoutError:
+        msg = f"the port never answered {code} over TLS within {within}s"
+        raise AssertionError(msg) from None
+
+
+async def test_the_connection_cap_holds_over_tls(mutual_tls_certs: TlsCerts):
+    # Connections that open TCP and never send a TLS hello. When asyncio ran
+    # the handshake, these were never counted and the port kept answering.
+    with assert_no_leaked_tasks():
+        async with cluster_of(1, management=tls_managed(mutual_tls_certs)) as nodes:
+            await _joined(nodes)
+            port = management_port(nodes[0])
+
+            held = [
+                await asyncio.open_connection("127.0.0.1", port)
+                for _ in range(_MAX_CONNECTIONS)
+            ]
+            try:
+                await _answers_over_tls(port, mutual_tls_certs, None)
+
+                _, writer = held.pop()
+                writer.close()
+                await writer.wait_closed()
+
+                await _answers_over_tls(port, mutual_tls_certs, 200)
+            finally:
+                for _, writer in held:
+                    writer.close()
+                    with contextlib.suppress(OSError):
+                        await writer.wait_closed()
+
+
+async def test_failed_tls_handshakes_do_not_hold_connection_slots(
+    mutual_tls_certs: TlsCerts,
+):
+    with assert_no_leaked_tasks():
+        async with cluster_of(1, management=tls_managed(mutual_tls_certs)) as nodes:
+            await _joined(nodes)
+            port = management_port(nodes[0])
+
+            for _ in range(_MAX_CONNECTIONS + 1):
+                refused = await _tls_status(
+                    port, mutual_tls_certs, client_certificate=False
+                )
+                assert refused is None
+
+            await _answers_over_tls(port, mutual_tls_certs, 200)
+
+
+async def test_a_tls_hello_that_never_comes_is_closed_at_the_deadline(
+    monkeypatch, mutual_tls_certs: TlsCerts
+):
+    monkeypatch.setattr("tapio.cluster.management._REQUEST_TIMEOUT", 0.2)
+    with assert_no_leaked_tasks():
+        async with cluster_of(1, management=tls_managed(mutual_tls_certs)) as nodes:
+            await _joined(nodes)
+            port = management_port(nodes[0])
+
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            raw = await asyncio.wait_for(reader.read(), timeout=5.0)
+            writer.close()
+            with contextlib.suppress(OSError):
+                await writer.wait_closed()
+
+    # Closed with no answer: a plaintext 408 means nothing to a TLS client.
+    assert raw == b""
+
+
+async def test_terminate_is_not_held_by_a_client_that_never_starts_tls(
+    mutual_tls_certs: TlsCerts,
+):
+    with assert_no_leaked_tasks():
+        async with cluster_of(1, management=tls_managed(mutual_tls_certs)) as nodes:
+            await _joined(nodes)
+            port = management_port(nodes[0])
+
+            _, writer = await asyncio.open_connection("127.0.0.1", port)
+            try:
+                started = time.monotonic()
+                await nodes[0].system.terminate()
+                took = time.monotonic() - started
+            finally:
+                writer.close()
+                with contextlib.suppress(OSError):
+                    await writer.wait_closed()
+
+    assert took < 1.0, f"terminate waited {took:.2f}s for a client that said nothing"
+
+
 async def test_headers_that_never_end_answer_413():
     with assert_no_leaked_tasks():
         async with cluster_of(1, management=MANAGED) as nodes:
             await _joined(nodes)
-            port = _port(nodes[0])
+            port = management_port(nodes[0])
 
             reader, writer = await asyncio.open_connection("127.0.0.1", port)
             # A header far past the read buffer, with no blank line to end it.
@@ -313,6 +420,16 @@ def test_binding_beyond_loopback_without_a_token_is_refused():
     beyond = IsolatedManagementSettings(bind_host="0.0.0.0")
     with pytest.raises(InsecureRemoteConfig):
         verify_management_security(beyond)
+
+
+def test_an_empty_token_is_refused_where_it_is_configured():
+    # An empty token would match an empty bearer header, so it would pass the
+    # bind check and still let anyone in.
+    with pytest.raises(ValidationError, match="empty secret"):
+        IsolatedManagementSettings(
+            bind_host="0.0.0.0",
+            token="",  # type: ignore[arg-type]
+        )
 
 
 def test_binding_beyond_loopback_with_a_token_is_allowed():
@@ -353,20 +470,20 @@ async def test_management_is_off_unless_it_is_configured():
             assert nodes[0].cluster.management_address is None
 
 
-def _a_free_port() -> int:
+def _a_freemanagement_port() -> int:
     """Find a port nothing is listening on, and let go of it."""
     with contextlib.closing(socket.create_server(("127.0.0.1", 0))) as probe:
         port: int = probe.getsockname()[1]
     return port
 
 
-async def test_a_cluster_that_fails_to_start_releases_its_management_port():
+async def test_a_cluster_that_fails_to_start_releases_its_managementmanagement_port():
     # A fixed port, against the convention that a test binds port 0, because the
     # failure only shows up on a fixed one. A leaked listener on port 0 costs a
     # descriptor and nothing else; on the default 25530 it makes the next
     # attempt fail to bind, so an operator reads "address already in use"
     # instead of the spawn failure that actually happened.
-    port = _a_free_port()
+    port = _a_freemanagement_port()
 
     with assert_no_leaked_tasks():
         async with ActorSystem("port-released", remoting()) as system:
@@ -390,5 +507,29 @@ async def test_a_cluster_that_fails_to_start_releases_its_management_port():
             # listener nobody refers to any more is closed by its finalizer,
             # and the ResourceWarning that comes with it fails the test. Before
             # this fix the second one fires, naming the port bound above.
+            with contextlib.closing(socket.create_server(("127.0.0.1", port))):
+                pass
+
+
+async def test_a_bad_management_certificate_fails_construction(tmp_path):
+    # A fixed port, for the reason the test above gives: only a fixed port shows
+    # whether the failed construction let go of it.
+    port = _a_freemanagement_port()
+    absent = str(tmp_path / "absent.pem")
+
+    with assert_no_leaked_tasks():
+        async with ActorSystem("bad-certificate", remoting()) as system:
+            with pytest.raises(OSError, match="No such file"):
+                Cluster(
+                    system,
+                    management=IsolatedManagementSettings(
+                        bind_port=port,
+                        tls=IsolatedTLSSettings(certfile=absent),
+                    ),
+                )
+
+            # Nothing was left running: the daemon's name is free, and so is
+            # the port.
+            Cluster(system)
             with contextlib.closing(socket.create_server(("127.0.0.1", port))):
                 pass

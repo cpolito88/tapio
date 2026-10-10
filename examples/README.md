@@ -12,7 +12,7 @@ uv run python -m tapio_examples.<name>
 ```
 
 Every example follows the same rules. It is runnable on its own, deterministic
-with no wall-clock sleeps in its assertions, finishes in under 2 seconds,
+with no wall-clock sleeps in its assertions, finishes in a few seconds,
 describes itself in its module docstring, and is asserted by a test in
 `tests/examples/`. Tiers 1 to 3 teach exactly one concept each. Nothing
 reaches outside the machine: the remoting examples use loopback ports the OS
@@ -47,6 +47,7 @@ picks, so they need no orchestration and no second machine.
 | `state_machine` | behavior-switching as a protocol FSM |
 | `rate_limiter` | token bucket in one actor, the mailbox as mutex |
 | `stash_on_startup` | stashing traffic during startup, then unstashing |
+| `blocking_offload` | `ctx.run_blocking`, and the damage a blocking call does to every other actor, counted |
 
 ### Tier 4: Realistic composition
 
@@ -69,5 +70,18 @@ Every example here starts two systems in one process and shuts both down.
 | `partition` | both nodes alive, both cut off, both wrong about the other, and the explicit repair |
 | `remote_spawn` | `@remote_behavior`, a spawner with an allowlist, and the peer supervising its own child |
 | `worker_pool_remote` | why `offer` is not end-to-end backpressure across a link, and the credit protocol that is |
+
+### Tier 6: Clustering
+
+Every example here starts several systems in one process, clusters them, and
+shuts them all down.
+
+| Example | Teaches |
+|---|---|
+| `cluster_join` | seed nodes, the statuses a member moves through, the leader every node computes, and a graceful leave |
+| `cluster_singleton` | one actor across the cluster, on the oldest member of a role, and the handoff when its host leaves |
+| `rolling_restart` | restarting nodes one at a time, with a leave and a rejoin, while the service stays where it is |
+| `split_brain` | a real partition, and what `KeepMajority`, `DownAll` and `LeaseMajority` each decide about it |
+| `cluster_management` | the management port and the `tapio-cluster` command: reading membership and downing a member from outside |
 
 Every tier has landed and runs in CI.

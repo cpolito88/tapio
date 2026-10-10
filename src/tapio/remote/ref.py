@@ -48,7 +48,7 @@ if TYPE_CHECKING:
 
 __all__ = ["Outbox", "PeerWatch", "RemoteRef"]
 
-T = TypeVar("T", bound=Message)
+T_contra = TypeVar("T_contra", bound=Message, contravariant=True)
 R = TypeVar("R", bound=Message)
 
 
@@ -70,7 +70,7 @@ class Outbox(Protocol):
         ...
 
     async def offer(self, message: Message, frame: bytes, recipient: ActorPath) -> None:
-        """Queue a frame, waiting for room in the outbound buffer."""
+        """Queue a frame, waiting for the link and then for room in the buffer."""
         ...
 
     def watch(self, watchee: ActorPath, watcher: Watcher) -> None:
@@ -132,7 +132,7 @@ class PeerWatch:
         return f"PeerWatch({format_ref(self._outbox.peer, self._path)!r})"
 
 
-class RemoteRef(ActorRef[T]):
+class RemoteRef(ActorRef[T_contra]):
     """A ref to an actor on a peer system, reached through one association."""
 
     __slots__ = ("_max_frame_bytes", "_outbox", "_runtime", "_validate")
@@ -168,7 +168,7 @@ class RemoteRef(ActorRef[T]):
         """The peer's canonical address, which is what this ref writes down."""
         return self._outbox.peer
 
-    def tell(self, message: T) -> None:
+    def tell(self, message: T_contra) -> None:
         """Send a message to the peer, without waiting and without blocking.
 
         The type check here is against what the caller declared the peer
@@ -198,12 +198,13 @@ class RemoteRef(ActorRef[T]):
         self._validate(message)
         self._outbox.send(message, self._encode(message), self.path)
 
-    async def offer(self, message: T) -> None:
+    async def offer(self, message: T_contra) -> None:
         """Send a message, waiting for room in the outbound buffer.
 
         This is local backpressure against a socket that is not draining. It
         is not end-to-end backpressure from the receiving actor, which a
-        fire-and-forget wire protocol cannot provide.
+        fire-and-forget wire protocol cannot provide. While the link is being
+        dialled, it waits for the link first.
 
         Args:
             message: The message to deliver.
@@ -226,7 +227,7 @@ class RemoteRef(ActorRef[T]):
 
     async def ask(
         self,
-        make: "Callable[[ActorRef[R]], T]",
+        make: "Callable[[ActorRef[R]], T_contra]",
         *,
         expect: type[R],
         timeout: timedelta | None = None,  # noqa: ASYNC109 - the ask deadline
@@ -276,7 +277,7 @@ class RemoteRef(ActorRef[T]):
             gone=gone,
         )
 
-    def _encode(self, message: T) -> bytes:
+    def _encode(self, message: T_contra) -> bytes:
         """Turn a message into the frame that carries it.
 
         Raises:

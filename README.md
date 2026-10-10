@@ -170,16 +170,18 @@ uv run python -m tapio_examples.hello_world
 **Sending never blocks.** `ref.tell(msg)` is synchronous and fire-and-forget,
 so it works from sync callbacks and signal handlers too. Backpressure belongs
 to the mailbox rather than the send call. Bounded mailboxes take an overflow
-strategy (`fail`, `drop_new`, `drop_oldest`). `drop_new` and `drop_oldest`
-publish what they discard as a dead letter; `fail` discards nothing and raises
-`MailboxFullError` in the sender instead, so the sender decides. (A `fail` send
-from another thread has nobody to raise into, so it dead-letters.)
+strategy: `OverflowStrategy.FAIL`, `DROP_NEW` or `DROP_OLDEST`, which an
+environment variable spells `fail`, `drop-new` or `drop-oldest`. `DROP_NEW` and
+`DROP_OLDEST` publish what they discard as a dead letter; `FAIL` discards
+nothing and raises `MailboxFullError` in the sender instead, so the sender
+decides. (A `FAIL` send from another thread has nobody to raise into, so it
+dead-letters.)
 `await ref.offer(msg)` waits for capacity when you want to be throttled.
 
 **Every message is a validated Pydantic model.** Messages subclass
 `tapio.Message`, which is frozen and re-validated on delivery rather than only
-at construction. What that costs depends on the model: about 30% more per
-message for a one-field message, and about 3x for a ten-field one with nested
+at construction. What that costs depends on the model: about 40% more per
+message for a one-field message, and about 2.4x for a ten-field one with nested
 models. In an actor that spends 50 ms on an HTTP call it is invisible. In a
 tight per-record loop it dominates, which is why that workload is out of scope
 above. The check sits behind a single `validate_on_tell` setting. The

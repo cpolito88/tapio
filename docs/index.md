@@ -28,5 +28,7 @@ supervision, with Pydantic models throughout.
     guessing which side to keep. [The page about it](clustering.md) says what a
     cluster does give you.
 
-Every code block on this site is a snippet include from `examples/`, so nothing
-documented here is unexecuted.
+Every code block on this site is included from a file CI checks: an example
+under `examples/` or a test under `tests/docs/`. CI runs them, except for a few
+lines on the clustering page that name hosts or certificate files no test
+machine has, which it type-checks.

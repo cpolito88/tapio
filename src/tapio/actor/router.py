@@ -22,8 +22,8 @@ A router is a conduit, not an origin. Two decisions follow from that:
   stops too. An empty pool is an address that silently swallows work.
 """
 
-from collections.abc import Sequence
-from typing import Any, Protocol, TypeVar, runtime_checkable
+from collections.abc import Callable, Sequence
+from typing import Any, Protocol, TypeVar, cast, runtime_checkable
 
 from tapio.actor.behavior import Behavior, Behaviors, ReceivingBehavior
 from tapio.actor.cell import LocalActorRef
@@ -67,9 +67,10 @@ class RoutingStrategy(Protocol):
 class RoundRobin:
     """Hand each message to the next routee in turn.
 
-    It keeps a counter rather than a position, so removing a dead routee
-    shifts the rotation instead of restarting it. An actor that has just
-    received work does not receive more straight away because the pool shrank.
+    It keeps a counter, taken modulo the current number of routees. While the
+    pool keeps its size, every routee gets one message in turn. After the pool
+    shrinks, the rotation carries on from an arbitrary point, so the routee
+    that has just received a message can receive the next one too.
     """
 
     __slots__ = ("_sent",)
@@ -87,6 +88,33 @@ class RoundRobin:
     def __repr__(self) -> str:
         """Render how far round the rotation has gone."""
         return f"RoundRobin(sent={self._sent})"
+
+
+def fresh_strategy(
+    strategy: RoutingStrategy | Callable[[], RoutingStrategy] | None,
+) -> RoutingStrategy:
+    """Give one router actor the strategy it will route with.
+
+    A behavior is a value that can be spawned many times. A strategy holds
+    state, so each router actor has to get its own. Otherwise two routers
+    spawned from one behavior share a rotation, and each one only sees every
+    other turn of it.
+
+    Args:
+        strategy: `None` for a new round-robin, a class or other zero-argument
+            callable to call for a new strategy, or an instance to use as it
+            is. An instance is shared by every actor that uses it.
+
+    Returns:
+        The strategy for one router actor.
+    """
+    if strategy is None:
+        return RoundRobin()
+    # A class has a `select` attribute as well, so the protocol check alone
+    # would take `RoundRobin` itself for an instance.
+    if isinstance(strategy, RoutingStrategy) and not isinstance(strategy, type):
+        return strategy
+    return cast(Callable[[], RoutingStrategy], strategy)()
 
 
 class _PoolBehavior(ReceivingBehavior[T]):
@@ -149,7 +177,7 @@ class Routers:
         size: int,
         behavior: Behavior[T],
         *,
-        strategy: RoutingStrategy | None = None,
+        strategy: RoutingStrategy | Callable[[], RoutingStrategy] | None = None,
         routee_mailbox: MailboxConfig | None = None,
     ) -> Behavior[T]:
         """Spawn `size` copies of a behavior and spread work over them.
@@ -176,6 +204,10 @@ class Routers:
             size: How many routees to spawn. At least one.
             behavior: What each routee does.
             strategy: How to choose between them. Round-robin when omitted.
+                Pass a class such as `RoundRobin`, or another zero-argument
+                callable, and each router spawned from this behavior gets a
+                new strategy from it. An instance is shared by every router
+                spawned from this behavior, so a stateful one couples them.
             routee_mailbox: Capacity and overflow behaviour for each routee.
                 The system default when omitted. A bounded routee that fills
                 up dead-letters what it cannot take, rather than failing the
@@ -191,9 +223,12 @@ class Routers:
         if size < 1:
             msg = f"a router pool needs at least one routee, got {size}"
             raise ValueError(msg)
-        chosen = strategy if strategy is not None else RoundRobin()
 
         def build(ctx: ActorContext[T]) -> Behavior[T]:
+            # Chosen here rather than once above. This behavior can be spawned
+            # more than once, and two routers sharing one rotation would each
+            # skip the routees the other one's turns landed on.
+            chosen = fresh_strategy(strategy)
             routees = [
                 ctx.spawn(behavior, f"routee-{n}", routee_mailbox)
                 for n in range(1, size + 1)
@@ -212,12 +247,14 @@ class Routers:
         *,
         path: str,
         role: str | None = None,
-        strategy: RoutingStrategy | None = None,
+        strategy: RoutingStrategy | Callable[[], RoutingStrategy] | None = None,
     ) -> Behavior[Any]:
         """Spread work over an actor published on every member of a cluster role.
 
         ```python
-        proxy = ctx.spawn(Routers.group(Job, role="worker", path="/user/worker"))
+        proxy = ctx.spawn(
+            Routers.group(Job, role="worker", path="/user/worker"), "workers"
+        )
         ```
 
         Where a pool owns its routees, a group router routes to whatever actor
@@ -242,6 +279,9 @@ class Routers:
             role: The role a member must carry to take a share. `None` routes to
                 every member.
             strategy: How to choose between routees. Round-robin when omitted.
+                A class or other zero-argument callable gives each router
+                spawned from this behavior its own strategy. An instance is
+                shared by all of them, as it is for a pool.
 
         Returns:
             A behavior to spawn.

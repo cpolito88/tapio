@@ -4,6 +4,7 @@ import asyncio
 import threading
 import time
 from collections.abc import Awaitable, Callable
+from datetime import timedelta
 
 import pytest
 
@@ -242,6 +243,49 @@ async def test_a_pool_does_not_claim_a_similarly_named_systems_threads():
             release.set()
             await held
             await orders_eu.shutdown(0.0, now=lambda: -1.0)
+
+
+async def test_a_pool_does_not_claim_the_threads_of_a_system_with_the_same_name():
+    # Two systems in one process may share a name. A pool that matched threads
+    # by name took the other's idle thread for its own, and its shutdown then
+    # waited for that thread until the deadline.
+    with assert_no_leaked_threads():
+        first = BlockingPool(size=1, system="same")
+        second = BlockingPool(size=1, system="same")
+        loop = asyncio.get_running_loop()
+        await first.submit(loop, lambda: None)
+        await second.submit(loop, lambda: None)
+        try:
+            assert len(first.threads) == 1
+            assert first.threads != second.threads
+        finally:
+            await second.shutdown(time.monotonic() + 5, now=time.monotonic)
+            assert second.threads == ()
+            assert len(first.threads) == 1
+            await first.shutdown(time.monotonic() + 5, now=time.monotonic)
+
+
+async def test_terminating_one_of_two_same_named_systems_waits_for_nobody_else(
+    caplog: pytest.LogCaptureFixture,
+):
+    settings = IsolatedTapioSettings(shutdown_timeout=timedelta(seconds=2))
+    with assert_no_leaked_tasks(), assert_no_leaked_threads():
+        first = ActorSystem("same", settings)
+        second = ActorSystem("same", settings)
+        try:
+            loop = asyncio.get_running_loop()
+            await first.blocking.submit(loop, lambda: None)
+            await second.blocking.submit(loop, lambda: None)
+
+            started = time.monotonic()
+            await second.terminate()
+            took = time.monotonic() - started
+        finally:
+            await second.terminate()
+            await first.terminate()
+
+    assert "still running" not in caplog.text
+    assert took < 1.0, f"terminate waited {took:.2f}s for another system's thread"
 
 
 def _sink() -> Behavior[Answer]:

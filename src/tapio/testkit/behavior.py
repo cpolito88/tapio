@@ -12,7 +12,7 @@ await kit.run(Increment())
 await kit.run(GetCount(reply_to=kit.self_ref))
 
 assert kit.self_inbox == [Count(value=1)]
-assert kit.effects == (Spawned("worker"),)
+assert kit.effects == ("worker",)
 ```
 
 `run` is awaited, unlike Pekko's, because tapio's handlers are coroutines. It
@@ -30,7 +30,8 @@ instead of enqueuing it. That is what makes the assertions above possible, and
 it is why the message a `reply_to` receives is the object that was sent.
 """
 
-from typing import Any, Generic, TypeVar, final
+import warnings
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, final
 
 from tapio.actor.behavior import (
     Behavior,
@@ -47,10 +48,11 @@ from tapio.actor.signals import Signal
 from tapio.actor.stash import StashBuffer
 from tapio.actor.supervision import SupervisorStrategy
 from tapio.actor.timers import TimerScheduler
-from tapio.errors import BehaviorTypeError, TapioError
+from tapio.errors import ActorNameError, BehaviorTypeError, TapioError
 from tapio.logging import ActorLogAdapter, actor_logger
 from tapio.message import Message
 from tapio.settings import TapioSettings
+from tapio.testkit.settings import IsolatedTapioSettings
 from tapio.validation import MessageType, normalize_msg_type, resolve_validator
 
 __all__ = [
@@ -58,7 +60,7 @@ __all__ = [
     "DeadLettered",
     "Effect",
     "RecordingRef",
-    "Spawned",
+    "SpawnedChild",
     "Watched",
 ]
 
@@ -74,8 +76,13 @@ class Effect:
 
 
 @final
-class Spawned(Effect):
-    """The behavior started a child."""
+class SpawnedChild(Effect):
+    """The behavior started a child.
+
+    Named apart from [Spawned][tapio.remote.spawner.Spawned], the reply a
+    remote spawner sends, which is a different thing that `tapio` also
+    exports. `Spawned` still works here, with a deprecation warning.
+    """
 
     __slots__ = ("behavior", "inbox", "mailbox", "name", "ref")
 
@@ -105,7 +112,7 @@ class Spawned(Effect):
         read well: `assert kit.effects == ("worker",)`. Comparing the behavior
         objects would test identity of a closure, which says nothing.
         """
-        if isinstance(other, Spawned):
+        if isinstance(other, SpawnedChild):
             return self.name == other.name
         if isinstance(other, str):
             return self.name == other
@@ -117,7 +124,7 @@ class Spawned(Effect):
 
     def __repr__(self) -> str:
         """Render the name and what it was started with."""
-        return f"Spawned({self.name!r}, {self.behavior!r})"
+        return f"SpawnedChild({self.name!r}, {self.behavior!r})"
 
 
 @final
@@ -270,8 +277,10 @@ class BehaviorTestKit(Generic[T]):
                 Read from the behavior otherwise.
             name: The actor name this behavior thinks it has.
             system: The system name its path sits in.
-            settings: Tunables, for a test about `validate_on_tell`. Read from
-                the environment when omitted.
+            settings: Tunables, for a test about `validate_on_tell`. The
+                defaults when omitted, isolated from the environment like the
+                fixtures, so an exported `TAPIO_*` variable cannot change what
+                a test checks.
 
         Raises:
             BehaviorTypeError: If the message type cannot be resolved, exactly
@@ -279,7 +288,7 @@ class BehaviorTestKit(Generic[T]):
             TapioError: If the behavior needs a cell to exist at all, which
                 `with_timers`, `with_stash` and `unstash_all` do.
         """
-        self._settings = settings if settings is not None else TapioSettings()
+        self._settings = settings if settings is not None else IsolatedTapioSettings()
         path = ActorPath.root(system).child("user").child(name, uid=1)
         self._ctx: _KitContext[T] = _KitContext(path)
         self._host = _KitHost(self._ctx)
@@ -342,11 +351,11 @@ class BehaviorTestKit(Generic[T]):
         return tuple(self._ctx.effects)
 
     @property
-    def children(self) -> tuple[Spawned, ...]:
+    def children(self) -> tuple[SpawnedChild, ...]:
         """Just the spawns, which is what most tests are asking about."""
-        return tuple(e for e in self._ctx.effects if isinstance(e, Spawned))
+        return tuple(e for e in self._ctx.effects if isinstance(e, SpawnedChild))
 
-    def child(self, name: str) -> Spawned:
+    def child(self, name: str) -> SpawnedChild:
         """Return one spawn by name.
 
         Args:
@@ -556,17 +565,40 @@ class _KitContext(ActorContext[T]):
         name: str,
         mailbox: MailboxConfig | None = None,
     ) -> ActorRef[U]:
-        """Record a spawn and hand back a ref that records what it is told."""
-        ref: RecordingRef[U] = RecordingRef(self._path.child(name, uid=1))
-        self.effects.append(Spawned(name, behavior, mailbox, ref))
-        return ref
+        """Record a spawn and hand back a ref that records what it is told.
+
+        Raises:
+            ActorNameError: If the name starts with `$`, or no actor path
+                could hold it, as a running actor would refuse it, so the kit
+                does not pass a spawn that fails for real.
+        """
+        if name.startswith("$"):
+            msg = (
+                f"cannot spawn {name!r}: names starting with '$' are reserved "
+                "for the names spawn_anonymous and message adapters generate"
+            )
+            raise ActorNameError(msg)
+        try:
+            self._path.child(name)
+        except ValueError as error:
+            msg = f"cannot spawn {name!r} under {self._path}: {error}"
+            raise ActorNameError(msg) from error
+        return self._record_spawn(behavior, name, mailbox)
 
     def spawn_anonymous(
         self, behavior: Behavior[U], mailbox: MailboxConfig | None = None
     ) -> ActorRef[U]:
         """Record a spawn under a generated name, as a cell would generate one."""
         self._recorded += 1
-        return self.spawn(behavior, f"${self._recorded}", mailbox)
+        return self._record_spawn(behavior, f"${self._recorded}", mailbox)
+
+    def _record_spawn(
+        self, behavior: Behavior[U], name: str, mailbox: MailboxConfig | None
+    ) -> ActorRef[U]:
+        """Record one spawn under a name already known to be acceptable."""
+        ref: RecordingRef[U] = RecordingRef(self._path.child(name, uid=1))
+        self.effects.append(SpawnedChild(name, behavior, mailbox, ref))
+        return ref
 
     def message_adapter(
         self, adapt: "Any", msg_type: MessageType | None = None
@@ -621,3 +653,40 @@ class _KitContext(ActorContext[T]):
     def __repr__(self) -> str:
         """Render the path and how much has been recorded."""
         return f"_KitContext({str(self._path)!r}, {len(self.effects)} effect(s))"
+
+
+def deprecated_spawned(name: str, module: str) -> object:
+    """Return `SpawnedChild` for its old name, warning that the name is going.
+
+    Args:
+        name: The attribute a module was asked for.
+        module: That module's name, for the error when it is anything else.
+
+    Returns:
+        `SpawnedChild`, when the name asked for was `Spawned`.
+
+    Raises:
+        AttributeError: For any other name, as a module does by default.
+    """
+    if name == "Spawned":
+        warnings.warn(
+            "tapio.testkit.Spawned is renamed SpawnedChild, so it is not "
+            "confused with tapio.Spawned, the reply of a remote spawn. The old "
+            "name will be removed in a later release.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        return SpawnedChild
+    msg = f"module {module!r} has no attribute {name!r}"
+    raise AttributeError(msg)
+
+
+if TYPE_CHECKING:
+    # Seen by a type checker only, so code still using the old name checks.
+    # At runtime the name is served by `__getattr__`, which warns.
+    Spawned = SpawnedChild
+else:
+
+    def __getattr__(name: str) -> object:
+        """Serve the old name of `SpawnedChild`, with a deprecation warning."""
+        return deprecated_spawned(name, __name__)

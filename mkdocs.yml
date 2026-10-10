@@ -22,10 +22,12 @@ markdown_extensions:
   - admonition
   - pymdownx.details
   - pymdownx.superfences
-  # Docs never copy-paste code: every block is a snippet include from examples/.
+  # Docs never copy-paste code: every block is a snippet include from examples/
+  # or tests/docs/. A section may sit inside a test function, so it is dedented.
   - pymdownx.snippets:
       base_path: [.]
       check_paths: true
+      dedent_subsections: true
 
 plugins:
   - search

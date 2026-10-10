@@ -33,6 +33,7 @@ from tapio.remote.codec import receive_frame
 from tapio.remote.context import use_context
 from tapio.remote.endpoint import RemoteEndpoint, open_listener
 from tapio.remote.registry import RefRegistry
+from tapio.remote.transport import address_host, server_ssl_context
 from tapio.settings import RemoteSettings, TapioSettings
 from tapio.validation import normalize_msg_type
 
@@ -81,12 +82,29 @@ def _canonical_address(
     containers, NAT and port mapping, where they cannot. The port comes from
     the socket rather than the setting, so `bind_port=0` advertises the port
     the OS handed out.
+
+    A bare IPv6 literal such as `::1` gets brackets here, because an address
+    writes it as `[::1]` to keep the port unambiguous. A setting may spell it
+    either way.
+
+    Raises:
+        ValueError: If the host could not be dialled or read back from a ref.
+            The empty `bind_host`, which binds every interface, names no host
+            a peer could dial, so it needs a `canonical_host`.
     """
     if remote is None or listener is None:
         return Address(system=name)
+    host = remote.canonical_host or remote.bind_host
+    if not host:
+        msg = (
+            "remoting binds every interface (bind_host=''), which names no "
+            "host a peer could dial; set RemoteSettings(canonical_host=...) to "
+            "the host peers reach this system on"
+        )
+        raise ValueError(msg)
     return Address(
         system=name,
-        host=remote.canonical_host or remote.bind_host,
+        host=address_host(host),
         port=remote.canonical_port or listener.getsockname()[1],
     )
 
@@ -120,13 +138,15 @@ class ActorSystem:
         Raises:
             RuntimeError: If called outside a running event loop. A system is
                 built out of tasks and has nowhere to put them.
-            ValueError: If the name would not make a legal actor path.
+            ValueError: If the name would not make a legal actor path, or the
+                remoting host would not make a dialable address.
             InsecureRemoteConfig: If remoting is configured to listen beyond
                 loopback with no secret. The port is bound here, before
                 anything else, so a deployment like that fails to start rather
                 than failing to be secure.
             OSError: If the remoting port cannot be bound, usually because
-                something else holds it. Bound here for the same reason.
+                something else holds it, or if its certificate or key cannot
+                be loaded. Both are checked here for the same reason.
         """
         self._settings = settings if settings is not None else TapioSettings()
         self._root = ActorPath.root(name)
@@ -147,6 +167,16 @@ class ActorSystem:
             else None
         )
         try:
+            # Loaded here, before anything runs, for the same reason the port
+            # is bound here. A certificate that cannot be read used to fail
+            # inside the endpoint's accept task, where nobody saw it, and the
+            # port stayed bound with nothing answering on it.
+            remote = self._settings.remote
+            self._server_ssl = (
+                server_ssl_context(remote.tls)
+                if remote is not None and remote.tls is not None
+                else None
+            )
             self._build(name)
         except BaseException:
             # The port is bound by now, and nothing else has a reference to
@@ -230,6 +260,7 @@ class ActorSystem:
             uid=self._uid,
             deliver=lambda frame, peer: self.deliver_frame(frame, peer=peer),
             listener=listener,
+            ssl_context=self._server_ssl,
         )
         ref = self._system.spawn(endpoint.behavior(), "remote")
         endpoint.start(cast("LocalActorRef[Any]", ref).cell)
@@ -543,7 +574,9 @@ class ActorSystem:
 
         Raises:
             ActorSystemTerminating: If the system is shutting down.
-            ActorNameError: If a live top-level actor already has that name.
+            ActorNameError: If a live top-level actor already has that name,
+                if the name starts with `$`, which is reserved for generated
+                names, or if no actor path could hold it.
         """
         self._reject_if_terminating(name)
         return self._user.spawn(behavior, name, mailbox)
@@ -596,7 +629,9 @@ class ActorSystem:
 
         Raises:
             ActorSystemTerminating: If the system is shutting down.
-            ActorNameError: If a live system actor already has that name.
+            ActorNameError: If a live system actor already has that name,
+                if the name starts with `$`, which is reserved for generated
+                names, or if no actor path could hold it.
         """
         self._reject_if_terminating(name)
         return self._system.spawn(behavior, name, mailbox)
@@ -694,8 +729,8 @@ class ActorSystem:
         cell = running_cell()
         if cell is not None and cell.runtime is self._runtime:
             return
-        # Shielded for the reason ActorCell.stop is: a caller that gives up
-        # waiting must not cancel the shutdown it asked for.
+        # Shielded, so a caller that gives up waiting does not cancel the
+        # shutdown it asked for.
         await asyncio.shield(draining)
 
     async def when_terminated(self) -> None:

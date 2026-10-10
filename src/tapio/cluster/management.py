@@ -27,6 +27,7 @@ import contextlib
 import hmac
 import json
 import socket
+import ssl
 from collections.abc import Callable, Mapping
 from typing import Any, Final, final
 
@@ -45,9 +46,9 @@ from tapio.remote.transport import (
     bind,
     close_server,
     is_loopback,
-    server_ssl_context,
+    wait_server_closed,
 )
-from tapio.settings import ManagementSettings, TLSSettings
+from tapio.settings import ManagementSettings
 
 __all__ = [
     "ClusterManagement",
@@ -67,8 +68,10 @@ _MAX_BODY_BYTES: Final = 64 * 1024
 
 # How long one request has to arrive and be answered. A connection that opens
 # and then sends nothing, or dribbles its bytes, is closed at this deadline
-# rather than parking a task for as long as it stays open. It bounds the write
-# too, so a peer that stops reading cannot hold the response half-sent.
+# rather than parking a task for as long as it stays open. Over TLS it covers
+# the handshake as well, since the handshake runs inside the same task. It
+# bounds the write too, so a peer that stops reading cannot hold the response
+# half-sent.
 _REQUEST_TIMEOUT: Final = 30.0
 
 # How many connections this port will hold at once. Each connection is already
@@ -141,7 +144,7 @@ class ClusterManagement:
         daemon: ActorRef[ClusterMessage],
         dispatcher: Dispatcher,
         token: SecretStr | None,
-        tls: TLSSettings | None,
+        ssl_context: ssl.SSLContext | None,
         address: str,
     ) -> None:
         """Describe a node's management endpoint, before its actor exists.
@@ -162,9 +165,12 @@ class ClusterManagement:
                 and belong to the same loop as every other task in the system.
             token: The bearer token an operator must present, or `None` to ask
                 for nothing.
-            tls: Certificates for the port, or `None` for plaintext HTTP. When
-                set the port speaks HTTPS, and requires a client certificate too
-                when the settings carry a `cafile`.
+            ssl_context: The server context built from the port's
+                certificates, or `None` for plaintext HTTP. When set the port
+                speaks HTTPS. It is built by the caller during construction,
+                so a certificate that cannot be loaded fails the construction
+                instead of leaving a port that accepts connections and never
+                answers them.
             address: This node's canonical address, for the log.
         """
         self._listener = listener
@@ -173,7 +179,7 @@ class ClusterManagement:
         self._daemon = daemon
         self._dispatcher = dispatcher
         self._token = token
-        self._tls = tls
+        self._ssl = ssl_context
         self._address = address
         self._server: asyncio.Server | None = None
         self._serving: asyncio.Task[None] | None = None
@@ -224,22 +230,22 @@ class ClusterManagement:
     async def _serve(self) -> None:
         """Accept connections on the already-bound socket.
 
-        The TLS context, when there is one, is applied here at the server rather
-        than at the socket, the same way remoting does it: the listener is a
-        plain socket bound at construction, and every connection accepted through
-        it is wrapped as it arrives.
+        The server accepts plain TCP even when the port speaks TLS. If asyncio
+        ran the TLS handshake, it would do so before `_on_connection`, so a
+        client that opened TCP and never sent a hello would not be counted
+        against `_MAX_CONNECTIONS` and would not belong to any task this actor
+        owns. Each connection upgrades to TLS inside `_handle` instead, where
+        the cap, the deadline and the shutdown all cover it.
         """
-        context = server_ssl_context(self._tls) if self._tls is not None else None
         self._server = await asyncio.start_server(
             self._on_connection,
             sock=self._listener,
-            ssl=context,
             limit=_MAX_HEADER_BYTES,
         )
         _log.debug(
             "cluster management is answering on %s%s",
             self._address,
-            " over TLS" if context is not None else "",
+            " over TLS" if self._ssl is not None else "",
         )
 
     def _on_connection(
@@ -256,7 +262,9 @@ class ClusterManagement:
         A flood then fails fast instead of building a backlog that outlives it.
         The response is written without awaiting the drain, because refusing
         should cost nothing: the transport flushes what was written as it
-        closes.
+        closes. Over TLS the connection is closed with no response. A `503`
+        could only be sent after a TLS handshake, and the handshake is the
+        cost the cap exists to bound.
         """
         if self._closed:
             writer.close()
@@ -266,11 +274,18 @@ class ClusterManagement:
                 "refusing a management connection: %d are already open",
                 len(self._connections),
             )
-            writer.write(
-                _response(_HTTP_SERVICE_UNAVAILABLE, _error("too many connections"))
-            )
+            if self._ssl is None:
+                writer.write(
+                    _response(_HTTP_SERVICE_UNAVAILABLE, _error("too many connections"))
+                )
             writer.close()
             return
+        transport = writer.transport
+        if self._ssl is not None and isinstance(transport, asyncio.ReadTransport):
+            # Nothing may be read as plaintext before `_handle` starts TLS.
+            # The client's hello would land in the stream's buffer, and the
+            # TLS layer would then wait for a hello that has already been read.
+            transport.pause_reading()
         task = self._dispatcher.spawn_task(
             self._handle(reader, writer), name="tapio-cluster-management-connection"
         )
@@ -280,7 +295,7 @@ class ClusterManagement:
     async def _handle(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        """Read one request, answer it, and close the connection.
+        """Upgrade to TLS if the port speaks it, then answer one request and close.
 
         One request per connection, closed when it is answered: an operator
         command is a single call, so keep-alive would only be state to get
@@ -290,18 +305,25 @@ class ClusterManagement:
         and the answer to a bad request is to say so and hang up. A request that
         does not arrive within the deadline is a `408`, so a peer that opens a
         connection and then stalls cannot hold a task open for as long as it
-        likes.
+        likes. A TLS handshake that does not finish within the deadline is
+        closed with no answer, since there is no secure channel to answer on.
         """
+        secured = self._ssl is None
         try:
             async with asyncio.timeout(_REQUEST_TIMEOUT):
+                if self._ssl is not None:
+                    await writer.start_tls(self._ssl)
+                    secured = True
                 status, body = await self._answer(reader)
         except TimeoutError:
             status, body = (
-                _HTTP_REQUEST_TIMEOUT,
-                _error("the request was not sent in time"),
+                (_HTTP_REQUEST_TIMEOUT, _error("the request was not sent in time"))
+                if secured
+                else (None, b"")
             )
         except (asyncio.IncompleteReadError, OSError):
-            # The peer went away or never finished its request. There is nobody
+            # The peer went away, never finished its request, or failed the
+            # TLS handshake (`ssl.SSLError` is an `OSError`). There is nobody
             # to tell, so the connection is just closed.
             status, body = None, b""
         except asyncio.CancelledError:
@@ -353,6 +375,10 @@ class ClusterManagement:
         token = self._token
         if token is None:  # pragma: no cover - the caller checks first
             return True
+        if not token.get_secret_value():
+            # The settings refuse an empty token. This holds even if one got
+            # past them, because an empty token would match an empty header.
+            return False
         presented = headers.get("authorization", "")
         scheme, _, value = presented.partition(" ")
         if scheme.lower() != "bearer":
@@ -448,6 +474,11 @@ class ClusterManagement:
             with contextlib.suppress(asyncio.CancelledError, OSError):
                 await task
         self._connections.clear()
+        if server is not None:
+            # After the connections above are closed, not before: the server
+            # waits for every connection it accepted, so a request still being
+            # read would otherwise hold the shutdown for its whole deadline.
+            await wait_server_closed(server)
 
     def __repr__(self) -> str:
         """Render the address this endpoint answers for."""

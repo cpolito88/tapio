@@ -4,6 +4,7 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
+from pydantic import field_validator
 
 from tapio import (
     Behavior,
@@ -175,6 +176,25 @@ def spawnable_ref_args(args: RefArgs) -> Behavior[Work]:
     return Behaviors.ignore()
 
 
+class SizedArgs(Message):
+    """Arguments whose validator raises something other than a `ValueError`."""
+
+    size: int
+
+    @field_validator("size")
+    @classmethod
+    def _positive(cls, size: int) -> int:
+        if size < 0:
+            raise TypeError("a size cannot be negative")
+        return size
+
+
+@remote_behavior("test-sized", args=SizedArgs)
+def spawnable_sized(args: SizedArgs) -> Behavior[Crash]:
+    """A factory whose arguments a peer can make raise a `TypeError`."""
+    return spawnable_idler(NoArgs())
+
+
 class CountingLink:
     """A link that counts what the system wrote through it.
 
@@ -337,6 +357,21 @@ async def test_arguments_that_do_not_validate_are_refused(system: ActorSystem):
     assert reply.reason == SpawnFailure.INVALID_ARGS
     assert "WorkerArgs" in reply.detail
     assert _children_of(system, "spawner") == ()
+
+
+async def test_a_validator_raising_a_type_error_is_refused_and_workers_survive(
+    system: ActorSystem,
+):
+    ref = system.spawn(offering("test-sized"), "spawner")
+    first = await ask_to_spawn(ref, "test-sized", args={"size": 1})
+    assert isinstance(first, Spawned)
+
+    reply = await ask_to_spawn(ref, "test-sized", args={"size": -1})
+
+    assert isinstance(reply, SpawnFailed)
+    assert reply.reason == SpawnFailure.INVALID_ARGS
+    assert "TypeError" in reply.detail
+    assert _children_of(system, "spawner") == (first.ref.path.name,)
 
 
 async def test_a_name_a_live_child_already_holds_is_refused(system: ActorSystem):

@@ -125,10 +125,13 @@ test cannot tell the difference:
 ```
 
 `heal()` lets the frames through again and repairs nothing by itself: a node
-that gave up on a peer stays given up on until `remote.reconnect` says
-otherwise, which is the behaviour worth testing. `drop(n)` loses the next few
-frames and `delay(seconds)` holds them, which is what makes a failure detector
-fire on purpose rather than by sleeping and hoping.
+that gave up on a peer stays given up on until it relents, which is the
+behaviour worth testing. A partition quarantines both nodes, so the node being
+dialled calls `remote.clear_quarantine` before the other calls
+`remote.reconnect`. Without that, the dial is refused and `reconnect` raises
+`HandshakeError`. `drop(n)` loses the next few frames and `delay(seconds)`
+holds them, which is what makes a failure detector fire on purpose rather than
+by sleeping and hoping.
 
 ## Waiting for something that has not happened yet
 

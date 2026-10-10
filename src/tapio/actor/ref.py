@@ -17,11 +17,19 @@ if TYPE_CHECKING:
 
 __all__ = ["ActorRef"]
 
-T = TypeVar("T", bound=Message)
+T_contra = TypeVar("T_contra", bound=Message, contravariant=True)
+"""What a ref accepts. Contravariant, since a ref only ever takes messages in.
+
+A ref that accepts `A | B` takes everything a ref that accepts `A` takes, so it
+can stand wherever an `ActorRef[A]` is wanted. The common case is handing an
+actor's own ref, typed with its whole protocol, to a field that names only the
+reply it expects.
+"""
+
 R = TypeVar("R", bound=Message)
 
 
-class ActorRef(Generic[T]):
+class ActorRef(Generic[T_contra]):
     """A handle for sending messages to one actor.
 
     A ref stays a valid handle after its actor dies. Sending to it never
@@ -33,6 +41,11 @@ class ActorRef(Generic[T]):
     it at runtime and `ActorRef[Greeted]` and `ActorRef[Foo]` validate the
     same. A type checker catches the mismatch at the call site. At runtime the
     check lives on the receiving actor, against its declared message type.
+
+    The type parameter is contravariant, because a ref only takes messages
+    in. An `ActorRef[A | B]` can be passed wherever an `ActorRef[A]` is
+    wanted, such as an actor's own ref handed to a `reply_to` field that names
+    only the reply. The reverse is a type error.
 
     Using one as a Pydantic field:
 
@@ -72,7 +85,7 @@ class ActorRef(Generic[T]):
         """
         return Address(system=self._path.system)
 
-    def tell(self, message: T) -> None:
+    def tell(self, message: T_contra) -> None:
         """Send a message, without waiting and without blocking.
 
         Args:
@@ -84,7 +97,7 @@ class ActorRef(Generic[T]):
         """
         raise NotImplementedError(self._undeliverable())
 
-    async def offer(self, message: T) -> None:
+    async def offer(self, message: T_contra) -> None:
         """Send a message, waiting for the recipient's mailbox to have room.
 
         Backpressure belongs to the mailbox, not to the send, so on an
@@ -101,7 +114,7 @@ class ActorRef(Generic[T]):
 
     async def ask(
         self,
-        make: "Callable[[ActorRef[R]], T]",
+        make: "Callable[[ActorRef[R]], T_contra]",
         *,
         expect: type[R],
         timeout: timedelta | None = None,  # noqa: ASYNC109 - the ask deadline
@@ -148,7 +161,8 @@ class ActorRef(Generic[T]):
         The address is compared as well as the path. A path names a place in
         one system's tree and says nothing about which node that system runs
         on. Two nodes of one deployment share a system name and spawn the same
-        actors in the same order, so their refs share paths, uids included.
+        actors in the same order, so their refs share paths up to the uid, and
+        a ref to a well-known name carries no uid at all.
         """
         if not isinstance(other, ActorRef):
             return NotImplemented

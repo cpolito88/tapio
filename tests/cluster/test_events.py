@@ -21,7 +21,7 @@ from tapio.cluster import (
     MemberUp,
 )
 from tapio.testkit import assert_no_leaked_tasks
-from tests.cluster.conftest import Node, cluster_of, seeds_of
+from tests.cluster.conftest import Node, cluster_of, daemon_running, seeds_of
 from tests.failures import eventually
 
 
@@ -50,12 +50,6 @@ def recorder(seen: list[tuple[str, str]]) -> Behavior[ClusterEvent]:
         return Behaviors.same()
 
     return Behaviors.receive_message(on_message, msg_type=ClusterEvent)
-
-
-def daemon_running(node: Node) -> bool:
-    """Whether the node's daemon still holds its well-known name."""
-    path = ActorPath.root(node.system.name).child("system").child("cluster")
-    return node.system.refs.lookup(path) is not None
 
 
 def subscribers(node: Node) -> tuple[ActorPath, ...]:
@@ -327,3 +321,32 @@ async def test_a_subscriber_with_a_full_mailbox_misses_the_event_and_stays():
             await eventually(
                 lambda: ("MemberRemoved", nodes[1].address) in seen, within=5.0
             )
+
+
+async def test_a_subscriber_on_another_node_is_refused():
+    # Events do not cross a link, so every one sent to it would fail to
+    # encode. Kept, it made each later turn raise before the subscribers after
+    # it were told anything.
+    with assert_no_leaked_tasks():
+        async with cluster_of(2) as nodes:
+            await joined(nodes)
+            far: list[tuple[str, str]] = []
+            elsewhere = nodes[1].system.spawn(recorder(far), name="elsewhere")
+            remote = await nodes[0].system.resolve(
+                f"{nodes[1].address}/user/elsewhere#{elsewhere.path.uid}",
+                expect=ClusterEvent,
+            )
+            seen: list[tuple[str, str]] = []
+            watcher = nodes[0].system.spawn(recorder(seen), name="watcher")
+
+            nodes[0].cluster.subscribe(remote, MemberUp, MemberRemoved)
+            nodes[0].cluster.subscribe(watcher, MemberUp, MemberRemoved)
+            await eventually(lambda: len(seen) == 2, within=5.0)
+
+            assert subscribers(nodes[0]) == (watcher.path,)
+            await nodes[1].cluster.leave()
+            await eventually(
+                lambda: ("MemberRemoved", nodes[1].address) in seen, within=5.0
+            )
+            assert far == []
+            assert daemon_running(nodes[0])

@@ -24,13 +24,17 @@ from tapio.dispatch.dispatcher import Dispatcher
 from tapio.errors import MessageEncodingError
 from tapio.message import Message
 from tapio.remote.address import Address
-from tapio.remote.association import Association, Outbound
+from tapio.remote.association import Association, Beat, Outbound
 from tapio.remote.codec import LENGTH_PREFIX, encode
+from tapio.remote.failure import PeerUnreachable
 from tapio.remote.handle import LinkHandle
+from tapio.remote.handshake import accept
 from tapio.remote.transport import framed, is_link_frame, link_body
 from tapio.testkit import (
     IsolatedRemoteSettings,
     assert_no_leaked_tasks,
+    drop_links,
+    two_nodes,
 )
 from tests.failures import eventually
 from tests.remote.peers import (
@@ -40,16 +44,20 @@ from tests.remote.peers import (
     RecordingLink,
     Tick,
     Unregistered,
+    buggy_reads,
     collecting,
     counting,
     dial,
     echoing,
     failing_writes,
+    held_closes,
     relaying,
     remoting,
     silent_peer,
     stalled_writes,
+    superseding_peer,
     uri,
+    watching,
 )
 
 
@@ -185,13 +193,15 @@ async def test_a_full_outbound_lane_off_loop_still_names_the_peer():
                 # than the overflow needs and short enough that the write then
                 # times out, freeing the actor for a clean shutdown.
                 unreachable_after=timedelta(seconds=1),
+                handshake_timeout=timedelta(milliseconds=800),
                 heartbeat_interval=timedelta(seconds=60),
             ),
         )
         two = ActorSystem("beta", remoting())
         try:
             assert one.remote is not None
-            one.remote.set_link_filter(stalled_writes(after=1))
+            parked = asyncio.Event()
+            one.remote.set_link_filter(stalled_writes(after=1, parked=parked))
             seen: list[int] = []
             ticker = two.spawn(counting(seen), "ticker")
             letters: list[DeadLetter] = []
@@ -204,7 +214,7 @@ async def test_a_full_outbound_lane_off_loop_still_names_the_peer():
             # Park the association inside a stalled write, then fill the bounded
             # mailbox behind it, so the next send has no slot.
             remote.tell(Tick(n=2))
-            await asyncio.sleep(0.05)
+            await parked.wait()
             remote.tell(Tick(n=3))
             remote.tell(Tick(n=4))
 
@@ -480,10 +490,10 @@ async def test_a_write_that_fails_dead_letters_the_message_and_ends_the_link():
             await two.terminate()
 
 
-async def test_a_frame_that_never_flushed_is_put_back_and_accounted_for():
-    # `_open` fails on the very first write, so the frame it had taken off the
-    # queue goes back rather than being lost between the two. The association
-    # then stops and reports it, which is what makes at-most-once auditable.
+async def test_a_frame_that_never_flushed_is_accounted_for():
+    # `_open` fails on the very first write. The frame it had taken off the
+    # queue is reported rather than lost between the two, which is what makes
+    # at-most-once auditable.
     with assert_no_leaked_tasks():
         one = ActorSystem("alpha", remoting())
         two = ActorSystem("beta", remoting())
@@ -550,6 +560,7 @@ async def test_a_peer_that_accepts_no_bytes_is_declared_unreachable():
             "alpha",
             remoting(
                 unreachable_after=timedelta(milliseconds=200),
+                handshake_timeout=timedelta(milliseconds=150),
                 heartbeat_interval=timedelta(seconds=60),
             ),
         )
@@ -595,13 +606,15 @@ async def test_a_close_from_the_reader_survives_a_full_outbound_lane():
             remoting(
                 outbound_capacity=2,
                 unreachable_after=timedelta(milliseconds=300),
+                handshake_timeout=timedelta(milliseconds=250),
                 heartbeat_interval=timedelta(seconds=60),
             ),
         )
         two = ActorSystem("beta", remoting())
         try:
             assert one.remote is not None
-            one.remote.set_link_filter(stalled_writes(after=1))
+            parked = asyncio.Event()
+            one.remote.set_link_filter(stalled_writes(after=1, parked=parked))
             seen: list[int] = []
             ticker = two.spawn(counting(seen), "ticker")
 
@@ -612,7 +625,7 @@ async def test_a_close_from_the_reader_survives_a_full_outbound_lane():
             # This one parks the association inside a stalled write, so the
             # writes that follow queue in the mailbox behind it.
             remote.tell(Tick(n=2))
-            await asyncio.sleep(0.05)
+            await parked.wait()
             # Fill the bounded lane, so a Close has no slot to land in.
             remote.tell(Tick(n=3))
             remote.tell(Tick(n=4))
@@ -799,6 +812,7 @@ def _queued(n: int) -> Outbound:
         payload=Tick(n=n),
         frame=framed(str(n).encode()),
         recipient=ActorPath.root("peer").child("user").child("ticker", uid=1),
+        peer=Address.parse("tapio://peer@127.0.0.1:2551"),
     )
 
 
@@ -1152,6 +1166,48 @@ async def test_a_write_parked_on_a_link_a_dial_race_retired_keeps_the_associatio
         assert winner.written == [_queued(2).frame]
 
 
+class _ParkedLink(_WritingLink):
+    """A link whose writes never drain, and whose close does not wake them."""
+
+    def __init__(self) -> None:
+        """Start open, with no write parked yet."""
+        super().__init__()
+        self.parked = False
+
+    async def write_frame(self, data: bytes) -> None:
+        """Park for good, as a write to a peer that stopped reading does."""
+        self.parked = True
+        await asyncio.Event().wait()
+
+
+async def test_a_frame_being_flushed_when_its_link_is_retired_is_accounted_for():
+    with assert_no_leaked_tasks():
+        host = _RecordingHost()
+        peer = Address.parse("tapio://peer@127.0.0.1:2551")
+        association = _SwapProbe(host=host, peer=peer, initiator=peer)  # type: ignore[arg-type]
+        loser, winner = _ParkedLink(), _WritingLink()
+        association._pending.extend([_queued(1), _queued(2)])
+        association._handle = _held(loser)
+        opening = asyncio.create_task(association._open(loser))
+        association._handle.reads_with(opening)
+        await eventually(lambda: loser.parked)
+
+        # The peer's dial wins while frame 1 is being flushed to the old link,
+        # and retiring that link cancels the flush.
+        association.adopt(winner, uid=7)
+        assert association._handle is not None
+        resuming = association._handle.reader
+        assert resuming is not None
+        await resuming
+        assert opening.cancelled()
+
+        # Frame 1 may have left on the old link, so it is reported and not
+        # sent again. Frame 2 never left, so it goes out on the winner.
+        assert host.letters == [(DeadLetterReason.LINK_FAILED, peer)]
+        await association._open(winner)
+        assert winner.written == [_queued(2).frame]
+
+
 async def test_a_heartbeat_parked_on_a_link_a_dial_race_retired_keeps_the_association():
     with assert_no_leaked_tasks():
         peer = Address.parse("tapio://peer@127.0.0.1:2551")
@@ -1170,3 +1226,366 @@ async def test_a_heartbeat_parked_on_a_link_a_dial_race_retired_keeps_the_associ
         await beating
 
         assert not association._closing
+
+
+async def test_every_tick_queued_behind_a_close_is_delivered_or_dead_lettered():
+    # The association takes the first tick off its mailbox on the turn after
+    # the close. That tick is in hand, neither queued nor pending, and it used
+    # to vanish with no dead letter.
+    with assert_no_leaked_tasks():
+        async with two_nodes() as nodes:
+            seen: list[int] = []
+            worker = nodes.beta.spawn(counting(seen), "worker")
+            ref = await nodes.alpha.resolve(uri(nodes.beta, worker), expect=Tick)
+            ref.tell(Tick(n=0))
+            await eventually(lambda: seen == [0])
+            letters: list[DeadLetter] = []
+            nodes.alpha.dead_letters.subscribe(letters.append)
+
+            for n in range(1, 6):
+                ref.tell(Tick(n=n))
+            drop_links(nodes.alpha)
+
+            def accounted() -> list[int]:
+                dead = [x.message.n for x in letters if isinstance(x.message, Tick)]
+                return sorted(seen[1:] + dead)
+
+            await eventually(lambda: accounted() == [1, 2, 3, 4, 5])
+
+
+async def test_a_link_slow_to_close_does_not_hold_back_what_the_association_owes(
+    alpha: ActorSystem, beta: ActorSystem
+):
+    # The watchers, the event and the endpoint's table are all settled before
+    # the socket is closed. A peer that stopped reading can hold that close for
+    # as long as the transport allows, and nothing else may wait for it.
+    gate = asyncio.Event()
+    assert alpha.remote is not None
+    alpha.remote.set_link_filter(held_closes(gate))
+    try:
+        seen: list[str] = []
+        unreachable: list[PeerUnreachable] = []
+        alpha.events.subscribe(PeerUnreachable, unreachable.append)
+        ticker = beta.spawn(counting([]), "ticker")
+        remote = await alpha.resolve(uri(beta, ticker), expect=Tick)
+        alpha.spawn(watching(remote, seen), "watcher")
+        assert beta.remote is not None
+        there = beta.remote
+
+        def watch_registered() -> bool:
+            association = there.association_for(alpha.address)
+            return association is not None and bool(association.watched)
+
+        await eventually(watch_registered)
+
+        drop_links(alpha)
+
+        await eventually(lambda: any(s.startswith("terminated") for s in seen))
+        assert [event.peer for event in unreachable] == [str(beta.address)]
+        assert alpha.remote.associations == ()
+        assert not gate.is_set()
+    finally:
+        gate.set()
+
+
+async def test_a_dial_race_loses_nothing_whichever_link_is_answered_first(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Both nodes dial at once. The loser's own dial is answered first, because
+    # the loser is slow to accept the winner's. It used to read a welcome,
+    # write its first frames into a link the winner was closing unread, and
+    # then tear the association down. Now the winner says before any welcome
+    # that its own link wins, and the loser waits for that link.
+    with assert_no_leaked_tasks():
+        async with two_nodes() as nodes:
+            winner, loser = sorted(
+                (nodes.alpha, nodes.beta), key=lambda system: str(system.address)
+            )
+
+            accepting_late(monkeypatch, loser, 0.1)
+            at_winner: list[int] = []
+            at_loser: list[int] = []
+            to_winner = await loser.resolve(
+                uri(winner, winner.spawn(counting(at_winner), "worker")), expect=Tick
+            )
+            to_loser = await winner.resolve(
+                uri(loser, loser.spawn(counting(at_loser), "worker")), expect=Tick
+            )
+            letters: list[DeadLetter] = []
+            gone: list[PeerUnreachable] = []
+            for system in (winner, loser):
+                system.dead_letters.subscribe(letters.append)
+                system.events.subscribe(PeerUnreachable, gone.append)
+
+            for n in range(1, 6):
+                to_winner.tell(Tick(n=n))
+                to_loser.tell(Tick(n=n))
+
+            await eventually(lambda: at_winner == at_loser == [1, 2, 3, 4, 5])
+            assert letters == []
+            assert gone == []
+
+
+async def test_a_dial_superseded_by_a_link_that_never_arrives_is_given_up_on():
+    with assert_no_leaked_tasks():
+        async with superseding_peer() as address:
+            system = ActorSystem(
+                "alpha", remoting(handshake_timeout=timedelta(milliseconds=200))
+            )
+            try:
+                letters: list[DeadLetter] = []
+                system.dead_letters.subscribe(letters.append)
+                remote = await system.resolve(f"{address}/user/worker#1", expect=Tick)
+
+                remote.tell(Tick(n=1))
+
+                await eventually(lambda: bool(letters))
+                assert letters[0].message == Tick(n=1)
+                assert letters[0].reason == DeadLetterReason.LINK_FAILED
+            finally:
+                await system.terminate()
+
+
+def accepting_late(
+    monkeypatch: pytest.MonkeyPatch, system: ActorSystem, seconds: float
+) -> None:
+    """Make one system slow to accept a dial, so a link to it stays coming up."""
+
+    async def late_accept(*args: Any, address: Address, **kwargs: Any) -> Any:
+        if address == system.address:
+            await asyncio.sleep(seconds)
+        return await accept(*args, address=address, **kwargs)
+
+    monkeypatch.setattr("tapio.remote.endpoint.accept", late_accept)
+
+
+async def test_a_dial_answered_by_another_system_delivers_nothing(
+    alpha: ActorSystem, beta: ActorSystem
+):
+    # A ref names gamma, and beta answers at that host and port. The frame
+    # names no system, so beta used to deliver it to its own actor.
+    seen: list[int] = []
+    worker = beta.spawn(counting(seen), "worker")
+    letters: list[DeadLetter] = []
+    alpha.dead_letters.subscribe(letters.append)
+    gamma = Address(system="gamma", host=beta.address.host, port=beta.address.port)
+    remote = await alpha.resolve(f"{gamma}/user/worker#{worker.path.uid}", expect=Tick)
+
+    remote.tell(Tick(n=1))
+
+    await eventually(lambda: bool(letters))
+    assert letters[0].message == Tick(n=1)
+    assert letters[0].peer == str(gamma)
+    assert seen == []
+
+
+async def test_a_reader_that_hits_a_bug_ends_the_link_at_once(
+    alpha: ActorSystem, beta: ActorSystem, caplog: pytest.LogCaptureFixture
+):
+    # A reader that died quietly left the association writing to a link
+    # nobody read, until the silence became a quarantine of a healthy peer.
+    assert alpha.remote is not None
+    alpha.remote.set_link_filter(buggy_reads())
+    gone: list[PeerUnreachable] = []
+    alpha.events.subscribe(PeerUnreachable, gone.append)
+    remote = await alpha.resolve(
+        uri(beta, beta.spawn(counting([]), "worker")), expect=Tick
+    )
+
+    remote.tell(Tick(n=1))
+
+    await eventually(lambda: bool(gone))
+    assert not gone[0].quarantined
+    assert "reading the link" in caplog.text
+
+
+async def test_offers_made_while_a_dial_fails_are_not_shed(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # The actor moves frames from its mailbox into a hold buffer while a link
+    # comes up, so the mailbox never filled and an offer never waited. Frames
+    # past the hold buffer's capacity were shed as if they had been told.
+    with assert_no_leaked_tasks():
+        async with silent_peer() as address:
+            system = ActorSystem(
+                "alpha",
+                remoting(
+                    outbound_capacity=4,
+                    handshake_timeout=timedelta(milliseconds=300),
+                ),
+            )
+            try:
+                letters: list[DeadLetter] = []
+                system.dead_letters.subscribe(letters.append)
+                remote = await system.resolve(f"{address}/user/worker#1", expect=Tick)
+
+                await asyncio.gather(*(remote.offer(Tick(n=n)) for n in range(20)))
+
+                assert len(letters) == 20
+                assert DeadLetterReason.OUTBOUND_BUFFER_FULL not in {
+                    letter.reason for letter in letters
+                }
+            finally:
+                await system.terminate()
+
+
+async def test_offers_made_while_a_link_comes_up_all_arrive_in_order(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    with assert_no_leaked_tasks():
+        one = ActorSystem("alpha", remoting(outbound_capacity=4))
+        two = ActorSystem("beta", remoting())
+        try:
+            accepting_late(monkeypatch, two, 0.2)
+            letters: list[DeadLetter] = []
+            one.dead_letters.subscribe(letters.append)
+            seen: list[int] = []
+            remote = await one.resolve(
+                uri(two, two.spawn(counting(seen), "worker")), expect=Tick
+            )
+
+            for n in range(20):
+                await remote.offer(Tick(n=n))
+
+            await eventually(lambda: seen == list(range(20)))
+            assert letters == []
+        finally:
+            await one.terminate()
+            await two.terminate()
+
+
+async def test_a_watch_shed_while_a_link_comes_up_answers_its_watcher(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # The hold buffer is full of ticks when the watch arrives, so the watch is
+    # shed. That path used to only log it, leaving the watcher waiting for a
+    # Terminated the peer would never send.
+    with assert_no_leaked_tasks():
+        one = ActorSystem("alpha", remoting(outbound_capacity=4))
+        two = ActorSystem("beta", remoting())
+        try:
+            accepting_late(monkeypatch, two, 0.3)
+            seen: list[str] = []
+            remote = await one.resolve(
+                uri(two, two.spawn(counting([]), "worker")), expect=Tick
+            )
+            for n in range(4):
+                remote.tell(Tick(n=n))
+            assert one.remote is not None
+            association = one.remote.association_for(two.address)
+            assert association is not None
+            # The ticks have moved from the mailbox into the hold buffer, which
+            # is now full, and the mailbox has room for the watch again.
+            await eventually(lambda: len(association._pending) == 4)
+            one.spawn(watching(remote, seen), "watcher")
+
+            await eventually(lambda: any(s.startswith("terminated") for s in seen))
+        finally:
+            await one.terminate()
+            await two.terminate()
+
+
+async def test_a_terminated_report_that_cannot_be_queued_ends_the_association():
+    # The watched actor fills the outbound buffer and stops in the same turn,
+    # so the report of its death finds no room. The watcher on the peer waits
+    # for nothing else, so the association ends, and that tells it.
+    with assert_no_leaked_tasks():
+        one = ActorSystem("alpha", remoting(outbound_capacity=4))
+        two = ActorSystem("beta", remoting())
+        try:
+            sink = await one.resolve(
+                uri(two, two.spawn(counting([]), "sink")), expect=Tick
+            )
+
+            async def burst(message: Tick) -> Behavior[Tick]:
+                for n in range(50):
+                    sink.tell(Tick(n=n))
+                return Behaviors.stopped()
+
+            doomed = one.spawn(Behaviors.receive_message(burst), "doomed")
+            seen: list[str] = []
+            watched = await two.resolve(uri(one, doomed), expect=Tick)
+            two.spawn(watching(watched, seen), "watcher")
+            assert one.remote is not None
+            here = one.remote
+
+            def watch_registered() -> bool:
+                association = here.association_for(two.address)
+                return association is not None and bool(association.watched)
+
+            await eventually(watch_registered)
+
+            doomed.tell(Tick(n=0))
+
+            await eventually(lambda: any(s.startswith("terminated") for s in seen))
+        finally:
+            await one.terminate()
+            await two.terminate()
+
+
+async def test_frames_left_in_a_stopped_associations_mailbox_name_their_peer():
+    # The cell drains a stopped actor's mailbox. For an association that used
+    # to name the association actor as the recipient, set no peer, and publish
+    # its internal Close as well.
+    with assert_no_leaked_tasks():
+        async with two_nodes() as nodes:
+            seen: list[int] = []
+            worker = nodes.beta.spawn(counting(seen), "worker")
+            remote = await nodes.alpha.resolve(uri(nodes.beta, worker), expect=Tick)
+            remote.tell(Tick(n=0))
+            await eventually(lambda: seen == [0])
+            letters: list[DeadLetter] = []
+            nodes.alpha.dead_letters.subscribe(letters.append)
+
+            for n in range(1, 6):
+                remote.tell(Tick(n=n))
+            drop_links(nodes.alpha)
+
+            await eventually(lambda: len(seen[1:]) + len(letters) == 5)
+            assert {type(letter.message) for letter in letters} <= {Tick}
+            for letter in letters:
+                assert letter.recipient == str(worker.path)
+                assert letter.peer == str(nodes.beta.address)
+                assert letter.reason == DeadLetterReason.LINK_FAILED
+
+
+async def test_a_heartbeat_that_meets_a_full_mailbox_is_not_a_dead_letter():
+    # The heartbeat is a timer tick, so it reaches the mailbox inside the
+    # timer's wrapper. A full mailbox used to publish it as a dead letter,
+    # once per tick, naming the association actor and no peer.
+    with assert_no_leaked_tasks():
+        one = ActorSystem(
+            "alpha",
+            remoting(
+                outbound_capacity=2,
+                heartbeat_interval=timedelta(milliseconds=10),
+                unreachable_after=timedelta(seconds=1),
+                handshake_timeout=timedelta(milliseconds=800),
+            ),
+        )
+        two = ActorSystem("beta", remoting())
+        try:
+            assert one.remote is not None
+            one.remote.set_link_filter(stalled_writes(after=1))
+            letters: list[DeadLetter] = []
+            one.dead_letters.subscribe(letters.append)
+            seen: list[int] = []
+            remote = await one.resolve(
+                uri(two, two.spawn(counting(seen), "worker")), expect=Tick
+            )
+            remote.tell(Tick(n=1))
+            await eventually(lambda: seen == [1])
+
+            # The first parks the writer in a stalled write, and the rest fill
+            # the mailbox behind it, where the heartbeat ticks then land.
+            for n in range(2, 6):
+                remote.tell(Tick(n=n))
+            await eventually(lambda: len(letters) >= 1)
+            # Twenty heartbeat intervals with the mailbox full. A sleep, since
+            # what is checked is that nothing arrives.
+            await asyncio.sleep(0.2)
+
+            assert [x for x in letters if isinstance(x.message, Beat)] == []
+        finally:
+            await one.terminate()
+            await two.terminate()

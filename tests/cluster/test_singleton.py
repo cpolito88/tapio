@@ -14,8 +14,16 @@ from tapio import Behavior, Behaviors, Message
 from tapio.actor import ActorContext, Signal
 from tapio.actor.signals import PostStop
 from tapio.cluster import ClusterSingleton, KeepMajority
-from tapio.testkit import assert_no_leaked_tasks
-from tests.cluster.conftest import WATCHFUL, cluster_of, seeds_of
+from tapio.testkit import IsolatedManagementSettings, assert_no_leaked_tasks
+from tests.cluster.conftest import (
+    WATCHFUL,
+    Node,
+    cluster_of,
+    management_port,
+    management_request,
+    replacement_for,
+    seeds_of,
+)
 from tests.failures import eventually
 
 # Detect a lost node quickly and down it quickly, so the handoff a test is
@@ -74,9 +82,9 @@ def instance(probe: Probe, address: str) -> Behavior[Ping]:
     return Behaviors.setup(build)
 
 
-async def joined(nodes):
+async def joined(nodes, seeds=None):
     """Join every node and wait for a converged view."""
-    seeds = seeds_of(nodes)
+    seeds = seeds if seeds is not None else seeds_of(nodes)
     await asyncio.gather(*(n.cluster.join_seed_nodes(seeds) for n in nodes))
     await eventually(lambda: all(n.cluster.state.converged for n in nodes), within=5.0)
 
@@ -156,3 +164,92 @@ async def test_a_singleton_reappears_when_its_host_is_removed():
             )
             assert probe.max_seen == 1
             assert any(address != host for address in probe.starts)
+
+
+def managed(probe: Probe, node: Node) -> None:
+    """Spawn the singleton's manager on one node."""
+    node.system.spawn(
+        ClusterSingleton(instance(probe, node.address), name="coordinator"),
+        name="singleton",
+    )
+
+
+async def test_a_singleton_survives_its_host_restarting_at_the_same_address():
+    # Events follow the newest incarnation at an address, so the old host is
+    # never reported removed. Keyed by incarnation, it stayed the oldest for
+    # ever, at an address no manager would start the instance for.
+    probe = Probe()
+    with assert_no_leaked_tasks():
+        async with cluster_of(3) as nodes:
+            await joined(nodes)
+            for node in nodes:
+                managed(probe, node)
+            host, second, third = nodes
+            await eventually(lambda: probe.running == {host.address}, within=5.0)
+
+            await host.system.terminate()
+            async with replacement_for(host) as again:
+                await again.cluster.join_seed_nodes([second.address, third.address])
+                managed(probe, again)
+
+                await eventually(lambda: probe.running == {second.address}, within=10.0)
+
+
+async def test_a_late_manager_never_runs_a_second_instance_while_learning_the_oldest():
+    # node3 is the oldest and sorts last. A manager spawned after the join was
+    # told about members in address order, so node1 heard of itself first and
+    # ran the instance until it heard of node3.
+    probe = Probe()
+    with assert_no_leaked_tasks():
+        async with cluster_of(3) as nodes:
+            first, second, oldest = nodes
+            await joined(nodes, seeds=[oldest.address, first.address, second.address])
+            assert min(nodes, key=lambda n: n.member.up_number) is oldest
+            for node in nodes:
+                managed(probe, node)
+
+            await eventually(lambda: probe.running == {oldest.address}, within=5.0)
+            assert probe.max_seen == 1
+
+
+async def test_a_leave_asked_for_on_another_node_does_not_overlap_two_instances():
+    # The next oldest handles the operator's leave first. It used to start the
+    # instance in the same turn, a gossip round before the host heard of it.
+    probe = Probe()
+    with assert_no_leaked_tasks():
+        async with cluster_of(
+            3, management=IsolatedManagementSettings(bind_port=0)
+        ) as nodes:
+            await joined(nodes)
+            for node in nodes:
+                managed(probe, node)
+            host, successor, _ = nodes
+            await eventually(lambda: probe.running == {host.address}, within=5.0)
+
+            code, _ = await management_request(
+                management_port(successor),
+                "POST",
+                "/leave",
+                body={"address": host.address},
+            )
+
+            assert code == 202
+            await eventually(lambda: probe.running == {successor.address}, within=15.0)
+            assert probe.max_seen == 1
+
+
+async def test_a_downed_host_lets_its_instance_go():
+    # A node on the losing side of a split never sees itself removed, so it
+    # never heard an event that would make it stop the instance.
+    probe = Probe()
+    with assert_no_leaked_tasks():
+        async with cluster_of(3, settings=DECISIVE, downing=KeepMajority()) as nodes:
+            await joined(nodes)
+            for node in nodes:
+                managed(probe, node)
+            host, successor, _ = nodes
+            await eventually(lambda: probe.running == {host.address}, within=5.0)
+
+            host.faults.partition()
+
+            await eventually(lambda: probe.running == {successor.address}, within=15.0)

@@ -33,6 +33,8 @@ _MAX_PORT: Final = 65535
 # cannot be confused with the delimiters around it: no "/", ":" or "@".
 _HOST: Final = r"\[[0-9A-Fa-f:.]+\]|[^/:@\s]+"
 
+_HOST_RE: Final = re.compile(rf"\A(?:{_HOST})\Z")
+
 _ADDRESS_RE: Final = re.compile(
     rf"\A{SCHEME}://(?P<system>[^/@\s]+)(?:@(?P<host>{_HOST}):(?P<port>\d+))?\Z"
 )
@@ -57,7 +59,11 @@ class Address:
     """The system name, which is also the first element of every path below it."""
 
     host: str | None = None
-    """The canonical host peers dial, or `None` when remoting is off."""
+    """The canonical host peers dial, or `None` when remoting is off.
+
+    An IPv6 literal is written in brackets, `[::1]`, as it is in a URL. The
+    brackets come off only at the socket.
+    """
 
     port: int | None = None
     """The canonical port peers dial, or `None` when remoting is off."""
@@ -76,6 +82,14 @@ class Address:
             raise ValueError(msg)
         if self.port is not None and not 1 <= self.port <= _MAX_PORT:
             msg = f"invalid port: {self.port!r}"
+            raise ValueError(msg)
+        if self.host is not None and _HOST_RE.match(self.host) is None:
+            # Checked here rather than when the address is parsed back, so a
+            # host that could never be read again is refused where it was
+            # configured. `::1` is the likely one: its colons make the port
+            # ambiguous, which is why an address writes it as `[::1]`.
+            hint = " (write an IPv6 literal in brackets)" if ":" in self.host else ""
+            msg = f"invalid host {self.host!r}{hint}"
             raise ValueError(msg)
 
     @property
