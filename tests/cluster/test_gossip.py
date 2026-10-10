@@ -5,14 +5,20 @@ because a merge that is wrong in one order out of six is exactly the bug that
 example tests miss and that production finds as two live singletons.
 """
 
+import itertools
 import random
+import time
 
 from hypothesis import given, settings
 
 from tapio.cluster.clock import VectorClock
 from tapio.cluster.gossip import Gossip, leader_actions
-from tapio.cluster.member import Member, MemberStatus
-from tapio.cluster.reachability import Reachability, ReachabilityStatus
+from tapio.cluster.member import Member, MemberStatus, sort_key
+from tapio.cluster.reachability import (
+    Reachability,
+    ReachabilityRecord,
+    ReachabilityStatus,
+)
 from tests.cluster.strategies import ADDRESSES, gossips
 
 ALPHA, BETA, GAMMA = ADDRESSES
@@ -415,3 +421,61 @@ def test_the_leader_has_nothing_to_do_in_a_settled_cluster():
     state = Gossip(members=(up(ALPHA), up(BETA)), seen=frozenset({ALPHA, BETA}))
 
     assert leader_actions(state) == state
+
+
+@given(gossips())
+def test_leader_and_convergence_agree_with_asking_member_by_member(state: Gossip):
+    # The rule as it reads, one member at a time. The properties compute the
+    # unreachable set once instead, and must give the same answers.
+    observers = frozenset(m.address for m in state.alive)
+
+    def reachable(address: str) -> bool:
+        return state.reachability.is_reachable(address, observers)
+
+    candidates = [
+        m
+        for m in sorted(state.members, key=sort_key)
+        if m.status not in (MemberStatus.DOWN, MemberStatus.REMOVED)
+        and reachable(m.address)
+    ]
+    leading = [
+        m for m in candidates if m.status in (MemberStatus.UP, MemberStatus.LEAVING)
+    ]
+    expected_leader = (
+        (leading[0] if leading else candidates[0]).address if candidates else None
+    )
+    expected_converged = all(
+        reachable(m.address) and m.address in state.seen for m in state.alive
+    )
+
+    assert state.leader == expected_leader
+    assert state.converged == expected_converged
+
+
+def test_leader_and_convergence_are_linear_in_the_records():
+    # A healed split leaves a record for every pair it ever judged. Asking
+    # about each member separately scanned all of them per member, which took
+    # seconds at this size and ran several times per daemon message.
+    addresses = [f"tapio://n@10.0.0.1:{port}" for port in range(2000, 2400)]
+    left, right = addresses[:200], addresses[200:]
+    records = tuple(
+        ReachabilityRecord.model_construct(
+            observer=observer,
+            observed=observed,
+            status=ReachabilityStatus.REACHABLE,
+            version=2,
+        )
+        for observer, observed in itertools.product(left, right)
+    )
+    state = Gossip(
+        members=tuple(up(a, up_number=n) for n, a in enumerate(addresses, 1)),
+        reachability=Reachability.model_construct(records=records),
+        seen=frozenset(addresses),
+    )
+
+    started = time.perf_counter()
+    assert state.leader == addresses[0]
+    assert state.converged
+    took = time.perf_counter() - started
+
+    assert took < 0.25, f"leader and converged took {took:.2f}s"

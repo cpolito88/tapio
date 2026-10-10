@@ -97,43 +97,74 @@ async def test_a_peer_that_comes_back_retracts_the_observation():
             await eventually(lambda: first.cluster.state.converged)
 
 
-async def test_the_transport_judges_a_member_off_this_nodes_ring():
-    # A node watches only `monitored_peers` of the cluster, so on a cluster
-    # larger than that some members are off its ring. The transport is the only
-    # evidence this node has about those, and it is real evidence: a link it
-    # cannot keep is a member it cannot reach. Recording it is what keeps a
-    # partition larger than the ring from leaving each side counting the far
-    # members it does not watch as its own, so both sides call themselves the
-    # majority and neither steps down.
+async def test_the_transport_is_not_recorded_for_a_member_off_this_nodes_ring():
+    # Every record stays in the gossip for good, so a record for every member
+    # this node ever had a link to grows with the square of the cluster.
+    settings = QUICK.model_copy(update={"monitored_peers": 1})
+    with assert_no_leaked_tasks():
+        async with cluster_of(4, settings=settings) as nodes:
+            seeds = seeds_of(nodes)
+            await asyncio.gather(*(n.cluster.join_seed_nodes(seeds) for n in nodes))
+            await eventually(lambda: all(len(n.cluster.members) == 4 for n in nodes))
+            first = nodes[0]
+            members = first.cluster.state.alive
+            # With `watched` unreachable the ring reaches `next_one` and stops,
+            # so `off_ring` stays off it.
+            watched, next_one, off_ring = monitored_by(first.address, members, 3)
+
+            first.system.events.publish(
+                PeerUnreachable(peer=off_ring, uid=1, detail="silent", quarantined=True)
+            )
+            # Handled after the event above, so once this one is recorded the
+            # first has been handled too.
+            first.system.events.publish(
+                PeerUnreachable(peer=watched, uid=1, detail="silent", quarantined=True)
+            )
+            await eventually(
+                lambda: (
+                    first.cluster.state.reachability.says(first.address, watched)
+                    is UNREACHABLE
+                )
+            )
+
+            assert first.cluster.monitored == tuple(sorted((watched, next_one)))
+            assert not any(
+                record.observed == off_ring
+                for record in first.cluster.state.reachability.records
+            )
+
+
+async def test_the_ring_reaches_past_an_unreachable_member_and_keeps_the_verdict():
+    # A member this node watches is unreachable, so the ring reaches on to the
+    # next one. That one starts from what the transport already said about it,
+    # which is how every far member of a split stays observed from this side.
     settings = QUICK.model_copy(update={"monitored_peers": 1})
     with assert_no_leaked_tasks():
         async with cluster_of(3, settings=settings) as nodes:
             seeds = seeds_of(nodes)
             await asyncio.gather(*(n.cluster.join_seed_nodes(seeds) for n in nodes))
             await eventually(lambda: all(len(n.cluster.members) == 3 for n in nodes))
-
             first = nodes[0]
             members = first.cluster.state.alive
-            watched = set(monitored_by(first.address, members, 1))
+            (watched,) = monitored_by(first.address, members, 1)
             off_ring = next(
-                m.address
-                for m in members
-                if m.address != first.address and m.address not in watched
+                m.address for m in members if m.address not in (first.address, watched)
             )
-
             first.system.events.publish(
                 PeerUnreachable(peer=off_ring, uid=1, detail="silent", quarantined=True)
             )
 
-            # Off this node's ring, so its own probe never judges it. Without
-            # the transport's verdict there would be no observation at all.
+            first.system.events.publish(
+                PeerUnreachable(peer=watched, uid=1, detail="silent", quarantined=True)
+            )
+
+            await eventually(lambda: off_ring in first.cluster.monitored)
             await eventually(
                 lambda: (
                     first.cluster.state.reachability.says(first.address, off_ring)
                     is UNREACHABLE
                 )
             )
-            assert off_ring in first.cluster.state.reachability.unreachable
 
 
 async def test_a_peer_that_is_not_a_member_is_not_recorded():

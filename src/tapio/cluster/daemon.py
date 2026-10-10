@@ -69,6 +69,7 @@ from tapio.cluster.monitor import RingMonitor, deadline_detectors, phi_detectors
 from tapio.cluster.reachability import ReachabilityStatus
 from tapio.errors import (
     MailboxFullError,
+    MessageEncodingError,
     MessageTypeError,
     RefResolutionError,
     TapioError,
@@ -341,6 +342,11 @@ class ClusterDaemon:
         # Whether this node has seen itself leaving. A node removed without
         # that was downed, and heard of it only after the leader removed it.
         self._left_gracefully = False
+        # The members this incarnation currently says it cannot reach. A
+        # record names its observer by address alone, so a claim under this
+        # address that is not in here was made by an earlier incarnation, or
+        # is a stale copy, and this node takes it back.
+        self._claims: set[str] = set()
         # Set at the end of every turn, for a caller waiting on this node's own
         # status to move. See the `changed` property.
         self._changed = asyncio.Event()
@@ -591,29 +597,23 @@ class ClusterDaemon:
             self._subscription = None
 
     def _link_changed(self, message: LinkChanged) -> None:
-        """Take what the transport saw as evidence about any member of this cluster.
+        """Take what the transport saw as evidence about a member this node watches.
 
         A member on this node's ring is judged by both sources at once: this
         observation is folded in with the node's own probe, and the worse of
-        the two stands. A member this node does not watch is judged by the
-        transport alone, because that is the only evidence this node has about
-        it, and it is real evidence: a link this node cannot keep to a member
-        is a member this node cannot reach.
-
-        Recording the unwatched member matters for partition safety. A node
-        watches only `monitored_peers` of the far side, so on a split larger
-        than that the ring reaches only a slice of it. If the rest went
-        unrecorded, each side would count the far members it does not watch as
-        its own and both sides could call themselves the majority. The
-        transport's verdict fills that gap, since a partition drops every link
-        across it, not only the watched ones.
-
-        A peer this system talks to but has not clustered with is still
-        nobody's business: its record would never be cleaned up, so it is
-        ignored. The transport's verdict is also worth having next to the
+        the two stands. The transport's verdict is worth having next to the
         probe because it arrives sooner, and it is retracted by the link
         coming back and by nothing else, since an answer to a probe says
         nothing about what the transport is refusing to carry.
+
+        A member this node does not watch is not recorded. The monitor still
+        remembers the verdict, so the member starts from it if the ring moves
+        onto it. Recording it would write a record that stays in the gossip
+        for good, for every member this node ever had a link to, and after
+        one partition that is the square of the cluster's size. Partition
+        safety does not need it: the ring reaches past unreachable members, so
+        every member on the far side of a split is watched by somebody on
+        this side.
         """
         now = self._now()
         watched = (
@@ -623,14 +623,6 @@ class ClusterDaemon:
         )
         if watched:
             self._observe(message.peer, self._monitor.verdicts(now)[message.peer])
-            return
-        if any(member.address == message.peer for member in self._state.alive):
-            self._observe(
-                message.peer,
-                ReachabilityStatus.REACHABLE
-                if message.reachable
-                else ReachabilityStatus.UNREACHABLE,
-            )
 
     def _follow_the_ring(self) -> None:
         """Watch what the current membership says this node should watch.
@@ -638,7 +630,9 @@ class ClusterDaemon:
         Run at the end of every turn, because membership only changes in one,
         so the ring this node holds is never a round out of date.
         """
-        for peer in self._monitor.follow(self._state.alive, self._now()):
+        for peer in self._monitor.follow(
+            self._state.alive, self._now(), self._state.unreachable
+        ):
             # No longer this node's to judge, so whatever it said is taken
             # back. A claim left behind by a node that has stopped watching
             # would block convergence with nothing able to retract it.
@@ -761,6 +755,13 @@ class ClusterDaemon:
             peer: The member being judged.
             status: What this node now believes about it.
         """
+        # Kept before the check below. A record an earlier incarnation left
+        # can already say what this one now concludes, and the claim is still
+        # this incarnation's from here on.
+        if status is ReachabilityStatus.UNREACHABLE:
+            self._claims.add(peer)
+        else:
+            self._claims.discard(peer)
         if self._state.reachability.says(self._address, peer) is status:
             return
         _log.info(
@@ -898,11 +899,50 @@ class ClusterDaemon:
         self._state = (
             merged.seen_by(self._address) if self._is_member_of(merged) else merged
         )
+        self._take_back_claims_never_made()
         if self._state.version.compare(envelope.gossip.version) is Ordering.AFTER:
             # The sender is behind, and telling it so now rather than waiting
             # for its turn in the rotation is most of what makes convergence
             # take rounds instead of seconds.
             await self._send(ctx, envelope.sender)
+
+    def _take_back_claims_never_made(self) -> None:
+        """Retract every claim under this node's address that it did not make.
+
+        A record names its observer by address and not by incarnation. A node
+        that was downed and restarted at the same address therefore finds its
+        predecessor's claims in the gossip, and they count again the moment
+        its address is a live member again. A claim about a member off this
+        node's ring would stay until a link to that member happened to open,
+        blocking convergence and steering a downing strategy in the meantime.
+
+        Only the observer can retract its own claim, and this node is the
+        observer at this address now. The retraction is honest, because the
+        claims belong to an incarnation that no longer exists. Each one is
+        written at a higher version, so it wins every merge. A copy that
+        arrives again later from a peer that has not seen the retraction is
+        taken back the same way.
+        """
+        ghosts = [
+            record.observed
+            for record in self._state.reachability.records
+            if record.observer == self._address
+            and record.status is ReachabilityStatus.UNREACHABLE
+            and record.observed not in self._claims
+        ]
+        if not ghosts:
+            return
+        state = self._state
+        for observed in ghosts:
+            _log.info(
+                "%s takes back a claim it did not make: %s unreachable",
+                self._address,
+                observed,
+            )
+            state = state.observing(
+                self._address, observed, ReachabilityStatus.REACHABLE
+            )
+        self._state = state.bumped_by(self._address)
 
     def _start_leaving(self, address: str) -> None:
         """Mark a member as leaving, so the leader can walk it out."""
@@ -1257,9 +1297,11 @@ class ClusterDaemon:
         """
         try:
             subscriber.ref.tell(event)
-        except MessageTypeError as error:
-            # It asked for an event its own type does not accept. It would
-            # refuse every later one of that kind too, so it is dropped.
+        except (MessageTypeError, MessageEncodingError) as error:
+            # It asked for an event its own type does not accept, or one that
+            # cannot cross a link to reach it. It would refuse every later
+            # event of that kind too, and leaving it subscribed would raise
+            # here on every turn, before the subscribers after it were told.
             _log.warning(
                 "dropped the cluster subscriber %s, which cannot accept the "
                 "events it asked for: %s",
@@ -1285,7 +1327,8 @@ class ClusterDaemon:
         an Unsubscribe. An adapter cannot be watched, so for one the daemon
         watches the actor that owns it. A ref with nothing to watch, such as a
         dead-letter ref, is refused with a warning: it could never be
-        forgotten. The replay is why a subscriber that starts after the cluster
+        forgotten. So is a ref to an actor on another node, since events do
+        not cross a link. The replay is why a subscriber that starts after the cluster
         has formed still learns who is up: it hears the state it missed as the
         events that would have carried it, then each change as it comes.
 
@@ -1294,6 +1337,15 @@ class ClusterDaemon:
             message: The subscription, naming the subscriber and what it wants.
         """
         ref = message.subscriber
+        if not isinstance(ref, (LocalActorRef, AdapterRef)):
+            # Events are not registered on the wire, on purpose, so every one
+            # sent to a ref on another node would fail to encode.
+            _log.warning(
+                "refused a cluster subscription from %s: cluster events are "
+                "delivered to local actors only",
+                ref.path,
+            )
+            return
         watched = ref.owner if isinstance(ref, AdapterRef) else ref
         try:
             # Watching twice is harmless, so a subscriber that subscribes

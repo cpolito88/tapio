@@ -109,13 +109,19 @@ class HeartbeatReply(WireMessage):
 
 
 @final
-@register_message()
-class Leave(WireMessage):
-    """Ask the cluster to let a member go gracefully.
+class Leave(Message):
+    """Ask this node to let a member go gracefully.
 
     Ordinarily a node asks about itself, but the address is carried explicitly
     because an operator tool may ask about another one, and because what acts
     on it is the leader rather than the member named.
+
+    Local, like [Down][tapio.cluster.messages.Down]: it arrives from
+    [Cluster.leave][tapio.cluster.cluster.Cluster.leave] or from this node's
+    own management endpoint, never across a link, so it is not registered on
+    the wire. Registered, it let any system that completed a handshake make
+    any member leave, past the token or certificate the management port asks
+    for.
     """
 
     address: AddressStr
@@ -266,6 +272,7 @@ class LinkChanged(Message):
 ClusterMessage: TypeAlias = (
     WireMessage
     | Seeds
+    | Leave
     | Subscribe
     | Unsubscribe
     | Down

@@ -162,21 +162,26 @@ class Gossip(Message):
     def leader(self) -> str | None:
         """The node allowed to act, when the view is converged.
 
-        The first member in address order whose status is `Up` or `Leaving`.
-        Before anybody is `Up`, which is every cluster's first moment, it
-        falls back to the first member in address order: somebody has to be
-        able to accept the first join, and picking the same somebody on every
-        node is all this rule has to do.
+        The first member in address order, among those no live member reports
+        unreachable, whose status is `Up` or `Leaving`. If there is none, for
+        example before anybody is `Up` or while every `Up` member is
+        unreachable, it is the first such member of any live status, `Joining`
+        and `Exiting` included: somebody has to be able to accept the first
+        join, and picking the same somebody on every node is all this rule has
+        to do. A leader acts only on a converged view, so a fallback leader
+        during a split does nothing until the split is resolved.
 
         Returns:
             The leader's address, or `None` when there is nobody to lead.
         """
-        observers = self._live_observers()
+        # Computed once rather than asked per member. Asking per member scans
+        # every record each time, which is members times records, and the
+        # daemon asks for the leader several times per message.
+        gone = self.unreachable
         candidates = [
             m
             for m in sorted(self.members, key=sort_key)
-            if m.status not in _GONE
-            and self.reachability.is_reachable(m.address, observers)
+            if m.status not in _GONE and m.address not in gone
         ]
         if not candidates:
             return None
@@ -192,15 +197,12 @@ class Gossip(Message):
         so one unreachable member stops the leader from acting until somebody
         decides what to do about it.
         """
-        observers = self._live_observers()
-        for member in self.members:
-            if member.status in _GONE:
-                continue
-            if not self.reachability.is_reachable(member.address, observers):
-                return False
-            if member.address not in self.seen:
-                return False
-        return True
+        gone = self.unreachable
+        return all(
+            member.address not in gone and member.address in self.seen
+            for member in self.members
+            if member.status not in _GONE
+        )
 
     def seen_by(self, address: str) -> "Gossip":
         """Return this state recorded as seen by one more node.

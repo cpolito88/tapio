@@ -91,7 +91,9 @@ running seed takes to answer.
 
 `join_seed_nodes` returns once this node is `up`. If it times out, the node is
 still asking: the error is about how long you were prepared to wait, not about
-the node giving up.
+the node giving up. A node that has left, or been downed, cannot join again as
+itself, and `join_seed_nodes` raises `ClusterError` for it. Restart the system
+to join as a new incarnation.
 
 ## Convergence, and the leader
 
@@ -100,11 +102,14 @@ reachable and has seen that exact version of the gossip. Convergence is not
 consensus. It is the condition under which the leader is allowed to act, and
 that is all it is used for.
 
-The leader is the first member in address order whose status is `up` or
-`leaving`. Every node computes it, one node acts on it, and there is no
-handover protocol because there is no state to hand over. Before anybody is
-`up`, which is every cluster's first moment, it falls back to the first member
-in address order: somebody has to be able to accept the first join.
+The leader is the first member in address order, among those no live member
+reports unreachable, whose status is `up` or `leaving`. If there is none, for
+example before anybody is `up` or while every `up` member is unreachable, it is
+the first such member of any live status, `joining` and `exiting` included:
+somebody has to be able to accept the first join. A leader acts only on a
+converged view, so a fallback leader during a split does nothing until the
+split is resolved. Every node computes the leader, one node acts on it, and
+there is no handover protocol because there is no state to hand over.
 
 A leader with an unreachable member converges on nothing and therefore does
 nothing. Joins wait, leaves wait, and the cluster keeps running. That blocking
@@ -134,6 +139,13 @@ removal, and it is not in this release.
 
 Leaving does not terminate the system. Ending the process is the
 application's decision.
+
+A leave is asked for through [leave][tapio.cluster.cluster.Cluster.leave] on
+the node itself, or through a node's
+[management port](#managing-a-cluster). It is never accepted
+from across a link. Any system that completes a remoting handshake can address
+a node's cluster daemon, and a leave it could send would bypass the token or
+certificate the management port asks for.
 
 ## What a node gossips
 
@@ -173,6 +185,10 @@ watched member per round rather than one per pair. All-to-all monitoring is
 quadratic, and it is what makes naive implementations fall over at a few dozen
 nodes.
 
+An unreachable member is watched but not counted. The ring reaches past it to
+the next member, so a node always watches `monitored_peers` members it can
+count on, plus every unreachable member between them.
+
 A watcher sends a heartbeat every `heartbeat_interval`, the watched member
 answers, and a member that has not answered for `unreachable_after` is
 recorded unreachable **by that node**. Nothing about that is a decision by the
@@ -203,18 +219,29 @@ back the first, and a link coming up again brings back the second. An answer
 never retracts what the transport said, since a peer that remoting is refusing
 to carry frames to cannot answer at all.
 
-The probe follows the ring, but the transport's verdict is recorded for every
-member, including the ones off this node's ring. This matters for a downing
-strategy's safety. A strategy is safe because the two sides of a partition feed
-it mirror-image views: each side sees the whole of the other as unreachable and
-names the same losing side without a message crossing the split. A node's ring
-reaches only `monitored_peers` of the far side, so on a partition larger than
-that the probe alone would leave each side seeing only a slice of the other and
-counting the rest as its own, and then both sides can call themselves the
-majority. The transport fills the gap, because a partition drops every link
-across it and not only the watched ones. A strategy's safety therefore depends
-on the split being fully observed this way, which is a property of the
-transport noticing every dropped link, not of the ring.
+The transport's verdict is recorded only for a member on this node's ring.
+For any other member it is remembered, and the member starts from it if the
+ring moves onto it. Every record stays in the gossip for good, so recording
+the transport for every member a node ever had a link to grew with the square
+of the cluster after one partition, and at a few hundred nodes the gossip no
+longer fitted in a frame.
+
+The ring reaching past unreachable members is what a downing strategy's safety
+rests on. A strategy is safe because the two sides of a partition feed it
+mirror-image views: each side sees the whole of the other as unreachable and
+names the same losing side without a message crossing the split. Take a node
+on one side and the run of far-side members that follows it on the ring. None
+of that run counts, so the node watches all of it, however long it is. Every
+far-side member is therefore watched by the nearest node on this side before
+it, and this side sees the whole of the far side as unreachable. A long run
+is covered a step at a time, one window per step for a member nobody had a
+link to, and a node does not decide until its whole side has seen the view.
+
+A record names its observer by address, not by incarnation. A node that
+restarts at the same address therefore finds its predecessor's claims in the
+gossip, counting again now that its address is live. It takes back every
+claim under its address that it did not make itself, because only the
+observer can retract a claim and it is the observer at that address now.
 
 The two views are mirror images only up to the membership changes that were in
 flight when the split came. A member admitted moments before may be known on
@@ -316,7 +343,9 @@ apart. That is the same guarantee everything else in clustering gives.
 
 A subscriber that stops is forgotten, because the daemon watches it. For an
 adapter, the daemon watches the actor that owns it. A ref with nothing to
-watch, such as a dead-letter ref, is refused with a warning. Call
+watch, such as a dead-letter ref, is refused with a warning. So is a ref to an
+actor on another node: events are not registered on the wire, so a subscriber
+must be a local actor, and each node tells its own subscribers. Call
 [unsubscribe][tapio.cluster.cluster.Cluster.unsubscribe] only for an actor that
 wants to keep running and stop listening.
 

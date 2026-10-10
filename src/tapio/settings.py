@@ -208,7 +208,11 @@ class ClusterSettings(BaseSettings):
     that follow it. So every member is watched by this many others whatever
     the traffic does, and the heartbeat traffic stays linear in the number of
     nodes. All-to-all monitoring is quadratic, and it is what makes naive
-    implementations fall over at a few dozen nodes."""
+    implementations fall over at a few dozen nodes.
+
+    An unreachable member does not count towards this. The ring reaches past
+    it, so during a partition a node watches every far-side member up to the
+    next one it can reach."""
 
     heartbeat_interval: timedelta = timedelta(seconds=1)
     """How often this node asks each member it watches whether it is answering.
