@@ -200,7 +200,8 @@ async def test_a_full_outbound_lane_off_loop_still_names_the_peer():
         two = ActorSystem("beta", remoting())
         try:
             assert one.remote is not None
-            one.remote.set_link_filter(stalled_writes(after=1))
+            parked = asyncio.Event()
+            one.remote.set_link_filter(stalled_writes(after=1, parked=parked))
             seen: list[int] = []
             ticker = two.spawn(counting(seen), "ticker")
             letters: list[DeadLetter] = []
@@ -213,7 +214,7 @@ async def test_a_full_outbound_lane_off_loop_still_names_the_peer():
             # Park the association inside a stalled write, then fill the bounded
             # mailbox behind it, so the next send has no slot.
             remote.tell(Tick(n=2))
-            await asyncio.sleep(0.05)
+            await parked.wait()
             remote.tell(Tick(n=3))
             remote.tell(Tick(n=4))
 
@@ -612,7 +613,8 @@ async def test_a_close_from_the_reader_survives_a_full_outbound_lane():
         two = ActorSystem("beta", remoting())
         try:
             assert one.remote is not None
-            one.remote.set_link_filter(stalled_writes(after=1))
+            parked = asyncio.Event()
+            one.remote.set_link_filter(stalled_writes(after=1, parked=parked))
             seen: list[int] = []
             ticker = two.spawn(counting(seen), "ticker")
 
@@ -623,7 +625,7 @@ async def test_a_close_from_the_reader_survives_a_full_outbound_lane():
             # This one parks the association inside a stalled write, so the
             # writes that follow queue in the mailbox behind it.
             remote.tell(Tick(n=2))
-            await asyncio.sleep(0.05)
+            await parked.wait()
             # Fill the bounded lane, so a Close has no slot to land in.
             remote.tell(Tick(n=3))
             remote.tell(Tick(n=4))

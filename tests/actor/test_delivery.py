@@ -15,6 +15,7 @@ from tapio import (
     TapioSettings,
 )
 from tapio.actor import ActorContext, ActorPath, ActorRef
+from tests.failures import eventually
 from tests.messages import Greet, Greeted, Increment
 
 REPLIES: ActorRef[Greeted] = ActorRef(ActorPath.root("test").child("user").child("box"))
@@ -107,7 +108,7 @@ async def test_tell_to_a_stopped_actor_is_a_dead_letter_not_an_error(
 
     target = system.spawn(Behaviors.receive_message(stop_on_first), name="target")
     target.tell(Greet(whom="ada", count=1, reply_to=REPLIES))
-    await asyncio.sleep(0.01)
+    await eventually(lambda: system.refs.lookup(target.path) is None)
 
     with caplog.at_level(logging.WARNING, logger="tapio.runtime"):
         target.tell(Greet(whom="ada", count=2, reply_to=REPLIES))
@@ -130,7 +131,7 @@ async def test_a_handler_that_raises_stops_only_that_actor(
 
     with caplog.at_level(logging.ERROR, logger="tapio.actor"):
         victim.tell(Greet(whom="ada", count=1, reply_to=REPLIES))
-        await asyncio.sleep(0.01)
+        await eventually(lambda: "scripted failure" in caplog.text)
 
     bystander.tell(Greet(whom="grace", count=1, reply_to=REPLIES))
     await asyncio.wait_for(arrived.wait(), timeout=1)

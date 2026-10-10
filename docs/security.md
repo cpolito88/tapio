@@ -83,7 +83,9 @@ nothing else: every frame after it is readable and modifiable by anything on
 the path.
 
 `tls` takes a certificate, a key, and an optional CA for mutual
-authentication. **Use both for anything crossing a machine boundary.** The
+authentication. Both ends of a link, the management port and the
+`tapio-cluster` command require TLS 1.2 or later, whatever the Python build's
+default. **Use both for anything crossing a machine boundary.** The
 secret without TLS is only appropriate where the network itself is the
 boundary, such as a container network or a loopback interface.
 

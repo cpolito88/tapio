@@ -37,6 +37,7 @@ __all__ = [
     "CLOSE_GRACE",
     "HANDSHAKE_FRAME_BYTES",
     "LINK_PREFIX",
+    "MINIMUM_TLS_VERSION",
     "BindSettings",
     "FrameLink",
     "Heartbeat",
@@ -78,6 +79,14 @@ Long enough for the last frames of an ordinary close, such as a heartbeat or a
 watch reply written just before it, to reach a peer that is reading. A peer
 that is not reading will never take them, and the link is aborted when this
 runs out.
+"""
+
+MINIMUM_TLS_VERSION: Final = ssl.TLSVersion.TLSv1_2
+"""The oldest TLS either end of a link accepts.
+
+Set on both contexts rather than left to `ssl.create_default_context`, whose
+floor depends on the Python build and the OpenSSL configuration it was built
+against. On some of them it is whatever OpenSSL still supports.
 """
 
 HANDSHAKE_FRAME_BYTES: Final = 4096
@@ -664,6 +673,7 @@ def server_ssl_context(tls: TLSSettings) -> ssl.SSLContext:
         OSError: If a certificate or key file cannot be read.
     """
     context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    context.minimum_version = MINIMUM_TLS_VERSION
     context.load_cert_chain(tls.certfile, tls.keyfile)
     if tls.cafile is not None:
         context.load_verify_locations(tls.cafile)
@@ -685,6 +695,7 @@ def client_ssl_context(tls: TLSSettings) -> ssl.SSLContext:
         OSError: If a certificate or key file cannot be read.
     """
     context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=tls.cafile)
+    context.minimum_version = MINIMUM_TLS_VERSION
     context.check_hostname = tls.check_hostname
     context.load_cert_chain(tls.certfile, tls.keyfile)
     return context

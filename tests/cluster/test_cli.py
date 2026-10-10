@@ -7,10 +7,11 @@ command line actually moves the member.
 """
 
 import asyncio
+import ssl
 
 from typer.testing import CliRunner, Result
 
-from tapio.cluster.cli import _print_status, app
+from tapio.cluster.cli import _print_status, _ssl_context, _Target, app
 from tapio.testkit import IsolatedManagementSettings, assert_no_leaked_tasks
 from tests.cluster.conftest import Node, cluster_of, seeds_of, tls_managed
 from tests.conftest import TlsCerts
@@ -147,3 +148,22 @@ async def test_mutual_tls_refuses_a_client_with_no_certificate(
 
     assert result.exit_code == 2
     assert "could not reach" in result.stderr
+
+
+def test_the_command_requires_tls_1_2_whatever_the_python_build(
+    mutual_tls_certs: TlsCerts,
+):
+    # `ssl.create_default_context` leaves the floor to the build. On some it is
+    # whatever OpenSSL still supports, so the command pins it as the node does.
+    target = _Target(
+        host="127.0.0.1",
+        port=1,
+        token=None,
+        as_json=False,
+        use_tls=True,
+        cafile=mutual_tls_certs.ca,
+        client_cert=None,
+        client_key=None,
+    )
+
+    assert _ssl_context(target).minimum_version is ssl.TLSVersion.TLSv1_2
