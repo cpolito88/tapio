@@ -60,9 +60,12 @@ class MemberLeaving(ClusterEvent):
     Emitted when a member first reaches `leaving` (or `exiting`, if this node's
     view skipped straight to it), one or more converged rounds before the
     `removed` that follows. A crashed or downed member never reaches here: it
-    goes to `down` and is only ever seen as `removed`. This is what lets a
-    predecessor let go before a successor computed from the removal starts, so
-    the two do not overlap.
+    goes to `down` and is only ever seen as `removed`. A member that is leaving
+    when a subscriber arrives is replayed to it as this event.
+
+    A cluster singleton's host lets its instance go when it hears this about
+    itself, and the other managers wait for the removal before a successor
+    starts.
     """
 
     member: Member

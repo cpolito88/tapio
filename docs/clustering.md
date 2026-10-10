@@ -122,8 +122,10 @@ The member walks out rather than vanishing: `leaving`, then `exiting` once
 every node has seen it, then `removed`. Each step needs a converged view, so
 leaving takes as long as agreement takes, and every node ends up holding the
 same tombstone. A [cluster singleton](#cluster-singletons) on the leaving member
-lets go the moment it reaches `leaving`, before any successor starts, so a
-graceful leave never runs two instances at once.
+lets go the moment it hears of its own leave, and no successor starts until the
+member is removed. Wherever the leave was asked for, the two instances do not
+normally overlap. An instance still busy in a handler when its host lets go can
+overlap the successor until that handler returns.
 
 The tombstone is kept rather than pruned. Dropping the record would let a peer
 holding an older view put the member back, since merging two views unions the
@@ -332,15 +334,26 @@ leader accepted members in, which every node computes the same way from the same
 gossip. So at a converged view exactly one manager runs the instance, with no
 election and no lock.
 
-Handoff is triggered by a host going away. A crash is only ever seen as removal:
-every manager hears `MemberRemoved`, recomputes the oldest, and the new oldest
-starts the instance. A graceful leave is seen earlier, as `MemberLeaving`, one
-or more converged rounds before the removal. The leaving host drives its own
-transition, so its manager hears `MemberLeaving` first and lets its instance go
-before any successor starts. That order is what keeps the two from overlapping.
-Waiting for `removed` did not: leadership moves off a member once it reaches
-`exiting`, so the successor learns of the removal first and would start while the
-old host, hearing it a round or more later, was still running its instance.
+Handoff is triggered by a host going away, and a successor starts only once the
+old host is removed. A crash is only ever seen as removal: every manager hears
+`MemberRemoved`, recomputes the oldest, and the new oldest starts the instance.
+
+A graceful leave is seen earlier, as `MemberLeaving`. The leaving host lets its
+instance go when it hears that about itself. Every other manager goes on
+counting the leaving host as the oldest, so no successor starts before the
+removal. The removal needs every member, the leaving host included, to have seen
+the leave, so by then the host has asked its instance to stop. That holds
+wherever the leave was asked for: on the host, or with `tapio-cluster leave`
+pointed at any other node. The host does not wait for its instance to finish
+stopping, though. An instance still busy in a handler when the successor starts
+overlaps it until that handler returns.
+
+A host on the losing side of a split is downed rather than removed, and it never
+sees its own removal. Its manager lets the instance go on `SelfDown` and never
+hosts again. The majority starts a successor once it has removed the old host,
+which can be before the downed side has noticed, so two instances can overlap
+for up to the difference between the two sides' `down_after`. Set
+`terminate_on_down` or act on `when_downed` to end the downed process as well.
 
 The instance is a fresh start wherever it runs, not a move of live state. What
 mattered on the old host does not cross to the new one, which is the honest
