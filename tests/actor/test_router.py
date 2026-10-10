@@ -22,10 +22,10 @@ from tapio.actor import (
     ActorContext,
     ActorPath,
     ActorRef,
-    LocalActorRef,
     PostStop,
     Signal,
 )
+from tapio.actor.cell import LocalActorRef
 from tapio.actor.router import fresh_strategy
 from tapio.errors import BehaviorTypeError
 from tests.failures import BoomError, eventually

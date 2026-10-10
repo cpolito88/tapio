@@ -1,10 +1,13 @@
 """The package imports and the toolchain is wired up."""
 
 import asyncio
+import importlib
 import subprocess
 import sys
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as installed_version
+
+import pytest
 
 import tapio
 from tapio import version
@@ -60,3 +63,116 @@ def test_importing_the_library_does_not_pull_in_typer():
     # would depend on which tests ran first.
     probe = "import sys, tapio, tapio.cluster; raise SystemExit('typer' in sys.modules)"
     assert subprocess.run([sys.executable, "-c", probe], check=False).returncode == 0
+
+
+ACTOR_SURFACE = {
+    "AbstractBehavior",
+    "ActorContext",
+    "ActorPath",
+    "ActorRef",
+    "ActorSystem",
+    "AdapterRef",
+    "Backoff",
+    "Behavior",
+    "Behaviors",
+    "ChildFailed",
+    "DeadLetter",
+    "DeadLetterReason",
+    "Decision",
+    "MailboxConfig",
+    "OverflowStrategy",
+    "PostStop",
+    "PreRestart",
+    "PromiseRef",
+    "RoundRobin",
+    "Routers",
+    "RoutingStrategy",
+    "Signal",
+    "SignalHandler",
+    "StashBuffer",
+    "Subscription",
+    "SupervisorStrategy",
+    "Terminated",
+    "TimerScheduler",
+    "ask",
+}
+"""What `tapio.actor` promises. Every name here is a compatibility promise."""
+
+CLUSTER_SURFACE = {
+    "Cluster",
+    "ClusterDowned",
+    "ClusterError",
+    "ClusterEvent",
+    "ClusterSettings",
+    "ClusterSingleton",
+    "DownAll",
+    "DownStrategy",
+    "KeepMajority",
+    "KeepOldest",
+    "LeaderChanged",
+    "Lease",
+    "LeaseMajority",
+    "LocalLease",
+    "ManagementSettings",
+    "Member",
+    "MemberLeaving",
+    "MemberRemoved",
+    "MemberStatus",
+    "MemberUp",
+    "ReachableMember",
+    "SelfDown",
+    "StaticQuorum",
+    "UnreachableMember",
+    "group_router",
+}
+"""What `tapio.cluster` promises. The wire protocol and merge state are not."""
+
+
+def test_the_actor_package_exports_its_surface_and_nothing_else():
+    import tapio.actor
+
+    assert set(tapio.actor.__all__) == ACTOR_SURFACE
+
+
+def test_the_cluster_package_exports_its_surface_and_nothing_else():
+    import tapio.cluster
+
+    assert set(tapio.cluster.__all__) == CLUSTER_SURFACE
+
+
+@pytest.mark.parametrize(
+    ("package", "name"),
+    [
+        ("tapio.actor", "ActorCell"),
+        ("tapio.actor", "LocalActorRef"),
+        ("tapio.actor", "Mailbox"),
+        ("tapio.actor", "DeadLetterOffice"),
+        ("tapio.cluster", "Join"),
+        ("tapio.cluster", "WireMessage"),
+        ("tapio.cluster", "Gossip"),
+    ],
+)
+def test_runtime_internals_are_not_importable_from_the_package(package: str, name: str):
+    # Out of the namespace as well as `__all__`, so nobody comes to rely on
+    # one by accident. Each is still importable from its own module.
+    assert not hasattr(importlib.import_module(package), name)
+
+
+@pytest.mark.parametrize(
+    "name", ["ClusterError", "ClusterSettings", "ManagementSettings"]
+)
+def test_what_every_cluster_needs_is_exported_at_the_top(name: str):
+    import tapio.cluster
+
+    assert name in tapio.__all__
+    assert getattr(tapio, name) is getattr(tapio.cluster, name)
+
+
+def test_every_exported_name_exists():
+    import tapio.actor
+    import tapio.cluster
+    import tapio.testkit
+
+    for package in (tapio, tapio.actor, tapio.cluster, tapio.testkit):
+        missing = [name for name in package.__all__ if not hasattr(package, name)]
+        assert missing == [], package.__name__

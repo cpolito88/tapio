@@ -13,10 +13,13 @@ own.
 
 Unlike [remote][tapio.remote], this package re-exports its public names,
 because nothing in the runtime imports it: clustering depends on the actor
-system and the actor system knows nothing about clustering.
+system and the actor system knows nothing about clustering. The machinery
+behind them, the gossip state and its merge, the reachability table, the ring
+and the messages nodes send each other, stays importable from its own module
+and is not part of what a release promises. An application that could send a
+`Join` to the daemon would be speaking the wire protocol for it.
 """
 
-from tapio.cluster.clock import Ordering, VectorClock
 from tapio.cluster.cluster import Cluster
 from tapio.cluster.downing import (
     DownAll,
@@ -38,61 +41,37 @@ from tapio.cluster.events import (
     SelfDown,
     UnreachableMember,
 )
-from tapio.cluster.gossip import Gossip
 from tapio.cluster.member import Member, MemberStatus
-from tapio.cluster.messages import (
-    ClusterDowned,
-    GossipEnvelope,
-    Heartbeat,
-    HeartbeatReply,
-    Join,
-    Leave,
-    WireMessage,
-)
-from tapio.cluster.monitor import RingMonitor, monitored_by
-from tapio.cluster.reachability import (
-    Reachability,
-    ReachabilityRecord,
-    ReachabilityStatus,
-)
+from tapio.cluster.messages import ClusterDowned
 from tapio.cluster.router import group_router
 from tapio.cluster.singleton import ClusterSingleton
+from tapio.errors import ClusterError
+from tapio.settings import ClusterSettings, ManagementSettings
 
 __all__ = [
     "Cluster",
     "ClusterDowned",
+    "ClusterError",
     "ClusterEvent",
+    "ClusterSettings",
     "ClusterSingleton",
     "DownAll",
     "DownStrategy",
-    "Gossip",
-    "GossipEnvelope",
-    "Heartbeat",
-    "HeartbeatReply",
-    "Join",
     "KeepMajority",
     "KeepOldest",
     "LeaderChanged",
     "Lease",
     "LeaseMajority",
-    "Leave",
     "LocalLease",
+    "ManagementSettings",
     "Member",
     "MemberLeaving",
     "MemberRemoved",
     "MemberStatus",
     "MemberUp",
-    "Ordering",
-    "Reachability",
-    "ReachabilityRecord",
-    "ReachabilityStatus",
     "ReachableMember",
-    "RingMonitor",
     "SelfDown",
     "StaticQuorum",
     "UnreachableMember",
-    "VectorClock",
-    "WireMessage",
     "group_router",
-    "monitored_by",
 ]

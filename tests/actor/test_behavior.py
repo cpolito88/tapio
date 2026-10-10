@@ -9,10 +9,12 @@ from tapio.actor import (
     ActorContext,
     Behavior,
     Behaviors,
+)
+from tapio.actor.behavior import (
     ReceivingBehavior,
     SetupBehavior,
+    resolve_handler_msg_type,
 )
-from tapio.actor.behavior import resolve_handler_msg_type
 from tapio.errors import BehaviorTypeError, MessageTypeError
 from tests.messages import GetCount, Greet, Greeted, Increment, NotAMessage
 

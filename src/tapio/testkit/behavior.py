@@ -30,7 +30,8 @@ instead of enqueuing it. That is what makes the assertions above possible, and
 it is why the message a `reply_to` receives is the object that was sent.
 """
 
-from typing import Any, Generic, TypeVar, final
+import warnings
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, final
 
 from tapio.actor.behavior import (
     Behavior,
@@ -59,7 +60,7 @@ __all__ = [
     "DeadLettered",
     "Effect",
     "RecordingRef",
-    "Spawned",
+    "SpawnedChild",
     "Watched",
 ]
 
@@ -75,8 +76,13 @@ class Effect:
 
 
 @final
-class Spawned(Effect):
-    """The behavior started a child."""
+class SpawnedChild(Effect):
+    """The behavior started a child.
+
+    Named apart from [Spawned][tapio.remote.spawner.Spawned], the reply a
+    remote spawner sends, which is a different thing that `tapio` also
+    exports. `Spawned` still works here, with a deprecation warning.
+    """
 
     __slots__ = ("behavior", "inbox", "mailbox", "name", "ref")
 
@@ -106,7 +112,7 @@ class Spawned(Effect):
         read well: `assert kit.effects == ("worker",)`. Comparing the behavior
         objects would test identity of a closure, which says nothing.
         """
-        if isinstance(other, Spawned):
+        if isinstance(other, SpawnedChild):
             return self.name == other.name
         if isinstance(other, str):
             return self.name == other
@@ -118,7 +124,7 @@ class Spawned(Effect):
 
     def __repr__(self) -> str:
         """Render the name and what it was started with."""
-        return f"Spawned({self.name!r}, {self.behavior!r})"
+        return f"SpawnedChild({self.name!r}, {self.behavior!r})"
 
 
 @final
@@ -345,11 +351,11 @@ class BehaviorTestKit(Generic[T]):
         return tuple(self._ctx.effects)
 
     @property
-    def children(self) -> tuple[Spawned, ...]:
+    def children(self) -> tuple[SpawnedChild, ...]:
         """Just the spawns, which is what most tests are asking about."""
-        return tuple(e for e in self._ctx.effects if isinstance(e, Spawned))
+        return tuple(e for e in self._ctx.effects if isinstance(e, SpawnedChild))
 
-    def child(self, name: str) -> Spawned:
+    def child(self, name: str) -> SpawnedChild:
         """Return one spawn by name.
 
         Args:
@@ -586,7 +592,7 @@ class _KitContext(ActorContext[T]):
     ) -> ActorRef[U]:
         """Record one spawn under a name already known to be acceptable."""
         ref: RecordingRef[U] = RecordingRef(self._path.child(name, uid=1))
-        self.effects.append(Spawned(name, behavior, mailbox, ref))
+        self.effects.append(SpawnedChild(name, behavior, mailbox, ref))
         return ref
 
     def message_adapter(
@@ -642,3 +648,40 @@ class _KitContext(ActorContext[T]):
     def __repr__(self) -> str:
         """Render the path and how much has been recorded."""
         return f"_KitContext({str(self._path)!r}, {len(self.effects)} effect(s))"
+
+
+def deprecated_spawned(name: str, module: str) -> object:
+    """Return `SpawnedChild` for its old name, warning that the name is going.
+
+    Args:
+        name: The attribute a module was asked for.
+        module: That module's name, for the error when it is anything else.
+
+    Returns:
+        `SpawnedChild`, when the name asked for was `Spawned`.
+
+    Raises:
+        AttributeError: For any other name, as a module does by default.
+    """
+    if name == "Spawned":
+        warnings.warn(
+            "tapio.testkit.Spawned is renamed SpawnedChild, so it is not "
+            "confused with tapio.Spawned, the reply of a remote spawn. The old "
+            "name will be removed in a later release.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        return SpawnedChild
+    msg = f"module {module!r} has no attribute {name!r}"
+    raise AttributeError(msg)
+
+
+if TYPE_CHECKING:
+    # Seen by a type checker only, so code still using the old name checks.
+    # At runtime the name is served by `__getattr__`, which warns.
+    Spawned = SpawnedChild
+else:
+
+    def __getattr__(name: str) -> object:
+        """Serve the old name of `SpawnedChild`, with a deprecation warning."""
+        return deprecated_spawned(name, __name__)

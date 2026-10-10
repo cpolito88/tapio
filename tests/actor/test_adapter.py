@@ -19,8 +19,9 @@ from tapio import (
     OverflowStrategy,
     SupervisorStrategy,
 )
-from tapio.actor import ActorContext, ActorRef, LocalActorRef
+from tapio.actor import ActorContext, ActorRef
 from tapio.actor.adapter import AdaptedMessage, AdapterRef, AdapterRegistry
+from tapio.actor.cell import LocalActorRef
 from tapio.actor.path import ActorPath
 from tapio.errors import BehaviorTypeError
 from tapio.remote.registry import RefRegistry

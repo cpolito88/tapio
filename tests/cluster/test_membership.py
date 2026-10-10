@@ -13,10 +13,10 @@ import pytest
 from pydantic import ValidationError
 
 from tapio.actor import ActorPath, ActorSystem
-from tapio.cluster import Cluster, MemberStatus, WireMessage
+from tapio.cluster import Cluster, MemberStatus
 from tapio.cluster.daemon import daemon_uri
 from tapio.cluster.member import Member
-from tapio.cluster.messages import Join, Leave, Seeds
+from tapio.cluster.messages import Join, Leave, Seeds, WireMessage
 from tapio.errors import ClusterError, MessageEncodingError
 from tapio.remote.registry import key_for_type
 from tapio.testkit import assert_no_leaked_tasks

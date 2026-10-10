@@ -26,6 +26,7 @@ from tapio.errors import (
     AskTypeError,
     BehaviorRegistrationError,
     BehaviorTypeError,
+    ClusterError,
     FrameTooLargeError,
     HandshakeError,
     InsecureRemoteConfig,
@@ -53,7 +54,13 @@ from tapio.remote.spawner import (
     remote_behavior,
     spawner,
 )
-from tapio.settings import RemoteSettings, TapioSettings, TLSSettings
+from tapio.settings import (
+    ClusterSettings,
+    ManagementSettings,
+    RemoteSettings,
+    TapioSettings,
+    TLSSettings,
+)
 from tapio.version import __version__
 
 __all__ = [
@@ -75,6 +82,8 @@ __all__ = [
     "BehaviorTypeError",
     "Behaviors",
     "ChildFailed",
+    "ClusterError",
+    "ClusterSettings",
     "DeadLetter",
     "DeadLetterReason",
     "Decision",
@@ -84,6 +93,7 @@ __all__ = [
     "InsecureRemoteConfig",
     "MailboxConfig",
     "MailboxFullError",
+    "ManagementSettings",
     "Message",
     "MessageDecodingError",
     "MessageEncodingError",

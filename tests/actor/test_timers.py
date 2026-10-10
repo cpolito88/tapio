@@ -25,7 +25,8 @@ from tapio import (
     SupervisorStrategy,
     TimerScheduler,
 )
-from tapio.actor import ActorContext, LocalActorRef
+from tapio.actor import ActorContext
+from tapio.actor.cell import LocalActorRef
 from tapio.testkit import assert_no_leaked_tasks
 from tests.failures import BoomError, eventually
 
