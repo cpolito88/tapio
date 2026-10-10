@@ -116,13 +116,13 @@ skew between two deployments looks like from the requesting side.
 A frame is a four-byte big-endian length followed by a JSON object:
 
 ```json
-{"v": 1, "to": "/user/checkout/session-7#f3a1c8",
+{"v": 1, "to": "/user/checkout/session-7#42",
  "from": "tapio://web@10.0.0.9:25520",
  "t": "orders.protocol.Reserve",
  "p": {"sku": "X-1", "qty": 2}}
 ```
 
-`to` omits the address, because a frame arriving on an association is by
+The fragment is the decimal incarnation uid. `to` omits the address, because a frame arriving on an association is by
 definition addressed to the node that received it. `from` is the sending
 *system* rather than a sending actor: a `tell` carries no sender, so there is
 none to name. It is a diagnostic, so a dead letter can say which node produced
