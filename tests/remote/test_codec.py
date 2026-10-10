@@ -373,6 +373,29 @@ def framed(body: bytes) -> bytes:
     return len(body).to_bytes(LENGTH_PREFIX, "big") + body
 
 
+async def test_a_value_that_converts_to_its_field_type_is_converted(
+    alpha: ActorSystem, beta: ActorSystem
+):
+    # Validation off the wire is Pydantic's default lax mode, not strict: a
+    # string that reads as an int is taken as one. A model that sets
+    # `strict=True` refuses it, which is the documented way to opt in.
+    seen: list[Reserve] = []
+    stock = beta.spawn(reserving(seen), "stock")
+    cart = alpha.spawn(collecting([]), "cart")
+    frame = encode(
+        Reserve(sku="X-1", qty=2, reply_to=cart), to=stock.path, sender=alpha.address
+    )
+    body = frame[LENGTH_PREFIX:]
+    assert b'"qty":2' in body
+
+    beta.deliver_frame(
+        framed(body.replace(b'"qty":2', b'"qty":"2"')), peer=alpha.address
+    )
+
+    await eventually(lambda: len(seen) == 1)
+    assert seen[0].qty == 2
+
+
 def test_a_length_prefix_that_is_not_four_bytes_is_refused():
     with pytest.raises(MessageDecodingError, match="length prefix is 4 bytes"):
         frame_length(b"\x00\x01")

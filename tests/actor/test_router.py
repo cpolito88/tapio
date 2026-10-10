@@ -258,12 +258,10 @@ async def test_a_pool_needs_a_routee():
         Routers.pool(0, Behaviors.empty())
 
 
-def test_the_rotation_survives_the_pool_shrinking():
-    """Removing a routee shifts the rotation rather than restarting it.
-
-    It keeps the counter, not the position, so an actor that has just been
-    given work does not get more because the pool got smaller.
-    """
+def test_after_a_shrink_the_rotation_carries_on_from_its_counter():
+    # A counter modulo the size, so after a shrink the rotation goes on from
+    # an arbitrary point. Here it lands on the routee that took the last
+    # message, which the docstring says can happen.
     strategy = RoundRobin()
     three: list[ActorRef[Job]] = [_ref(n) for n in (1, 2, 3)]
 
@@ -271,7 +269,7 @@ def test_the_rotation_survives_the_pool_shrinking():
     assert chosen == three
 
     two = [three[0], three[2]]
-    assert strategy.select(two, Job(item=0)) is two[1]
+    assert strategy.select(two, Job(item=0)) is two[1] is chosen[-1]
 
 
 def _ref(n: int) -> ActorRef[Job]:

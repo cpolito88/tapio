@@ -7,6 +7,7 @@ them: a new example with no assertion here fails on purpose.
 
 import pkgutil
 import re
+from pathlib import Path
 
 import tapio_examples
 from tapio.testkit import assert_no_leaked_tasks
@@ -544,3 +545,13 @@ def test_every_example_is_asserted():
     modules = {m.name for m in pkgutil.iter_modules(tapio_examples.__path__)}
 
     assert modules == ASSERTED, f"unasserted examples: {sorted(modules - ASSERTED)}"
+
+
+def test_every_example_is_in_the_reading_order():
+    # The README is the suggested reading order. An example left out of it is
+    # one a reader following that order never meets.
+    readme = (Path(tapio_examples.__file__).parents[1] / "README.md").read_text()
+
+    missing = sorted(name for name in ASSERTED if f"`{name}`" not in readme)
+
+    assert missing == []

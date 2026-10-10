@@ -323,6 +323,7 @@ async def two_nodes(
     beta: str = "beta",
     unreachable_after: timedelta = timedelta(milliseconds=300),
     heartbeat_interval: timedelta = timedelta(milliseconds=20),
+    handshake_timeout: timedelta | None = None,
 ) -> AsyncIterator[TwoNodes]:
     """Start two systems that can reach each other, and stop them afterwards.
 
@@ -331,14 +332,19 @@ async def two_nodes(
 
     The default timings are far shorter than production ones, because a test
     that waits ten seconds to see a quarantine is a test nobody runs. They are
-    still a heartbeat interval well inside a detector window, which is the
-    only relationship between the two that matters.
+    still a heartbeat interval well inside a detector window, and a handshake
+    deadline shorter than that window, which are the relationships between
+    them that matter.
 
     Args:
         alpha: The first system's name.
         beta: The second system's name.
         unreachable_after: How long silence lasts before a peer is given up on.
         heartbeat_interval: How often an idle link says it is still there.
+        handshake_timeout: How long a dial may take. Four fifths of
+            `unreachable_after` when omitted, and never more than the
+            production default of 5 seconds, since it has to be shorter than
+            the silence window.
 
     Yields:
         The pair, and the controls for breaking the network between them.
@@ -350,6 +356,11 @@ async def two_nodes(
         bind_port=0,
         unreachable_after=unreachable_after,
         heartbeat_interval=heartbeat_interval,
+        handshake_timeout=(
+            handshake_timeout
+            if handshake_timeout is not None
+            else min(timedelta(seconds=5), unreachable_after * 0.8)
+        ),
     )
     settings = IsolatedTapioSettings(remote=remote)
     first = ActorSystem(alpha, settings)

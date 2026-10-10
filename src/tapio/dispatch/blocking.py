@@ -45,7 +45,15 @@ _POLL_INTERVAL = 0.01
 
 
 class BlockingPool:
-    """The threads one system runs blocking calls on."""
+    """The threads one system runs blocking calls on.
+
+    Owned and shut down by its system, which hands it out as
+    `system.blocking`. From an actor, use `ctx.run_blocking`. Call `submit`
+    only from the system's loop: it creates the executor on first use and
+    schedules onto the loop, and neither is safe from another thread. Do not
+    call `shutdown` yourself. It refuses every later blocking call in the
+    system, and the system calls it against its own shutdown deadline.
+    """
 
     __slots__ = ("_closed", "_executor", "_lock", "_owned", "_prefix", "_size")
 

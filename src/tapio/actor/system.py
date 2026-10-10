@@ -575,8 +575,8 @@ class ActorSystem:
         Raises:
             ActorSystemTerminating: If the system is shutting down.
             ActorNameError: If a live top-level actor already has that name,
-                or if the name starts with `$`, which is reserved for generated
-                names.
+                if the name starts with `$`, which is reserved for generated
+                names, or if no actor path could hold it.
         """
         self._reject_if_terminating(name)
         return self._user.spawn(behavior, name, mailbox)
@@ -630,8 +630,8 @@ class ActorSystem:
         Raises:
             ActorSystemTerminating: If the system is shutting down.
             ActorNameError: If a live system actor already has that name,
-                or if the name starts with `$`, which is reserved for generated
-                names.
+                if the name starts with `$`, which is reserved for generated
+                names, or if no actor path could hold it.
         """
         self._reject_if_terminating(name)
         return self._system.spawn(behavior, name, mailbox)

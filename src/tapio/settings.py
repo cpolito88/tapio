@@ -1,9 +1,9 @@
 """System-wide settings, read from the environment with a `TAPIO_` prefix."""
 
 from datetime import timedelta
-from typing import Annotated
+from typing import Annotated, Self
 
-from pydantic import AfterValidator, Field, SecretStr
+from pydantic import AfterValidator, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from tapio.actor.mailbox import MailboxConfig, OverflowStrategy
@@ -137,7 +137,8 @@ class RemoteSettings(BaseSettings):
 
     One deadline for the whole opening, so a peer that accepts a connection and
     then says nothing costs this and not a parked task. On a TLS listener it
-    covers the TLS handshake as well.
+    covers the TLS handshake as well. It must be shorter than
+    `unreachable_after`.
     """
 
     max_pending_handshakes: Annotated[int, Field(ge=1)] = 128
@@ -167,6 +168,12 @@ class RemoteSettings(BaseSettings):
     a long pause and an overloaded peer all look the same from one node, and
     resolving which it was needs membership and a quorum that a single system
     does not have. Set it well above the peer's `heartbeat_interval`.
+
+    A write that cannot get into the peer for this long quarantines it too,
+    and so does a dial still in progress, because the silence is measured
+    from when the association was created. So it must be longer than
+    `handshake_timeout`, or a dial that is only slow is judged as silence.
+    The settings refuse the opposite.
     """
 
     outbound_capacity: int = 10_000
@@ -176,6 +183,24 @@ class RemoteSettings(BaseSettings):
     receiving actor: nothing in a fire-and-forget wire protocol can offer the
     latter. What overflows here goes to dead letters with the peer named.
     """
+
+    @model_validator(mode="after")
+    def _dial_within_the_silence_window(self) -> Self:
+        """Refuse a handshake deadline as long as the silence window or longer.
+
+        The failure detector starts counting when the association is created,
+        before the dial has finished. A dial allowed to take longer than the
+        window can therefore be judged as silence, and the peer is quarantined
+        where it should only have failed to connect and been dialled again.
+        """
+        if self.handshake_timeout >= self.unreachable_after:
+            msg = (
+                f"handshake_timeout ({self.handshake_timeout}) must be shorter "
+                f"than unreachable_after ({self.unreachable_after}), or a dial "
+                "that is only slow quarantines the peer as if it had gone silent"
+            )
+            raise ValueError(msg)
+        return self
 
 
 class ClusterSettings(BaseSettings):

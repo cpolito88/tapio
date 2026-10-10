@@ -30,7 +30,10 @@ memory the peer asked for.
 Encoding is `model_dump_json`. Decoding is `model_validate_json` inside the
 reading system's deserialization context, so the contents check that
 `validate_on_tell` governs locally has already happened: a message off the
-wire is validated by construction, strictly, with no way to skip it.
+wire is validated against the registered model by construction, with no way to
+skip it. The validation is Pydantic's default lax mode, so a value that can be
+converted to a field's type, such as `"5"` for an `int`, is converted. A
+message whose `model_config` sets `strict=True` refuses those too.
 """
 
 import json
