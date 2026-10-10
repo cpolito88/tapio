@@ -216,6 +216,63 @@ async def test_a_restart_cancels_the_timers(system: ActorSystem):
     assert "tick t" not in seen
 
 
+async def test_a_tick_queued_before_a_restart_does_not_reach_the_new_incarnation(
+    system: ActorSystem,
+):
+    seen: list[str] = []
+    incarnations: list[int] = []
+    gate, blocked = asyncio.Event(), asyncio.Event()
+
+    def build(timers: TimerScheduler[Any_]) -> Behavior[Any_]:
+        incarnation = len(incarnations) + 1
+        incarnations.append(incarnation)
+
+        async def on_message(message: Any_) -> Behavior[Any_]:
+            match message:
+                case Start(key=key):
+                    # The tick fires while this handler is still running, so it
+                    # queues behind the `Fail` already on the mailbox.
+                    timers.start_single(key, Tick(label=key), timedelta(0))
+                    blocked.set()
+                    await gate.wait()
+                case Tick(label=label):
+                    seen.append(f"tick {label} in {incarnation}")
+                case Fail():
+                    raise BoomError("boom")
+                case Stop():
+                    seen.append(f"stop in {incarnation}")
+            return Behaviors.same()
+
+        return Behaviors.receive_message(on_message)
+
+    ref = system.spawn(
+        Behaviors.supervise(Behaviors.with_timers(build)).on_failure(
+            SupervisorStrategy.restart(), on=BoomError
+        ),
+        name="ticker",
+    )
+    ref.tell(Start(key="old"))
+    ref.tell(Fail())
+    await blocked.wait()
+    # A single timer gives up its key once it has fired.
+    await eventually(lambda: not scheduler_of(ref).is_active("old"))
+    gate.set()
+
+    # `Stop` is behind the tick, so the tick has been handled or dropped by the
+    # time it is seen.
+    ref.tell(Stop())
+    await eventually(lambda: "stop in 2" in seen)
+    assert seen == ["stop in 2"]
+
+    # The new incarnation's own timers still arrive.
+    gate.clear()
+    blocked.clear()
+    ref.tell(Start(key="new"))
+    await blocked.wait()
+    gate.set()
+    await eventually(lambda: "tick new in 2" in seen)
+
+
 async def test_stopping_cancels_the_timers(system: ActorSystem):
     """Cancelled in the termination sequence, like every other cell-owned task."""
     seen: list[str] = []

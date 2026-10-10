@@ -47,7 +47,7 @@ from tapio.actor.signals import Signal
 from tapio.actor.stash import StashBuffer
 from tapio.actor.supervision import SupervisorStrategy
 from tapio.actor.timers import TimerScheduler
-from tapio.errors import BehaviorTypeError, TapioError
+from tapio.errors import ActorNameError, BehaviorTypeError, TapioError
 from tapio.logging import ActorLogAdapter, actor_logger
 from tapio.message import Message
 from tapio.settings import TapioSettings
@@ -556,17 +556,35 @@ class _KitContext(ActorContext[T]):
         name: str,
         mailbox: MailboxConfig | None = None,
     ) -> ActorRef[U]:
-        """Record a spawn and hand back a ref that records what it is told."""
-        ref: RecordingRef[U] = RecordingRef(self._path.child(name, uid=1))
-        self.effects.append(Spawned(name, behavior, mailbox, ref))
-        return ref
+        """Record a spawn and hand back a ref that records what it is told.
+
+        Raises:
+            ActorNameError: If the name starts with `$`, as a running actor
+                would refuse it, so the kit does not pass a spawn that fails
+                for real.
+        """
+        if name.startswith("$"):
+            msg = (
+                f"cannot spawn {name!r}: names starting with '$' are reserved "
+                "for the names spawn_anonymous and message adapters generate"
+            )
+            raise ActorNameError(msg)
+        return self._record_spawn(behavior, name, mailbox)
 
     def spawn_anonymous(
         self, behavior: Behavior[U], mailbox: MailboxConfig | None = None
     ) -> ActorRef[U]:
         """Record a spawn under a generated name, as a cell would generate one."""
         self._recorded += 1
-        return self.spawn(behavior, f"${self._recorded}", mailbox)
+        return self._record_spawn(behavior, f"${self._recorded}", mailbox)
+
+    def _record_spawn(
+        self, behavior: Behavior[U], name: str, mailbox: MailboxConfig | None
+    ) -> ActorRef[U]:
+        """Record one spawn under a name already known to be acceptable."""
+        ref: RecordingRef[U] = RecordingRef(self._path.child(name, uid=1))
+        self.effects.append(Spawned(name, behavior, mailbox, ref))
+        return ref
 
     def message_adapter(
         self, adapt: "Any", msg_type: MessageType | None = None

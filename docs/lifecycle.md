@@ -18,7 +18,8 @@ line arrives after it has started.
 
 Names are unique among siblings, and reusing one raises `ActorNameError`
 rather than silently addressing the wrong actor. Where a name does not matter,
-`spawn_anonymous` generates one beginning with `$`.
+`spawn_anonymous` generates one beginning with `$`. That prefix is reserved for
+generated names, so `spawn` refuses a name that starts with it.
 
 Every ref carries an incarnation **uid** as well as a path. A ref to an actor
 that has stopped does not become a ref to the next actor at that path, which
@@ -63,11 +64,22 @@ lane, which is drained ahead of ordinary traffic:
 | `PostStop` | after the last message, whatever stopped it |
 | `PreRestart` | before a restart replaces the behavior |
 | `Terminated` | an actor this one watched has stopped |
-| `ChildFailed` | a child failed and the failure escalated to here |
 
-`PostStop` is where a resource an actor opened is closed. It runs for a stop,
-a restart's teardown and a shutdown alike, so there is one place to write it
-rather than three.
+`PostStop` is where a resource an actor opened is closed when the actor stops.
+It runs whether the actor returned `stopped()`, a supervisor decided `stop`,
+or the system shut down.
+
+A restart is not a stop. The failing incarnation gets `PreRestart` instead,
+and `PostStop` does not follow, even when a stop arrives while the restart is
+backing off. So an actor that holds a resource closes it in both handlers, or
+keeps it outside the part of the actor that a restart runs again.
+
+A restart stops the failed incarnation's children, and the new incarnation is
+not told about it. It never watched them, so no `Terminated` for them reaches
+it. Its own `setup` spawns and watches their replacements.
+
+There is a fourth signal, `ChildFailed`. A child's escalated failure travels
+as one, but supervision handles it, so a signal handler never sees it.
 
 ## Watching
 

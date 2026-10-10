@@ -14,7 +14,12 @@ from tapio.actor import (
     StashBuffer,
     SupervisorStrategy,
 )
-from tapio.errors import BehaviorTypeError, MessageTypeError, TapioError
+from tapio.errors import (
+    ActorNameError,
+    BehaviorTypeError,
+    MessageTypeError,
+    TapioError,
+)
 from tapio.testkit import (
     BehaviorTestKit,
     DeadLettered,
@@ -164,6 +169,15 @@ async def test_an_anonymous_spawn_gets_a_generated_name():
     kit: BehaviorTestKit[Increment] = BehaviorTestKit(Behaviors.setup(build))
 
     assert kit.children[0].name == "$1"
+
+
+async def test_a_chosen_name_with_the_generated_prefix_is_refused():
+    def build(ctx: ActorContext[Increment]) -> Behavior[Increment]:
+        ctx.spawn(_sink(), "$1")
+        return Behaviors.ignore()
+
+    with pytest.raises(ActorNameError, match="reserved"):
+        BehaviorTestKit(Behaviors.setup(build))
 
 
 async def test_asking_for_a_child_that_was_never_spawned_says_which_were():
