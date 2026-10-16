@@ -174,8 +174,10 @@ def resolve_validator(
         return check_type
 
     # Built once. Building a TypeAdapter per send would cost far more than the
-    # validation itself.
-    adapter: TypeAdapter[Any] = TypeAdapter(msg_type)
+    # validation itself. The cast is for mypy only: pydantic types the
+    # argument as a `TypeForm`, and mypy does not accept a `types.UnionType`
+    # value as one, although pydantic handles it at runtime.
+    adapter: TypeAdapter[Any] = TypeAdapter(typing.cast(Any, msg_type))
 
     def check_type_and_contents(message: Any) -> None:
         check_type(message)
