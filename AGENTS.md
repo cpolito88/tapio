@@ -20,6 +20,7 @@ make install    # create the venv, install deps
 make check      # pre-push gate: lint + types + tests
 make test       # pytest
 make examples   # run and assert every example
+make audit      # scan the locked dependencies for known vulnerabilities
 make ci         # exactly what GitHub Actions runs
 ```
 
@@ -30,6 +31,11 @@ CI calls `make ci` and nothing else, then publishes the built site to GitHub
 Pages from `main`. That publish step waits on the repository variable
 `PUBLISH_DOCS` being `"true"`, since Pages has to be enabled on the repository
 first.
+
+`make ci` ends with `make audit`. A scheduled workflow (`audit.yml`) also runs
+`make audit` daily against `main`, because an advisory can be published
+against a version that is already locked, with no commit to trigger CI. It
+reports a failure in an issue and closes that issue once the scan passes.
 
 ## Layout
 

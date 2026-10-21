@@ -103,6 +103,21 @@ members = ["examples"]
 [tool.uv]
 default-groups = ["dev"]
 
+# Advisories that `make audit` accepts. Each entry needs a comment above it
+# with the date it was accepted and the reason, and it should be removed once
+# the lock no longer pins the affected version. uv warns about an entry that
+# matches nothing, which is how a stale one shows up. The runtime pass also
+# warns about every entry for a development tool, since it does not scan
+# those, so a stale entry is one the second pass warns about. An ID matches
+# the advisory's aliases too, so a GHSA ID and its CVE ID are
+# interchangeable.
+#
+# `ignore-until-fixed` is the better list for an advisory with no fixed
+# release yet: the finding comes back on its own once a fix is published.
+[tool.uv.audit]
+ignore = []
+ignore-until-fixed = []
+
 [tool.ruff]
 line-length = 88
 target-version = "py311"

@@ -80,6 +80,51 @@ bench-scale: ## Measure RSS and latency at 1e3/1e4/1e5 resident actors
 bench-cluster: ## Measure convergence and gossip bandwidth at 5/20/50 nodes
 	$(UV) run python -m tests.benchmarks.cluster
 
+# `--preview-features audit-command` acknowledges that `uv audit` is still
+# experimental in uv, and silences the warning that says so on every run.
+AUDIT := $(UV) audit --preview-features audit-command
+
+.PHONY: audit
+audit: ## Scan the locked dependencies for known vulnerabilities
+	# Two passes, so a report says which kind of dependency is affected. The
+	# first is what a user of tapio-py installs: the runtime dependencies and
+	# the `cli` extra. A finding there can mean raising a floor in
+	# pyproject.toml and shipping a `fix:`. The second is everything the lock
+	# pins, development tools included, and a finding only there affects CI
+	# and contributors. Both passes always run, so one report shows both.
+	#
+	# The first pass cannot be `uv audit --no-dev`. On a workspace that also
+	# scans the members, and examples/ brings in fastapi and httpx, which no
+	# user of tapio-py installs. `uv audit` has no option to pick one
+	# package, so the first pass exports the exact pins of tapio-py from the
+	# lock into a temporary script and audits that. The pins carry their
+	# markers, so the script resolves to those versions and nothing else.
+	# `--frozen` belongs to the second pass only: with `--script` it looks
+	# for a lock beside the temporary script and fails.
+	#
+	# Accepted findings are listed in `[tool.uv.audit]` in pyproject.toml.
+	# Both passes read them, the script pass included.
+	@status=0; \
+	script=$$(mktemp "$${TMPDIR:-/tmp}/tapio-audit.XXXXXX"); \
+	trap 'rm -f "$$script"' EXIT; \
+	{ \
+		echo "# /// script"; \
+		grep -m1 '^requires-python' pyproject.toml | sed 's/^/# /'; \
+		echo "# dependencies = ["; \
+		$(UV) export --frozen --package tapio-py --no-dev --all-extras \
+			--no-emit-project --no-hashes --no-header --no-annotate \
+			--format requirements.txt \
+			| sed 's/"/\\"/g; s/.*/#   "&",/'; \
+		echo "# ]"; \
+		echo "# ///"; \
+	} > "$$script"; \
+	echo "Runtime dependencies (what users of tapio-py install):"; \
+	$(AUDIT) --script "$$script" || status=1; \
+	echo; \
+	echo "Every locked dependency (development tools included):"; \
+	$(AUDIT) --frozen || status=1; \
+	exit $$status
+
 .PHONY: examples
 examples: ## Execute every example end to end
 	$(UV) run pytest tests/examples
@@ -155,6 +200,7 @@ ci: ## What GitHub Actions runs: locked install, then the full gate
 	$(MAKE) test
 	$(MAKE) examples
 	$(MAKE) docs-build
+	$(MAKE) audit
 
 .PHONY: clean
 clean: ## Remove build, cache, and coverage artifacts
