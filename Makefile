@@ -80,6 +80,28 @@ bench-scale: ## Measure RSS and latency at 1e3/1e4/1e5 resident actors
 bench-cluster: ## Measure convergence and gossip bandwidth at 5/20/50 nodes
 	$(UV) run python -m tests.benchmarks.cluster
 
+# `--preview-features audit-command` acknowledges that `uv audit` is still
+# experimental in uv, and silences the warning that says so on every run.
+AUDIT := $(UV) audit --frozen --preview-features audit-command
+
+.PHONY: audit
+audit: ## Scan the locked dependencies for known vulnerabilities
+	# Two passes, so a report says which kind of dependency is affected. The
+	# first is what a user of tapio-py installs: the runtime dependencies and
+	# the `cli` extra. A finding there can mean raising a floor in
+	# pyproject.toml and shipping a `fix:`. The second is everything the lock
+	# pins, development tools included, and a finding only there affects CI
+	# and contributors. Both passes always run, so one report shows both.
+	#
+	# Accepted findings are listed in `[tool.uv.audit]` in pyproject.toml.
+	@status=0; \
+	echo "Runtime dependencies (what users of tapio-py install):"; \
+	$(AUDIT) --no-dev || status=1; \
+	echo; \
+	echo "Every locked dependency (development tools included):"; \
+	$(AUDIT) || status=1; \
+	exit $$status
+
 .PHONY: examples
 examples: ## Execute every example end to end
 	$(UV) run pytest tests/examples
@@ -155,6 +177,7 @@ ci: ## What GitHub Actions runs: locked install, then the full gate
 	$(MAKE) test
 	$(MAKE) examples
 	$(MAKE) docs-build
+	$(MAKE) audit
 
 .PHONY: clean
 clean: ## Remove build, cache, and coverage artifacts

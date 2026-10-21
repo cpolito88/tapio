@@ -39,11 +39,47 @@ make ci         # exactly what GitHub Actions runs, examples and docs included
 
 CI runs `make ci` on Python 3.11, 3.12, 3.13, 3.14 and 3.15.
 
+`make ci` ends with `make audit`, which checks the versions in `uv.lock`
+against the OSV advisory database. It needs network access, which is why
+`make check` leaves it out.
+
 Two things fail the suite on purpose:
 
 - a new example in `examples/tapio_examples/` with no assertion in
   `tests/examples/test_suite.py`;
 - any warning, since warnings are errors.
+
+## When the audit fails
+
+`make audit` fails when a version pinned in `uv.lock` has a published
+advisory. A new advisory can turn every open pull request red at once, with
+nothing wrong in any of them. The scheduled run of the same scan opens an
+issue titled "Scheduled dependency audit failed" when that happens.
+
+The report has two parts, and the part a finding is in decides what to do:
+
+- **Runtime dependencies** are what a user of tapio-py installs. Users get the
+  floors in `pyproject.toml`, not our lock, so bumping the lock protects only
+  CI. If the floor still allows the affected version, raise the floor above
+  it, run `make lock`, and ship the change as a `fix:`, so the release tells
+  users to upgrade.
+- **Every locked dependency** adds the development tools. A finding that is
+  only in this part affects CI and contributors, and never reaches a user.
+  Bump the lock with `uv lock --upgrade-package <name>` in a `build:` commit,
+  or take the Dependabot pull request if one is already open.
+
+Once the fix is on `main`, merge `main` into the open pull requests to turn
+them green again.
+
+When a finding cannot be fixed yet, or does not apply to how tapio uses the
+package, add its ID to `[tool.uv.audit]` in `pyproject.toml`. Put a comment
+above the entry with the date and the reason. Use `ignore-until-fixed` when
+no fixed release exists, so the finding comes back once one does. Remove the
+entry when the lock moves past the affected version.
+
+If the failure is an error reaching the advisory database rather than a
+finding, nothing was checked. Re-run the job. A run that fails that way twice
+is worth an issue of its own.
 
 ## Commits and versions
 
