@@ -82,7 +82,7 @@ bench-cluster: ## Measure convergence and gossip bandwidth at 5/20/50 nodes
 
 # `--preview-features audit-command` acknowledges that `uv audit` is still
 # experimental in uv, and silences the warning that says so on every run.
-AUDIT := $(UV) audit --frozen --preview-features audit-command
+AUDIT := $(UV) audit --preview-features audit-command
 
 .PHONY: audit
 audit: ## Scan the locked dependencies for known vulnerabilities
@@ -93,13 +93,36 @@ audit: ## Scan the locked dependencies for known vulnerabilities
 	# pins, development tools included, and a finding only there affects CI
 	# and contributors. Both passes always run, so one report shows both.
 	#
+	# The first pass cannot be `uv audit --no-dev`. On a workspace that also
+	# scans the members, and examples/ brings in fastapi and httpx, which no
+	# user of tapio-py installs. `uv audit` has no option to pick one
+	# package, so the first pass exports the exact pins of tapio-py from the
+	# lock into a temporary script and audits that. The pins carry their
+	# markers, so the script resolves to those versions and nothing else.
+	# `--frozen` belongs to the second pass only: with `--script` it looks
+	# for a lock beside the temporary script and fails.
+	#
 	# Accepted findings are listed in `[tool.uv.audit]` in pyproject.toml.
+	# Both passes read them, the script pass included.
 	@status=0; \
+	script=$$(mktemp "$${TMPDIR:-/tmp}/tapio-audit.XXXXXX"); \
+	trap 'rm -f "$$script"' EXIT; \
+	{ \
+		echo "# /// script"; \
+		grep -m1 '^requires-python' pyproject.toml | sed 's/^/# /'; \
+		echo "# dependencies = ["; \
+		$(UV) export --frozen --package tapio-py --no-dev --all-extras \
+			--no-emit-project --no-hashes --no-header --no-annotate \
+			--format requirements.txt \
+			| sed 's/"/\\"/g; s/.*/#   "&",/'; \
+		echo "# ]"; \
+		echo "# ///"; \
+	} > "$$script"; \
 	echo "Runtime dependencies (what users of tapio-py install):"; \
-	$(AUDIT) --no-dev || status=1; \
+	$(AUDIT) --script "$$script" || status=1; \
 	echo; \
 	echo "Every locked dependency (development tools included):"; \
-	$(AUDIT) || status=1; \
+	$(AUDIT) --frozen || status=1; \
 	exit $$status
 
 .PHONY: examples
