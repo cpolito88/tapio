@@ -1203,7 +1203,8 @@ class ActorCell(Generic[T]):
 
         if strategy.backoff is not None:
             delay = strategy.backoff.delay(
-                self._restarts.count(supervisor), jitter=random.random()
+                self._restarts.count(supervisor),
+                jitter=random.random(),  # noqa: S311 - spreads restarts, not a secret
             )
             self._log.debug("backing off for %.3fs before restarting", delay)
             if not await self._backoff(delay):

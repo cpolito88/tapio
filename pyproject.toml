@@ -146,6 +146,7 @@ select = [
     "PT",        # pytest style
     "D",         # pydocstyle
     "ANN",       # annotations
+    "S",         # security (flake8-bandit)
 ]
 ignore = [
     "D203",   # conflicts with D211
@@ -154,7 +155,15 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["D100", "D101", "D102", "D103", "D104", "ANN001", "ANN201"]
+# The security rules are off in tests. Nearly every finding there is on
+# purpose: pytest is built on `assert`, the remoting tests pass made-up
+# secrets and bind every interface to check that it is refused, and the TLS
+# fixtures run openssl to make certificates. Tests are never shipped.
+"tests/**" = ["D100", "D101", "D102", "D103", "D104", "ANN001", "ANN201", "S"]
+# The examples use `assert` to narrow types for mypy and to check what the
+# example shows. They are never shipped and never run under `python -O`,
+# which is the case S101 guards against.
+"examples/**" = ["S101"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 # Absolute imports everywhere: a relative import reads differently depending
