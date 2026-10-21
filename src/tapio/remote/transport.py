@@ -530,7 +530,7 @@ async def close_server(server: asyncio.Server, listener: socket.socket) -> None:
     socket still open. The handler is never called, so the caller never
     learns the socket exists and cannot close it. The socket stays open until
     the garbage collector finds it and warns about it, during whatever code
-    happens to be running at that moment. Python 3.11 to 3.14 all behave this
+    happens to be running at that moment. Python 3.11 to 3.15 all behave this
     way.
 
     So this stops accepting first, then lets the loop run one turn, and only
@@ -564,8 +564,8 @@ async def wait_server_closed(server: asyncio.Server) -> None:
 
     Called once the caller has closed every connection it owns. What is left
     is a connection the caller never saw, which is one still in its TLS
-    handshake. Python 3.13 can close those at once. Earlier versions wait for
-    the TLS handshake deadline that `listen` was given.
+    handshake. Python 3.13 and later can close those at once. Earlier versions
+    wait for the TLS handshake deadline that `listen` was given.
 
     Args:
         server: A server already passed to `close_server`.

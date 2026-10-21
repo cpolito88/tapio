@@ -37,7 +37,7 @@ make check      # lint, mypy --strict, tests: run it before every push
 make ci         # exactly what GitHub Actions runs, examples and docs included
 ```
 
-CI runs `make ci` on Python 3.11, 3.12, 3.13 and 3.14.
+CI runs `make ci` on Python 3.11, 3.12, 3.13, 3.14 and 3.15.
 
 Two things fail the suite on purpose:
 
