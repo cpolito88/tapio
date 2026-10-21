@@ -27,7 +27,7 @@ updates:
 
   # The lock that decides what users install. A bot editing it was held back as
   # a separate decision, and the answer is that nothing here merges itself:
-  # `make ci` runs on every pull request across all four Python versions, so a
+  # `make ci` runs on every pull request across all five Python versions, so a
   # bump that breaks anything is red before a human reads it. `make lock` is
   # still how a human re-resolves everything on purpose. This only stops the
   # lock going stale in the gaps between those moments.

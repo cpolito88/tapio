@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
     steps:
       - uses: actions/checkout@v7
 
@@ -35,7 +35,7 @@ jobs:
       - name: make ci
         run: make ci
 
-      # The badge is written from one leg of the matrix only: three legs racing
+      # The badge is written from one leg of the matrix only: five legs racing
       # a PATCH against the same gist would publish whichever finished last.
       #
       # Dormant until the repository variable COVERAGE_GIST_ID is set, in the

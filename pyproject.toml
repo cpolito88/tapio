@@ -24,6 +24,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Programming Language :: Python :: Implementation :: CPython",
     "Operating System :: OS Independent",
     "Topic :: Software Development :: Libraries :: Application Frameworks",
@@ -33,8 +34,13 @@ dependencies = [
     "pydantic>=2.12",
     # Python 3.14 needs a pydantic whose pinned pydantic-core ships cp314
     # wheels, which starts at 2.12 (2.11 pins pydantic-core 2.33, with no
-    # 3.14 wheel to install). Older interpreters keep the 2.7 floor.
+    # 3.14 wheel to install). The floor above has since reached 2.12 for
+    # every interpreter, so this line only says why 3.14 cannot go lower.
     "pydantic>=2.12; python_version >= '3.14'",
+    # Python 3.15 needs a pydantic whose pinned pydantic-core ships cp315
+    # wheels, which starts at 2.14 (2.13.5 pins pydantic-core 2.46.5, with no
+    # 3.15 wheel to install). Older interpreters keep the 2.12 floor.
+    "pydantic>=2.14; python_version >= '3.15'",
     "pydantic-settings>=2.2",
     "typing-extensions>=4.10",
 ]

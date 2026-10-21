@@ -207,10 +207,10 @@ def mutual_tls_certs(tmp_path_factory: pytest.TempPathFactory) -> TlsCerts:
     Real certificates rather than mocks, so a test drives the actual TLS
     handshake. The server certificate names the loopback address so a client
     checking the hostname is satisfied, and every certificate carries the key
-    usage extensions a strict verifier requires: Python 3.13 turns on strict
-    X.509 checking by default, where a CA with no keyUsage extension is refused.
-    Built with openssl, since neither cryptography nor trustme is a dependency;
-    a machine without openssl skips the tests that ask for this.
+    usage extensions a strict verifier requires: Python 3.13 and later turn on
+    strict X.509 checking by default, where a CA with no keyUsage extension is
+    refused. Built with openssl, since neither cryptography nor trustme is a
+    dependency; a machine without openssl skips the tests that ask for this.
     """
     if shutil.which("openssl") is None:
         pytest.skip("openssl is not available to generate certificates")
