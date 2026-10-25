@@ -9,6 +9,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# The token gets read access by default and nothing more. The `ci` job only
+# checks out the code, and the badge it publishes goes through GIST_TOKEN. A
+# job that needs to write, like `docs` and `release` below, asks for that in
+# its own `permissions` block, which replaces this one for that job.
+permissions:
+  contents: read
+
 jobs:
   # The pipeline never re-spells the commands: it calls `make ci`, which is the
   # same gate developers run locally.
