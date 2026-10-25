@@ -106,8 +106,8 @@ Good fits:
 
 Bad fits, use something else:
 
-- High-volume per-record stream processing → [Bytewax](https://bytewax.io/),
-  [Quix Streams](https://quix.io/)
+- High-volume per-record stream processing → [Quix Streams](https://github.com/quixio/quix-streams),
+  [Pathway](https://github.com/pathwaycom/pathway)
 - Anything CPU-heavy inside a handler. One blocking call stalls every actor
   sharing the event loop.
 
