@@ -99,7 +99,7 @@ jobs:
       id-token: write
     environment:
       name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
+      url: ${{ steps.deploy.outputs.page_url || steps.deploy-retry.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
 
@@ -124,7 +124,26 @@ jobs:
           path: site
           name: github-pages-${{ github.run_attempt }}
 
+      # The deploy gets one retry. deploy-pages lists the run's artifacts a
+      # single time, a fraction of a second after the upload finalizes, and
+      # that listing can lag behind the upload. When it does, the deploy
+      # fails with "No artifacts named github-pages-N were found", although
+      # the artifact exists. Runs 365 and 367 failed this way. The retry
+      # repeats the exact lookup that failed, so it needs no extra token
+      # permission. If the deploy fails for any other reason, the retry
+      # fails the same way and the job still goes red.
       - id: deploy
+        uses: actions/deploy-pages@v5
+        continue-on-error: true
+        with:
+          artifact_name: github-pages-${{ github.run_attempt }}
+
+      - name: Wait for the artifact listing to catch up
+        if: steps.deploy.outcome == 'failure'
+        run: sleep 30
+
+      - id: deploy-retry
+        if: steps.deploy.outcome == 'failure'
         uses: actions/deploy-pages@v5
         with:
           artifact_name: github-pages-${{ github.run_attempt }}
